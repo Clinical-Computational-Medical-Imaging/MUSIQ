@@ -474,8 +474,7 @@ class SeriesSelection:
             try:
                 nii = next(tmp.glob("*nii.gz"))
             except StopIteration:
-                # raise ValueError("CT conversion failed")
-                logger.info("CT conversion failed")
+                logger.info("MR conversion failed")
 
             # copy niftis to output folder with consistent naming
             nii_path = os.path.join(output_dirpath, nii.name)

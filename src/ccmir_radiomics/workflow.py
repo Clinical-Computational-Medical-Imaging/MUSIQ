@@ -17,9 +17,7 @@ class Workflow:
         self,
         input_dir: str,
         output_dir: str,
-        autopet: bool = True,
-        totalsegmentator: bool = True,
-        tumor: bool = True,
+        task: list[str] | None = None,
         ct_primary_keywords: list[str] | None = None,
         ct_secondary_keywords: list[str] | None = None,
         ct_exclusion_keywords: list[str] | None = None,
@@ -29,7 +27,6 @@ class Workflow:
         mr_primary_keywords: list[str] | None = None,
         mr_secondary_keywords: list[str] | None = None,
         mr_exclusion_keywords: list[str] | None = None,
-        plot: bool = False,
     ) -> None:
         """
         Run the ccmir-radiomics workflow with the specified parameters.
@@ -37,9 +34,13 @@ class Workflow:
         Args:
             input_dir (str): Path to the input directory containing PET/CT images.
             output_dir (str): Path to the output directory for results.
-            autopet (bool): Whether to run autopet3 on PET images.
-            totalsegmentator (bool): Whether to run TotalSegmentator on CT images.
-            tumor (bool): Whether to compute tumor level statistics.
+            task (list[str] | None): List of tasks to run. If None, all tasks are run. Possible values are:
+                - "series_selection": Select series based on keywords.
+                - "radiomics": Extract radiomics features from selected series.
+                - "autopet": Run autopet3 on PET images.
+                - "totalsegmentator": Run TotalSegmentator on CT images.
+                - "tumor": Compute tumor level statistics.
+                - "plot": Create visualisations.
             ct_primary_keywords (list[str] | None): Keywords for primary selection of CT series.
             ct_secondary_keywords (list[str] | None): Keywords for secondary selection of CT series.
             ct_exclusion_keywords (list[str] | None): Keywords to exclude CT series.
@@ -53,10 +54,21 @@ class Workflow:
         """
         self.input_dir = input_dir
         self.output_dir = output_dir
-        self.autopet = autopet
-        self.totalsegmentator = totalsegmentator
-        self.tumor = tumor
-        self.plot = plot
+        task_error = True if any(t not in [
+            "series_selection", "radiomics", "autopet", "totalsegmentator", "tumor", "plot"
+        ] for t in task or []) else False
+        if task_error:
+            raise ValueError(
+                "Invalid task specified. Possible values are: "
+                "'series_selection', 'radiomics', 'autopet', "
+                "'totalsegmentator', 'tumor', 'plot'."
+            )
+        self.series_selection = "series_selection" in (task or [])
+        self.radiomics = "radiomics" in (task or [])
+        self.autopet = "autopet" in (task or [])
+        self.totalsegmentator = "totalsegmentator" in (task or [])
+        self.tumor = "tumor" in (task or [])
+        self.plot = "plot" in (task or [])
         self.series_keywords = setup_series_keywords(
             ct_primary_keywords,
             ct_secondary_keywords,
@@ -73,9 +85,14 @@ class Workflow:
         # Ensure output directory exists
         os.makedirs(self.output_dir, exist_ok=True)
 
-        SeriesSelection(
-            input_dirpath=self.input_dir, output_dirpath=self.output_dir, series_keywords=self.series_keywords
-        ).run()
+        if self.series_selection:
+            from .series_selection import SeriesSelection
+
+            SeriesSelection(
+                input_dirpath=self.input_dir,
+                output_dirpath=self.output_dir,
+                series_keywords=self.series_keywords,
+            ).run()
 
         if self.autopet:
             from .autopet_inference import AutopetInference
@@ -94,9 +111,12 @@ class Workflow:
                 input_dirpath_processed=self.output_dir,
             ).run()
 
-        RadiomicsExtractor(
-            input_dirpath_processed=self.output_dir,
-        ).run()
+        if self.radiomics:
+            from .radiomics_extraction import RadiomicsExtractor
+
+            RadiomicsExtractor(
+                input_dirpath_processed=self.output_dir,
+            ).run()
 
         if self.tumor:
             TumorInfoExtraction(
@@ -140,12 +160,8 @@ def workflow_entrypoint():
     parser = argparse.ArgumentParser(description="Arguments for ccmir-radiomics pipeline.")
     parser.add_argument("--input-dir", help="Path to PET/CT input directory.", required=True)
     parser.add_argument("--output-dir", help="Path to designated output directory.", required=True)
-    parser.add_argument("--autopet", help="If autopet3 should be run on PET images.", action="store_true")
-    parser.add_argument(
-        "--totalsegmentator", help="If TotalSegmentator should be run on CT images.", action="store_true"
-    )
-    parser.add_argument("--tumor", help="If tumor level statistics should be computed.", action="store_true")
-    parser.add_argument("--plot", help="If visualisations should be created.", action="store_true")
+    parser.add_argument("--task", nargs="+", help="List of tasks to run. Possible values: series_selection, " \
+    "radiomics, autopet, totalsegmentator, tumor, plot.", default=None)
     parser.add_argument(
         "--ct-primary-keywords", help="List of keywords to look for in CT study descriptions for default selection."
     )
@@ -179,9 +195,7 @@ def workflow_entrypoint():
     Workflow(
         input_dir=args.input_dir,
         output_dir=args.output_dir,
-        autopet=args.autopet,
-        totalsegmentator=args.totalsegmentator,
-        tumor=args.tumor,
+        task=args.task,
         ct_primary_keywords=args.ct_primary_keywords,
         ct_secondary_keywords=args.ct_secondary_keywords,
         ct_exclusion_keywords=args.ct_exclusion_keywords,
@@ -191,7 +205,6 @@ def workflow_entrypoint():
         mr_primary_keywords=args.mr_primary_keywords,
         mr_secondary_keywords=args.mr_secondary_keywords,
         mr_exclusion_keywords=args.mr_exclusion_keywords,
-        plot=args.plot,
     ).run()
 
 
