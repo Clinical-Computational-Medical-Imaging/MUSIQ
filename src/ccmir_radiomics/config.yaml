@@ -8,6 +8,6 @@ SERIE_KEYWORDS:
     SECONDARY: []
     EXCLUSION: ["nac motion free", "pet exam report", "mip"]
   MR:
-    EXCLUSION: ["carebolus", "localizer", "survey", "ds", "dixon", "haste", "t2-space-coronar"]
     PRIMARY: ["t1 tse", "t2 tse", "t2w_mvxd_sag", "t2w_tse_sag", "dyn", "dce mi fov", "dwi", "1400", "adc", "tracew"]
     SECONDARY: []
+    EXCLUSION: ["carebolus", "localizer", "survey", "ds", "dixon", "haste", "t2-space-coronar"]
