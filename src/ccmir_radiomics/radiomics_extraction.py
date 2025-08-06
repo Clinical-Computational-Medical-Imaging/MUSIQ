@@ -4,6 +4,7 @@ import os
 from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
+import pandas as pd
 
 from . import metrics
 from .utils import get_spacing_from_niftipath, make_json_safe
@@ -24,9 +25,15 @@ class RadiomicsExtractor:
         self.multiprocessing = False
 
     def run(self) -> None:
-        sub_dirs = [dirpath for dirpath, _, filenames in os.walk(self.input_dirpath) if "PETseg.nii.gz" in filenames]
+        necessary_files = [
+            "PETseg.nii.gz",
+            "SUV.nii.gz",
+            "CTseg.nii.gz",
+            "CT.nii.gz",
+        ]
+        sub_dirs = [dirpath for dirpath, _, filenames in os.walk(self.input_dirpath) if all(f in filenames for f in necessary_files)]
         if not sub_dirs:
-            logger.info("No directories found with PETseg.nii.gz files.")
+            logger.info("No directories found with necessary files: %s", necessary_files)
             return
 
         # paralellize
@@ -42,7 +49,7 @@ class RadiomicsExtractor:
 
         Args:
             dirpath (str | os.PathLike): Path to patient sub directory containing
-            SUV.nii.gz, PETseg.nii.gz, and series_patient_info.json.
+            SUV.nii.gz, PETseg.nii.gz, and patient_info.json.
         """
         ct_fpath = os.path.join(dirpath, "CT.nii.gz")
         ctseg_fpath = os.path.join(dirpath, "CTseg.nii.gz")
@@ -52,8 +59,9 @@ class RadiomicsExtractor:
         patient_info_path = os.path.join(patient_dirpath, "patient_info.json")
 
         if not os.path.isfile(patient_info_path):
-            logger.error(f"Missing patient_info.json in {patient_dirpath}. Radiomics extraction not possible.")
-            return
+            logger.error(f"Missing patient_info.json in {patient_dirpath}. Radiomics are extracted to csv.")
+            std_factor = None
+            existing_metrics = {}
         else:
             logger.info(f"Processing: {dirpath}")
             with open(patient_info_path) as json_file:
@@ -116,11 +124,16 @@ class RadiomicsExtractor:
                     logger.info(f"Error calculating {metric}: {e}")
                     new_metrics[metric] = None
 
-        # Append new metrics to the CSV file
-        if new_metrics:
+        # Append new metrics to the json file
+        if new_metrics and os.path.isfile(patient_info_path):
             patient_info["Studies"][study_date]["TumorStats"] = {**existing_metrics, **new_metrics}
             with open(os.path.join(patient_dirpath, "patient_info.json"), "w") as f:
                 json.dump(make_json_safe(patient_info), f)
+        elif new_metrics and not os.path.isfile(patient_info_path):
+            pd.DataFrame([new_metrics]).to_csv(
+                os.path.join(patient_dirpath, "patient_radiomics.csv"),
+                index=False,
+            )
 
     def process_directory_wrapper(self, args) -> None:
         try:
