@@ -4,6 +4,7 @@ import os
 
 import cc3d
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
 
 from . import metrics, utils
@@ -26,20 +27,18 @@ class TumorInfoExtraction:
     def run(self) -> None:
         study_dirs = []
 
-        for dirpath, dirnames, filenames in os.walk(self.input_dirpath):
-            if "patient_info.json" in filenames:
-                # Look for subdirectories
-                for subdirname in dirnames:
-                    subdirpath = os.path.join(dirpath, subdirname)
-                    required_files = ["PETseg.nii.gz", "CTseg.nii.gz", "SUV.nii.gz"]
-                    if all(os.path.exists(os.path.join(subdirpath, f)) for f in required_files):
-                        study_dirs.append(subdirpath)
-                        break  # Stop after first matching subdirectory
+        for dirpath, dirnames, _filenames in os.walk(self.input_dirpath):
+            for subdirname in dirnames:
+                subdirpath = os.path.join(dirpath, subdirname)
+                required_files = ["PETseg.nii.gz", "CTseg.nii.gz", "SUV.nii.gz"]
+                if all(os.path.exists(os.path.join(subdirpath, f)) for f in required_files):
+                    study_dirs.append(subdirpath)
+                    break  # Stop after first matching subdirectory
 
         if not study_dirs:
             logger.info(
                 "No complete studies found in the input directory. "
-                "patient_info.json, PETseg.nii.gz, CTseg.nii.gz, SUV.nii.gz are "
+                "PETseg.nii.gz, CTseg.nii.gz, SUV.nii.gz are "
                 "required in each patient/study directory."
             )
             return
@@ -56,8 +55,14 @@ class TumorInfoExtraction:
         suv_path = os.path.join(study_dirpath, "SUV.nii.gz")
 
         patient_dirpath = os.path.dirname(study_dirpath)
-        with open(os.path.join(patient_dirpath, "patient_info.json")) as json_file:
-            patient_info = json.load(json_file)
+
+        if not os.path.isfile(os.path.join(patient_dirpath, "patient_info.json")):
+            json_exists = False
+            logger.error(f"Missing patient_info.json in {patient_dirpath}. Radiomics are extracted to csv.")
+        else:
+            json_exists = True
+            with open(os.path.join(patient_dirpath, "patient_info.json")) as json_file:
+                patient_info = json.load(json_file)
 
         if not os.path.exists(ctsegres_path):
             utils.resample_image(
@@ -76,16 +81,23 @@ class TumorInfoExtraction:
         voxel_volume_cc = np.prod(spacing) / 1000
 
         study_date = study_dirpath.split(os.sep)[-1]
+
         # expects exactly one CT per serie
-        series_name = next(iter(patient_info["Studies"][study_date]["Modalities"]["CT"][0]))
-        try:
-            organ_labels = patient_info["Studies"][study_date]["Modalities"]["CT"][0][series_name]["CTseg_metadata"][
-                "labels"
-            ]
-        except KeyError:
+        if json_exists:
+            series_name = next(iter(patient_info["Studies"][study_date]["Modalities"]["CT"][0]))
+            try:
+                organ_labels = patient_info["Studies"][study_date]["Modalities"]["CT"][0][series_name][
+                    "CTseg_metadata"
+                ]["labels"]
+            except KeyError:
+                logger.warning(
+                    f"CTseg_metadata not found in {patient_dirpath}/patient_info.json for {study_date}. "
+                    "Organ overlap metrics will not be computed."
+                )
+                organ_labels = {}
+        else:
             logger.warning(
-                f"CTseg_metadata not found in {patient_dirpath}/patient_info.json for {study_date}. "
-                "Organ overlap metrics will not be computed."
+                f"No patient_info.json for {patient_dirpath}/{study_date}. Organ overlap metrics will not be computed."
             )
             organ_labels = {}
 
@@ -111,9 +123,15 @@ class TumorInfoExtraction:
                     "OrganOverlap": organ_overlap if organ_labels else {},
                 }
             )
-        patient_info["Studies"][study_date]["TumorStats"].update({"Tumors": results})
-        with open(os.path.join(patient_dirpath, "patient_info.json"), "w") as f:
-            json.dump(patient_info, f)
+        if json_exists:
+            patient_info["Studies"][study_date]["TumorStats"].update({"Tumors": results})
+            with open(os.path.join(patient_dirpath, "patient_info.json"), "w") as f:
+                json.dump(patient_info, f)
+        else:
+            pd.json_normalize(results).to_csv(
+                os.path.join(patient_dirpath, "tumor_statistics.csv"),
+                index=False,
+            )
 
 
 def tumor_info_extraction_entrypoint() -> None:

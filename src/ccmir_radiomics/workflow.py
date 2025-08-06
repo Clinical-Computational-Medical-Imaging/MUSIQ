@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 class Workflow:
     def __init__(
         self,
-        input_dir: str,
-        output_dir: str,
+        input_dirpath: str,
+        output_dirpath: str,
         task: list[str] | None = None,
         ct_primary_keywords: list[str] | None = None,
         ct_secondary_keywords: list[str] | None = None,
@@ -52,18 +52,25 @@ class Workflow:
             mr_exclusion_keywords (list[str] | None): Keywords to exclude MR series.
             plot (bool): Whether to create visualisations.
         """
-        self.input_dir = input_dir
-        self.output_dir = output_dir
-        task_error = True if any(t not in [
+        self.input_dirpath = input_dirpath
+        self.output_dirpath = output_dirpath
+        if task is None:
+            task = [
+                "series_selection", "radiomics", "autopet",
+                "totalsegmentator", "tumor", "plot"
+            ]
+        else:
+            task_error = True if any(t not in [
             "series_selection", "radiomics", "autopet", "totalsegmentator", "tumor", "plot"
-        ] for t in task or []) else False
-        if task_error:
-            raise ValueError(
-                "Invalid task specified. Possible values are: "
-                "'series_selection', 'radiomics', 'autopet', "
-                "'totalsegmentator', 'tumor', 'plot'."
-            )
-        self.series_selection = "series_selection" in (task or [])
+            ] for t in task or []) else False
+            if task_error:
+                raise ValueError(
+                    "Invalid task specified. Possible values are: "
+                    "'series_selection', 'radiomics', 'autopet', "
+                    "'totalsegmentator', 'tumor', 'plot'."
+                )
+
+        self.series_selection = "series_selection" in (task or []) 
         self.radiomics = "radiomics" in (task or [])
         self.autopet = "autopet" in (task or [])
         self.totalsegmentator = "totalsegmentator" in (task or [])
@@ -83,14 +90,14 @@ class Workflow:
 
     def run(self) -> None:
         # Ensure output directory exists
-        os.makedirs(self.output_dir, exist_ok=True)
+        os.makedirs(self.output_dirpath, exist_ok=True)
 
         if self.series_selection:
             from .series_selection import SeriesSelection
 
             SeriesSelection(
-                input_dirpath=self.input_dir,
-                output_dirpath=self.output_dir,
+                input_dirpath=self.input_dirpath,
+                output_dirpath=self.output_dirpath,
                 series_keywords=self.series_keywords,
             ).run()
 
@@ -98,7 +105,7 @@ class Workflow:
             from .autopet_inference import AutopetInference
 
             AutopetInference(
-                input_dirpath_processed=self.output_dir,
+                input_dirpath_processed=self.output_dirpath,
                 autopet_checkpoint_dirpath=os.path.join(
                     "./autopet-3-model/Dataset222_AutoPETIII_2024/autoPET3_Trainer__nnUNetResEncUNetLPlansMultiTalent__3d_fullres_bs3"
                 ),
@@ -108,39 +115,39 @@ class Workflow:
             from .totalsegmentator_inference import TotalSegmentatorInference
 
             TotalSegmentatorInference(
-                input_dirpath_processed=self.output_dir,
+                input_dirpath_processed=self.output_dirpath,
             ).run()
 
         if self.radiomics:
             from .radiomics_extraction import RadiomicsExtractor
 
             RadiomicsExtractor(
-                input_dirpath_processed=self.output_dir,
+                input_dirpath_processed=self.output_dirpath,
             ).run()
 
         if self.tumor:
             TumorInfoExtraction(
-                input_dirpath_processed=self.output_dir,
+                input_dirpath_processed=self.output_dirpath,
             ).run()
 
         if self.plot:
             PlotSummary(
-                input_dirpath_processed=self.output_dir,
+                input_dirpath_processed=self.output_dirpath,
             ).run()
 
         # Save patient info JSON with all relevant metadata.
         cohort_info = {}
-        if os.path.exists(os.path.join(self.output_dir, "cohort_info.json")):
-            with open(os.path.join(self.output_dir, "cohort_info.json")) as f:
+        if os.path.exists(os.path.join(self.output_dirpath, "cohort_info.json")):
+            with open(os.path.join(self.output_dirpath, "cohort_info.json")) as f:
                 cohort_info = json.load(f)
-        for dirpath, _, filenames in os.walk(self.output_dir):
+        for dirpath, _, filenames in os.walk(self.output_dirpath):
             if "patient_info.json" in filenames:
                 with open(os.path.join(dirpath, "patient_info.json")) as json_file:
                     patient_info = json.load(json_file)
                     patient_id = patient_info.get("PatientID", "Unknown")
                     cohort_info.update({patient_id: patient_info})
 
-        with open(os.path.join(self.output_dir, "cohort_info.json"), "w") as f:
+        with open(os.path.join(self.output_dirpath, "cohort_info.json"), "w") as f:
             json.dump(cohort_info, f)
         logger.info("Workflow completed successfully.")
 
@@ -158,8 +165,8 @@ def workflow_entrypoint():
     import argparse
 
     parser = argparse.ArgumentParser(description="Arguments for ccmir-radiomics pipeline.")
-    parser.add_argument("--input-dir", help="Path to PET/CT input directory.", required=True)
-    parser.add_argument("--output-dir", help="Path to designated output directory.", required=True)
+    parser.add_argument("--input-dirpath", help="Path to PET/CT input directory.", required=True)
+    parser.add_argument("--output-dirpath", help="Path to designated output directory.", required=True)
     parser.add_argument("--task", nargs="+", help="List of tasks to run. Possible values: series_selection, " \
     "radiomics, autopet, totalsegmentator, tumor, plot.", default=None)
     parser.add_argument(
@@ -188,13 +195,13 @@ def workflow_entrypoint():
     parser.add_argument("--mr-exclusion-keywords", help="List of keywords to exclude MR studies from selection.")
     args = parser.parse_args()
 
-    if not args.input_dir or not args.output_dir:
+    if not args.input_dirpath or not args.output_dirpath:
         logger.error("Input and output directories must be specified.")
     logger.info(f"Starting ccmir-radiomics pipeline with arguments: {args}")
 
     Workflow(
-        input_dir=args.input_dir,
-        output_dir=args.output_dir,
+        input_dirpath=args.input_dirpath,
+        output_dirpath=args.output_dirpath,
         task=args.task,
         ct_primary_keywords=args.ct_primary_keywords,
         ct_secondary_keywords=args.ct_secondary_keywords,

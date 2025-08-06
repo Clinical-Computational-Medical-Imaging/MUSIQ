@@ -90,7 +90,7 @@ class SeriesSelection:
 
         grouped = defaultdict(list)
         info = None
-        for dir in sub_dirs:
+        for dir in sorted(sub_dirs):
             dicom_files = [
                 f
                 for f in dir.iterdir()
@@ -99,6 +99,7 @@ class SeriesSelection:
                 and f.suffix.lower()
                 not in [".zip", ".inf", ".jar", ".icns", ".info", ".exe", ".pdf", ".txt", ".ini", ".xml", ".bmp", ".sh"]
                 and f.name != ".DS_Store"
+                and f.name != "DeepUnity Media Viewer Mac"
             ]
             if not dicom_files:
                 continue
@@ -160,6 +161,13 @@ class SeriesSelection:
         """
         user_flags = {}
         patient_conversion_flags = {}
+        user_wants_to_select = input(
+            "Do you want to select series interactively and flag studies? (y/n): "
+        ).strip().lower()
+        if user_wants_to_select not in ("y", "n"):
+            logger.warning("Invalid input. Starting without interactive selection.")
+            user_wants_to_select = "n"
+
         for idx, ((patient_id, study_date), study_info) in enumerate(sorted(self.grouped_series.items())):
             user_flags[patient_id] = []
             if patient_id not in patient_conversion_flags:
@@ -185,11 +193,18 @@ class SeriesSelection:
                 )
 
             default_input = ",".join(str(i) for i in preselected_indices)
-            user_input = (
-                input(f"Enter numbers to select (comma-separated), add 'x' to flag study [default: {default_input}]: ")
-                .strip()
-                .lower()
-            )
+            if user_wants_to_select == "n":
+                logger.info(
+                    f"Skipping interactive selection for Patient ID: {patient_id} - "
+                    f"Study Date: {study_date}. Using preselected indices: {default_input}"
+                )
+                user_input = default_input
+            else:
+                user_input = (
+                    input(f"Enter numbers to select (comma-separated), add 'x' to flag study [default: {default_input}]: ")
+                    .strip()
+                    .lower()
+                )
 
             # Parse selection
             user_flag = bool("x" in user_input)

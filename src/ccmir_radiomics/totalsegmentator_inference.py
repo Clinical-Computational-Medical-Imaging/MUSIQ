@@ -34,8 +34,11 @@ class TotalSegmentatorInference:
             for filename in filenames:
                 # Determine if this is a CT or MR file and set parameters accordingly
                 is_ct = filename == "CT.nii.gz"
-                is_mr = filename.endswith("nii.gz") and not filename.startswith(("CT", "SUV", "PET")) \
-                        and not filename.endswith("seg.nii.gz")
+                is_mr = (
+                    filename.endswith("nii.gz")
+                    and not filename.startswith(("CT", "SUV", "PET"))
+                    and not filename.endswith("seg.nii.gz")
+                )
 
                 if not (is_ct or is_mr):
                     continue
@@ -45,14 +48,14 @@ class TotalSegmentatorInference:
                     output_fpath = os.path.join(dirpath, "CTseg.nii.gz")
                     task = "total"
                     modality = "CT"
-                    metadata_key = "CTseg_metadata"
-                    seg_path_key = "CTsegPath"
+
                 else:
                     output_fpath = os.path.join(dirpath, f"{filename[:-7]}_seg.nii.gz")
                     task = "total_mr"
                     modality = "MR"
-                    metadata_key = "MRseg_metadata"
-                    seg_path_key = "MRsegPath"
+
+                metadata_key = f"{modality}seg_metadata"
+                seg_path_key = f"{modality}segPath"
 
                 if os.path.isfile(output_fpath):
                     logger.info(f"Output file {output_fpath} already exists.")
@@ -62,11 +65,11 @@ class TotalSegmentatorInference:
                 patient_info = None
                 patient_info_path = os.path.join(patient_dirpath, "patient_info.json")
                 if os.path.isfile(patient_info_path):
-                    flag_json_exists = True
+                    json_exists = True
                     with open(patient_info_path) as json_file:
                         patient_info = json.load(json_file)
                 else:
-                    flag_json_exists = False
+                    json_exists = False
                     logger.error(f"Missing patient_info.json in {patient_dirpath}.")
 
                 logger.info(f"Processing file {filename} for patient {patient_id}.")
@@ -102,7 +105,7 @@ class TotalSegmentatorInference:
                     "ts_version": get_version(),
                     "labels": label_map_dict,
                 }
-                if flag_json_exists and patient_info is not None:
+                if json_exists and patient_info is not None:
                     study_date = dirpath.split(os.sep)[-1]
                     if modality == "CT":
                         series_index = 0
@@ -122,13 +125,15 @@ class TotalSegmentatorInference:
                         logger.error(f"Could not find series index for {filename} in patient_info.json.")
                         continue
 
-                    series_name = next(iter(patient_info[patient_id]["Studies"][study_date]["Modalities"][modality][series_index]))
-                    patient_info[patient_id]["Studies"][study_date]["Modalities"][modality][series_index][series_name].update(
-                        {seg_path_key: output_fpath}
+                    series_name = next(
+                        iter(patient_info[patient_id]["Studies"][study_date]["Modalities"][modality][series_index])
                     )
-                    patient_info[patient_id]["Studies"][study_date]["Modalities"][modality][series_index][series_name].update(
-                        {metadata_key: seg_metadata}
-                    )
+                    patient_info[patient_id]["Studies"][study_date]["Modalities"][modality][series_index][
+                        series_name
+                    ].update({seg_path_key: output_fpath})
+                    patient_info[patient_id]["Studies"][study_date]["Modalities"][modality][series_index][
+                        series_name
+                    ].update({metadata_key: seg_metadata})
                     with open(patient_info_path, "w") as f:
                         json.dump(patient_info, f)
                 else:
