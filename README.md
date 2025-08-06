@@ -116,10 +116,9 @@ ccmir-radiomics/
 
 ---
 ## Usage
-AutoPET3
-   - [download checkpoints](https://zenodo.org/records/14007247) (3.5 GB) and place them at the root of this repository.
+- Clone this repository
 
-In a virtual enviroment, cd to the root of this repo and install dependencies via:
+- In a virtual enviroment, cd to the root of this repo and install dependencies via:
 
 ```bash
 git clone https://github.com/mic-dkfz/autopet-3-submission
