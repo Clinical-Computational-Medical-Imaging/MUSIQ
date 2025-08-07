@@ -3,10 +3,6 @@ import logging
 import multiprocessing as mp
 import os
 
-from .plot_summary import PlotSummary
-from .radiomics_extraction import RadiomicsExtractor
-from .series_selection import SeriesSelection
-from .tumor_info_extraction import TumorInfoExtraction
 from .utils import setup_series_keywords
 
 logger = logging.getLogger(__name__)
@@ -17,7 +13,7 @@ class Workflow:
         self,
         input_dirpath: str,
         output_dirpath: str,
-        task: list[str] | None = None,
+        tasks: list[str] | None = None,
         ct_primary_keywords: list[str] | None = None,
         ct_secondary_keywords: list[str] | None = None,
         ct_exclusion_keywords: list[str] | None = None,
@@ -34,7 +30,7 @@ class Workflow:
         Args:
             input_dir (str): Path to the input directory containing PET/CT images.
             output_dir (str): Path to the output directory for results.
-            task (list[str] | None): List of tasks to run. If None, all tasks are run. Possible values are:
+            tasks (list[str] | None): List of tasks to run. If None, all tasks are run. Possible values are:
                 - "series_selection": Select series based on keywords.
                 - "radiomics": Extract radiomics features from selected series.
                 - "autopet": Run autopet3 on PET images.
@@ -50,32 +46,31 @@ class Workflow:
             mr_primary_keywords (list[str] | None): Keywords for primary selection of MR series.
             mr_secondary_keywords (list[str] | None): Keywords for secondary selection of MR series.
             mr_exclusion_keywords (list[str] | None): Keywords to exclude MR series.
-            plot (bool): Whether to create visualisations.
         """
         self.input_dirpath = input_dirpath
         self.output_dirpath = output_dirpath
-        if task is None:
-            task = [
-                "series_selection", "radiomics", "autopet",
-                "totalsegmentator", "tumor", "plot"
-            ]
+        if tasks is None:
+            tasks = ["series_selection", "radiomics", "autopet", "totalsegmentator", "tumor", "plot"]
         else:
-            task_error = True if any(t not in [
-            "series_selection", "radiomics", "autopet", "totalsegmentator", "tumor", "plot"
-            ] for t in task or []) else False
-            if task_error:
+            tasks_error = bool(
+                any(
+                    t not in ["series_selection", "radiomics", "autopet", "totalsegmentator", "tumor", "plot"]
+                    for t in tasks or []
+                )
+            )
+            if tasks_error:
                 raise ValueError(
-                    "Invalid task specified. Possible values are: "
+                    "Invalid tasks specified. Possible values are: "
                     "'series_selection', 'radiomics', 'autopet', "
                     "'totalsegmentator', 'tumor', 'plot'."
                 )
 
-        self.series_selection = "series_selection" in (task or []) 
-        self.radiomics = "radiomics" in (task or [])
-        self.autopet = "autopet" in (task or [])
-        self.totalsegmentator = "totalsegmentator" in (task or [])
-        self.tumor = "tumor" in (task or [])
-        self.plot = "plot" in (task or [])
+        self.series_selection = "series_selection" in (tasks or [])
+        self.radiomics = "radiomics" in (tasks or [])
+        self.autopet = "autopet" in (tasks or [])
+        self.totalsegmentator = "totalsegmentator" in (tasks or [])
+        self.tumor = "tumor" in (tasks or [])
+        self.plot = "plot" in (tasks or [])
         self.series_keywords = setup_series_keywords(
             ct_primary_keywords,
             ct_secondary_keywords,
@@ -126,11 +121,15 @@ class Workflow:
             ).run()
 
         if self.tumor:
+            from .tumor_info_extraction import TumorInfoExtraction
+
             TumorInfoExtraction(
                 input_dirpath_processed=self.output_dirpath,
             ).run()
 
         if self.plot:
+            from .plot_summary import PlotSummary
+
             PlotSummary(
                 input_dirpath_processed=self.output_dirpath,
             ).run()
@@ -167,8 +166,13 @@ def workflow_entrypoint():
     parser = argparse.ArgumentParser(description="Arguments for ccmir-radiomics pipeline.")
     parser.add_argument("--input-dirpath", help="Path to PET/CT input directory.", required=True)
     parser.add_argument("--output-dirpath", help="Path to designated output directory.", required=True)
-    parser.add_argument("--task", nargs="+", help="List of tasks to run. Possible values: series_selection, " \
-    "radiomics, autopet, totalsegmentator, tumor, plot.", default=None)
+    parser.add_argument(
+        "--tasks",
+        nargs="+",
+        help="List of tasks to run. Possible values: series_selection, "
+        "radiomics, autopet, totalsegmentator, tumor, plot.",
+        default=None,
+    )
     parser.add_argument(
         "--ct-primary-keywords", help="List of keywords to look for in CT study descriptions for default selection."
     )
@@ -202,7 +206,7 @@ def workflow_entrypoint():
     Workflow(
         input_dirpath=args.input_dirpath,
         output_dirpath=args.output_dirpath,
-        task=args.task,
+        tasks=args.tasks,
         ct_primary_keywords=args.ct_primary_keywords,
         ct_secondary_keywords=args.ct_secondary_keywords,
         ct_exclusion_keywords=args.ct_exclusion_keywords,
