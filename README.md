@@ -1,6 +1,6 @@
-# PET/CT Processing Pipeline
+# PET/CT & MRI Radiomics Pipeline
 
-This Python project provides an end-to-end pipeline for processing PET and CT scans retrieved from a PACS system. The pipeline supports DICOM to NIfTI conversion, segmentation, radiomics extraction, tumor quantification, and result aggregation.
+This Python project provides an end-to-end pipeline for processing PET/CT and MRI scans retrieved from a PACS system. The pipeline supports DICOM to NIfTI conversion, segmentation, radiomics extraction, tumor quantification, and result aggregation.
 
 ---
 
@@ -74,11 +74,9 @@ Summary for the whole cohort:
 
 ---
 
-## Dependencies
+## Directory Structure
 
-- Tested on Python3.12
-
-The project is structured like this:
+Eventually, the project and its output are structured as follows:
 
 ```
 ccmir-radiomics/
@@ -116,34 +114,34 @@ ccmir-radiomics/
 
 ---
 ## Usage
-- Clone this repository
+- Clone this repository and cd into it
 
-- In a virtual enviroment, cd to the root of this repo and install dependencies via:
+- Create a virtual enviroment (tested with Python3.12) and install dependencies via the following commands:
 
 ```bash
 git clone https://github.com/mic-dkfz/autopet-3-submission
 curl -L -o autoPET-3-LesionTracer.zip "https://zenodo.org/records/14007247/files/autoPET-3-LesionTracer.zip?download=1"
 unzip autoPET-3-LesionTracer.zip -d ./autopet-3-model/
 rm autoPET-3-LesionTracer.zip
-pip install ./autopet-3-submission
 
-# FOR PRODUCTION
-pip install .
-
-# FOR DEVELOPMENT
-pip install -e .
+pip install -r requirements.txt
 ```
-To start the whole workflow run:
+- To start the whole workflow run:
 ```bash
-ccmir_workflow --input_dir /data/raw --output_dir /data/processed --autopet True --ts True --tumor True --plot True
+ccmir_workflow --input_dirpath /data/raw --output_dirpath /data/processed --tasks series_selection radiomics autopet totalsegmentator tumor
 ```
-See `pyproject.toml` to see commands to run parts of the pipeline in a modular way.
+- See `pyproject.toml` to see commands for running only parts of the pipeline in a modular way.
 
-
+---
+- For development also install pre-commit hooks via
+```bash
+pip install pre-commit
+pre-commit install
+```
 ---
 
 ## Acknowledgements
-- AutoPET3
+- **AutoPET3**
    - Isensee, F., Jaeger, P. F., Kohl, S. A., Petersen, J., & Maier-Hein, K. H. (2021). nnU-Net: a self-configuring method for deep learning-based biomedical image segmentation. Nature methods, 18(2), 203-211.
-- TotalSegmentator
+- **TotalSegmentator**
    - Wasserthal, J., Breit, H. C., Meyer, M. T., Pradella, M., Hinck, D., Sauter, A. W., ... & Segeroth, M. (2023). TotalSegmentator: robust segmentation of 104 anatomic structures in CT images. Radiology: Artificial Intelligence, 5(5), e230024.
