@@ -114,6 +114,7 @@ class SeriesSelection:
                 modality = getattr(ds, "Modality", None)
                 series_desc = getattr(ds, "SeriesDescription", "").lower()
                 study_desc = getattr(ds, "StudyDescription", "N/A")
+                manufacturer = getattr(ds, "Manufacturer", "Unknown")
 
                 if not (patient_id and study_date and modality):
                     continue
@@ -145,6 +146,7 @@ class SeriesSelection:
                         "SeriePath": dir,
                         "StudyPath": dir.parent,
                         "PatientPath": plb.Path(*dir.parts[: dir.parts.index(patient_id) + 1]),
+                        "Manufacturer": manufacturer,
                     }
                 )
 
@@ -161,9 +163,9 @@ class SeriesSelection:
         """
         user_flags = {}
         patient_conversion_flags = {}
-        user_wants_to_select = input(
-            "Do you want to select series interactively and flag studies? (y/n): "
-        ).strip().lower()
+        user_wants_to_select = (
+            input("Do you want to select series interactively and flag studies? (y/n): ").strip().lower()
+        )
         if user_wants_to_select not in ("y", "n"):
             logger.warning("Invalid input. Starting without interactive selection.")
             user_wants_to_select = "n"
@@ -176,6 +178,7 @@ class SeriesSelection:
                 f"📚 Study {idx + 1} of {len(self.grouped_series)} — Patient ID: {patient_id} — "
                 f"Study Date: {study_date} - Study Desc: {study_info[0]['StudyDescription']}"
             )
+            logger.info(f"Manufacturer: {study_info[0]['Manufacturer']}")
             logger.info("Available Series:")
 
             preselected_indices, fallback_flag = self.find_default_indices(study_info)
@@ -201,7 +204,9 @@ class SeriesSelection:
                 user_input = default_input
             else:
                 user_input = (
-                    input(f"Enter numbers to select (comma-separated), add 'x' to flag study [default: {default_input}]: ")
+                    input(
+                        f"Enter numbers to select (comma-separated), add 'x' to flag study [default: {default_input}]: "
+                    )
                     .strip()
                     .lower()
                 )
