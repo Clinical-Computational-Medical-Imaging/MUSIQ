@@ -31,7 +31,11 @@ class RadiomicsExtractor:
             "CTseg.nii.gz",
             "CT.nii.gz",
         ]
-        sub_dirs = [dirpath for dirpath, _, filenames in os.walk(self.input_dirpath) if all(f in filenames for f in necessary_files)]
+        sub_dirs = [
+            dirpath
+            for dirpath, _, filenames in os.walk(self.input_dirpath)
+            if all(f in filenames for f in necessary_files)
+        ]
         if not sub_dirs:
             logger.info("No directories found with necessary files: %s", necessary_files)
             return

@@ -2,6 +2,8 @@ import json
 import logging
 import multiprocessing as mp
 import os
+import platform
+import subprocess
 
 from .utils import setup_series_keywords
 
@@ -32,9 +34,10 @@ class Workflow:
             output_dir (str): Path to the output directory for results.
             tasks (list[str] | None): List of tasks to run. If None, all tasks are run. Possible values are:
                 - "series_selection": Select series based on keywords.
-                - "radiomics": Extract radiomics features from selected series.
                 - "autopet": Run autopet3 on PET images.
                 - "totalsegmentator": Run TotalSegmentator on CT images.
+                - "moose": Run Moose on CT images.
+                - "radiomics": Extract radiomics features from selected series.
                 - "tumor": Compute tumor level statistics.
                 - "plot": Create visualisations.
             ct_primary_keywords (list[str] | None): Keywords for primary selection of CT series.
@@ -50,11 +53,30 @@ class Workflow:
         self.input_dirpath = input_dirpath
         self.output_dirpath = output_dirpath
         if tasks is None:
-            tasks = ["series_selection", "radiomics", "autopet", "totalsegmentator", "tumor", "plot"]
+            tasks = [
+                "series_selection",
+                "radiomics",
+                "autopet",
+                "totalsegmentator",
+                "tumor",
+                "plot",
+                "moose",
+                "moose_task",
+            ]
         else:
             tasks_error = bool(
                 any(
-                    t not in ["series_selection", "radiomics", "autopet", "totalsegmentator", "tumor", "plot"]
+                    t
+                    not in [
+                        "series_selection",
+                        "radiomics",
+                        "autopet",
+                        "totalsegmentator",
+                        "tumor",
+                        "plot",
+                        "moose",
+                        "moose_task",
+                    ]
                     for t in tasks or []
                 )
             )
@@ -62,15 +84,17 @@ class Workflow:
                 raise ValueError(
                     "Invalid tasks specified. Possible values are: "
                     "'series_selection', 'radiomics', 'autopet', "
-                    "'totalsegmentator', 'tumor', 'plot'."
+                    "'totalsegmentator', 'tumor', 'plot', 'moose', 'moose_task'."
                 )
 
         self.series_selection = "series_selection" in (tasks or [])
-        self.radiomics = "radiomics" in (tasks or [])
         self.autopet = "autopet" in (tasks or [])
         self.totalsegmentator = "totalsegmentator" in (tasks or [])
+        self.moose = "moose" in (tasks or [])
+        self.radiomics = "radiomics" in (tasks or [])
         self.tumor = "tumor" in (tasks or [])
         self.plot = "plot" in (tasks or [])
+
         self.series_keywords = setup_series_keywords(
             ct_primary_keywords,
             ct_secondary_keywords,
@@ -112,6 +136,29 @@ class Workflow:
             TotalSegmentatorInference(
                 input_dirpath_processed=self.output_dirpath,
             ).run()
+
+        if self.moose:
+            # Run Moosez with the Python interpreter from another venv:
+            if platform.system() == "Windows":
+                logger.info("Using Windows paths to start the moose_venv Python interpreter.")
+                moose_venv_python = os.path.join(os.getcwd(), ".venv_moose", "Scripts", "python.exe")
+            else:
+                logger.info("Using Linux paths to start the moose_venv Python interpreter.")
+                moose_venv_python = os.path.join(os.getcwd(), ".venv_moose", "bin", "python")
+
+            moose_script = os.path.join(os.getcwd(), "src", "ccmir_radiomics", "moose_inference.py")
+            cmd = [
+                moose_venv_python,
+                moose_script,
+                "--input-dirpath",
+                self.output_dirpath,
+                "--moose_task",
+                "clin_ct_organs",
+            ]
+            try:
+                subprocess.run(cmd, check=True, capture_output=True, text=True)
+            except subprocess.CalledProcessError as e:
+                logger.error("Error during Moose inference:\n" + e.stderr)
 
         if self.radiomics:
             from .radiomics_extraction import RadiomicsExtractor
@@ -170,7 +217,7 @@ def workflow_entrypoint():
         "--tasks",
         nargs="+",
         help="List of tasks to run. Possible values: series_selection, "
-        "radiomics, autopet, totalsegmentator, tumor, plot.",
+        "radiomics, autopet, totalsegmentator, tumor, plot, moose, moose_task.",
         default=None,
     )
     parser.add_argument(
