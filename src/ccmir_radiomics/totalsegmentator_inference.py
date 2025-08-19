@@ -110,7 +110,7 @@ class TotalSegmentatorInference:
                     if modality == "CT":
                         series_index = 0
                     else:
-                        mr_series = patient_info[patient_id]["Studies"][study_date]["Modalities"][modality]
+                        mr_series = patient_info["Studies"][study_date]["Modalities"][modality]
                         # Find the index where the filename matches the MRPath value
                         series_index = None
                         for idx, serie in enumerate(mr_series):
@@ -125,15 +125,13 @@ class TotalSegmentatorInference:
                         logger.error(f"Could not find series index for {filename} in patient_info.json.")
                         continue
 
-                    series_name = next(
-                        iter(patient_info[patient_id]["Studies"][study_date]["Modalities"][modality][series_index])
+                    series_name = next(iter(patient_info["Studies"][study_date]["Modalities"][modality][series_index]))
+                    patient_info["Studies"][study_date]["Modalities"][modality][series_index][series_name].update(
+                        {seg_path_key: output_fpath}
                     )
-                    patient_info[patient_id]["Studies"][study_date]["Modalities"][modality][series_index][
-                        series_name
-                    ].update({seg_path_key: output_fpath})
-                    patient_info[patient_id]["Studies"][study_date]["Modalities"][modality][series_index][
-                        series_name
-                    ].update({metadata_key: seg_metadata})
+                    patient_info["Studies"][study_date]["Modalities"][modality][series_index][series_name].update(
+                        {metadata_key: seg_metadata}
+                    )
                     with open(patient_info_path, "w") as f:
                         json.dump(patient_info, f)
                 else:

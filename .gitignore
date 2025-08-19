@@ -7,6 +7,8 @@ __pycache__/
 venv/
 .env/
 .venv/
+moose_venv/
+.venv_moose/
 
 # Distribution / packaging
 build/
