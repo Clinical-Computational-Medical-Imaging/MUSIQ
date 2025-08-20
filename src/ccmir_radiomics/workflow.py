@@ -1,13 +1,10 @@
 import json
-import logging
 import multiprocessing as mp
 import os
 import platform
 import subprocess
 
-from .utils import setup_series_keywords
-
-logger = logging.getLogger(__name__)
+from .utils import create_logger, setup_series_keywords
 
 
 class Workflow:
@@ -114,6 +111,7 @@ class Workflow:
         if self.series_selection:
             from .series_selection import SeriesSelection
 
+            logger.info("\n" + "#" * 50 + "\nStarting Series Selection\n" + "#" * 50)
             SeriesSelection(
                 input_dirpath=self.input_dirpath,
                 output_dirpath=self.output_dirpath,
@@ -123,6 +121,7 @@ class Workflow:
         if self.autopet:
             from .autopet_inference import AutopetInference
 
+            logger.info("\n" + "#" * 50 + "\nStarting Autopet Inference\n" + "#" * 50)
             AutopetInference(
                 input_dirpath_processed=self.output_dirpath,
                 autopet_checkpoint_dirpath=os.path.join(
@@ -133,11 +132,13 @@ class Workflow:
         if self.totalsegmentator:
             from .totalsegmentator_inference import TotalSegmentatorInference
 
+            logger.info("\n" + "#" * 50 + "\nStarting Total Segmentator Inference\n" + "#" * 50)
             TotalSegmentatorInference(
                 input_dirpath_processed=self.output_dirpath,
             ).run()
 
         if self.moose:
+            logger.info("\n" + "#" * 50 + "\nStarting Moose Inference\n" + "#" * 50)
             # Run Moosez with the Python interpreter from another venv:
             if platform.system() == "Windows":
                 logger.info("Using Windows paths to start the moose_venv Python interpreter.")
@@ -156,13 +157,15 @@ class Workflow:
                 "clin_ct_organs",
             ]
             try:
-                subprocess.run(cmd, check=True, capture_output=True, text=True)
+                result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+                logger.info(result.stderr)
             except subprocess.CalledProcessError as e:
                 logger.error("Error during Moose inference:\n" + e.stderr)
 
         if self.radiomics:
             from .radiomics_extraction import RadiomicsExtractor
 
+            logger.info("\n" + "#" * 50 + "\nStarting Radiomics Computation\n" + "#" * 50)
             RadiomicsExtractor(
                 input_dirpath_processed=self.output_dirpath,
             ).run()
@@ -170,18 +173,12 @@ class Workflow:
         if self.tumor:
             from .tumor_info_extraction import TumorInfoExtraction
 
+            logger.info("\n" + "#" * 50 + "\nStarting Tumor Info Extraction\n" + "#" * 50)
             TumorInfoExtraction(
                 input_dirpath_processed=self.output_dirpath,
             ).run()
 
-        if self.plot:
-            from .plot_summary import PlotSummary
-
-            PlotSummary(
-                input_dirpath_processed=self.output_dirpath,
-            ).run()
-
-        # Save patient info JSON with all relevant metadata.
+        logger.info("\n" + "#" * 50 + "\nStarting Cohort Info Creation\n" + "#" * 50)
         cohort_info = {}
         if os.path.exists(os.path.join(self.output_dirpath, "cohort_info.json")):
             with open(os.path.join(self.output_dirpath, "cohort_info.json")) as f:
@@ -195,7 +192,16 @@ class Workflow:
 
         with open(os.path.join(self.output_dirpath, "cohort_info.json"), "w") as f:
             json.dump(cohort_info, f)
-        logger.info("Workflow completed successfully.")
+
+        if self.plot:
+            from .plot_summary import PlotSummary
+
+            logger.info("\n" + "#" * 50 + "\nStarting Plot Summary\n" + "#" * 50)
+            PlotSummary(
+                input_dirpath_processed=self.output_dirpath,
+            ).run()
+
+        logger.info("\n" + "#" * 50 + "\nWorkflow completed successfully\n" + "#" * 50)
 
 
 def workflow_entrypoint():
@@ -203,10 +209,8 @@ def workflow_entrypoint():
     # Set the start method for multiprocessing to 'spawn' for compatibility
     mp.set_start_method("spawn", force=True)
 
-    from .utils import create_logger
-
     global logger
-    logger = create_logger()
+    logger = create_logger("ccmir_radiomics.workflow")
 
     import argparse
 

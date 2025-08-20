@@ -1,11 +1,11 @@
 import json
-import logging
 import os
 
 from moosez import moose
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from ccmir_radiomics.utils import create_logger, natural_key
+
+logger = create_logger("ccmir_radiomics.moose_inference")
 
 
 class MooseInference:
@@ -49,7 +49,7 @@ class MooseInference:
             input_dirpath_processed (str | os.PathLike): Directory containing the CT.nii.gz files. Can be nested.
             moose_task (str | list[str]): Contains one or more out of Moose tasks from above.
         """
-        self.input_folder = input_dirpath_processed
+        self.input_dirpath = input_dirpath_processed
         if isinstance(moose_task, str):
             self.model_name = [moose_task]
         else:
@@ -61,53 +61,59 @@ class MooseInference:
         Recursively search the folder for CT.nii.gz files.
         For each found file, run segmentation using moose.
         """
-        if not os.path.isdir(self.input_folder):
-            raise ValueError(f"{self.input_folder} is not a valid directory.")
+        if not os.path.isdir(self.input_dirpath):
+            raise ValueError(f"{self.input_dirpath} is not a valid directory.")
 
-        logger.info(f"Starting Moose Segmentator inference in: {self.input_folder} using task: {self.model_name}")
+        logger.info(f"Starting Moose Segmentator inference in: {self.input_dirpath} using task: {self.model_name}")
 
-        for dirpath, _, filenames in os.walk(self.input_folder):
-            for filename in filenames:
-                if filename == "CT.nii.gz":
-                    input_fpath = os.path.join(dirpath, filename)
+        top_dirs = [d for d in os.listdir(self.input_dirpath) if os.path.isdir(os.path.join(self.input_dirpath, d))]
+        top_dirs.sort(key=natural_key)
 
-                    for task in self.model_name:
-                        new_path = os.path.join(dirpath, "CTseg_moose_" + task + ".nii.gz")
-                        if os.path.isfile(new_path):
-                            logger.info(f"Output file {new_path} already exists.")
-                            continue
-                        logger.info(f"Processing file: {input_fpath}")
+        for top_dir in top_dirs[:3]:
+            top_dir_path = os.path.join(self.input_dirpath, top_dir)
 
-                        moose(input_fpath, task, dirpath, self.accelerator)
+            for dirpath, _, filenames in os.walk(top_dir_path):
+                for filename in filenames:
+                    if filename == "CT.nii.gz":
+                        input_fpath = os.path.join(dirpath, filename)
 
-                        output_fpath = os.path.join(dirpath, task.replace("ct", "CT") + "_segmentation_CT.nii.gz")
-                        if os.path.isfile(output_fpath):
-                            os.rename(output_fpath, new_path)
-                        else:
-                            logger.warning("Something went wrong renaming the output file!")
+                        for task in self.model_name:
+                            new_path = os.path.join(dirpath, "CTseg_moose_" + task + ".nii.gz")
+                            if os.path.isfile(new_path):
+                                logger.info(f"Output file {new_path} already exists.")
+                                continue
+                            logger.info(f"Processing file: {input_fpath}")
 
-                        patient_dirpath = os.path.dirname(dirpath)
-                        patient_info = None
-                        patient_info_path = os.path.join(patient_dirpath, "patient_info.json")
-                        if os.path.isfile(patient_info_path):
-                            json_exists = True
-                            with open(patient_info_path) as json_file:
-                                patient_info = json.load(json_file)
-                        else:
-                            json_exists = False
-                            logger.error(f"Missing patient_info.json in {patient_dirpath}.")
+                            moose(input_fpath, task, dirpath, self.accelerator)
 
-                        if json_exists and patient_info is not None:
-                            # expecting exactly one CT per study
-                            study_date = dirpath.split(os.sep)[-1]
-                            series_name = next(iter(patient_info["Studies"][study_date]["Modalities"]["CT"][0]))
-                            patient_info["Studies"][study_date]["Modalities"]["CT"][0][series_name][
-                                f"CTsegPath_moose_{task}"
-                            ] = new_path
-                            with open(patient_info_path, "w") as f:
-                                json.dump(patient_info, f, indent=2)
-                        else:
-                            logger.error(f"Empty patient_info.json for dirpath: {patient_dirpath}")
+                            output_fpath = os.path.join(dirpath, task.replace("ct", "CT") + "_segmentation_CT.nii.gz")
+                            if os.path.isfile(output_fpath):
+                                os.rename(output_fpath, new_path)
+                            else:
+                                logger.warning("Something went wrong renaming the output file!")
+
+                            patient_dirpath = os.path.dirname(dirpath)
+                            patient_info = None
+                            patient_info_path = os.path.join(patient_dirpath, "patient_info.json")
+                            if os.path.isfile(patient_info_path):
+                                json_exists = True
+                                with open(patient_info_path) as json_file:
+                                    patient_info = json.load(json_file)
+                            else:
+                                json_exists = False
+                                logger.error(f"Missing patient_info.json in {patient_dirpath}.")
+
+                            if json_exists and patient_info is not None:
+                                # expecting exactly one CT per study
+                                study_date = dirpath.split(os.sep)[-1]
+                                series_name = next(iter(patient_info["Studies"][study_date]["Modalities"]["CT"][0]))
+                                patient_info["Studies"][study_date]["Modalities"]["CT"][0][series_name][
+                                    f"CTsegPath_moose_{task}"
+                                ] = new_path
+                                with open(patient_info_path, "w") as f:
+                                    json.dump(patient_info, f, indent=2)
+                            else:
+                                logger.error(f"Empty patient_info.json for dirpath: {patient_dirpath}")
 
 
 def moose_inference_entrypoint() -> None:
@@ -115,7 +121,7 @@ def moose_inference_entrypoint() -> None:
     from ccmir_radiomics.utils import create_logger
 
     global logger
-    logger = create_logger()
+    logger = create_logger("ccmir_radiomics.moose_inference")
 
     import argparse
 
