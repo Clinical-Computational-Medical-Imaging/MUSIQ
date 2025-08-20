@@ -40,6 +40,7 @@ class RadiomicsExtractor:
             logger.info("No directories found with necessary files: %s", necessary_files)
             return
 
+        sub_dirs = sorted(sub_dirs, key=lambda x: os.path.basename(x))
         # paralellize
         if self.multiprocessing:
             with ProcessPoolExecutor() as executor:
@@ -152,7 +153,7 @@ def radiomics_extraction_entrypoint() -> None:
     from .utils import create_logger
 
     global logger
-    logger = create_logger()
+    logger = create_logger("ccmir_radiomics.radiomics_extraction")
 
     import argparse
 

@@ -3,6 +3,7 @@ import os
 import pathlib as plb
 import subprocess
 from datetime import datetime
+import re
 from typing import Any
 
 import dicom2nifti
@@ -20,6 +21,11 @@ from skimage.measure import label
 from . import metrics
 
 logger = logging.getLogger(__name__)
+
+
+def natural_key(s: str):
+    """Helper function for natural sorting, e.g. mp_2 before mp_10"""
+    return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", s)]
 
 
 def setup_series_keywords(
@@ -97,7 +103,7 @@ def conv_time(time_str: str) -> float:
     return float(time_str[:2]) * 3600 + float(time_str[2:4]) * 60 + float(time_str[4:13])
 
 
-def create_logger() -> logging.Logger:
+def create_logger(name=None) -> logging.Logger:
     """Instantiates a logger with two h andlers: one for file output and one for console output."""
     os.makedirs("./logger", exist_ok=True)
     logging.basicConfig(
@@ -109,7 +115,7 @@ def create_logger() -> logging.Logger:
             logging.StreamHandler(),
         ],
     )
-    return logging.getLogger(__name__)
+    return logging.getLogger(name)
 
 
 def get_spacing_from_niftipath(path: str) -> tuple[float, float, float]:

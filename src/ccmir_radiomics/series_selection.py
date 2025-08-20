@@ -631,7 +631,7 @@ def series_selection_entrypoint():
     from .utils import create_logger
 
     global logger
-    logger = create_logger()
+    logger = create_logger("ccmir_radiomics.series_selection")
 
     import argparse
 
