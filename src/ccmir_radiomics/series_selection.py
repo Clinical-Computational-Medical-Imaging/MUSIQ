@@ -3,7 +3,9 @@ import json
 import logging
 import os
 import pathlib as plb
+import random
 import shutil
+import string
 import tempfile
 from collections import defaultdict
 
@@ -164,10 +166,14 @@ class SeriesSelection:
         user_flags = {}
         patient_conversion_flags = {}
         user_wants_to_select = (
-            input("Do you want to select series interactively and flag studies? (y/n): ").strip().lower()
+            input(
+                "Do you want to select series interactively and flag studies? (y) manually (n) pre-selected (a) all: "
+            )
+            .strip()
+            .lower()
         )
-        if user_wants_to_select not in ("y", "n"):
-            logger.warning("Invalid input. Starting without interactive selection.")
+        if user_wants_to_select not in ("y", "n", "a"):
+            logger.warning("Invalid input. Starting without interactive selection using pre-selected indices.")
             user_wants_to_select = "n"
 
         for idx, ((patient_id, study_date), study_info) in enumerate(sorted(self.grouped_series.items())):
@@ -181,7 +187,7 @@ class SeriesSelection:
             logger.info(f"Manufacturer: {study_info[0]['Manufacturer']}")
             logger.info("Available Series:")
 
-            preselected_indices, fallback_flag = self.find_default_indices(study_info)
+            preselected_indices, fallback_flag = self.find_default_indices(study_info, user_wants_to_select == "a")
 
             for i, s in enumerate(study_info):
                 pre = i in preselected_indices
@@ -196,7 +202,7 @@ class SeriesSelection:
                 )
 
             default_input = ",".join(str(i) for i in preselected_indices)
-            if user_wants_to_select == "n":
+            if user_wants_to_select in ["n", "a"]:
                 logger.info(
                     f"Skipping interactive selection for Patient ID: {patient_id} - "
                     f"Study Date: {study_date}. Using preselected indices: {default_input}"
@@ -245,11 +251,15 @@ class SeriesSelection:
                 self.patient_results[patient_id] = make_json_safe(self.patient_results[patient_id])
                 json.dump(self.patient_results[patient_id], f)
 
-    def find_default_indices(self, series_list: list) -> tuple[list, bool]:
+    def find_default_indices(self, series_list: list, include_all: bool = False) -> tuple[list, bool]:
         """Find default indices based on series keywords.
         This method checks the series descriptions against predefined keywords for primary and secondary selection.
         It returns a list of indices for the selected series and a flag indicating if secondary keywords were used.
         """
+        if include_all:
+            preselected_indices = list(range(len(series_list)))
+            return preselected_indices, False
+
         preselected_indices = []
         secondary_used = False
 
@@ -368,6 +378,10 @@ class SeriesSelection:
                 out_fpath, dicom_tags = self.convert_dcm2nii_MR(
                     MR_dcm_dirpath=dicom_input_dirpath, output_dirpath=out_dirpath
                 )
+            if "SeriesDescription" not in dicom_tags:
+                chars = string.ascii_letters + string.digits
+                random_part = "".join(random.choices(chars, k=5))
+                dicom_tags["SeriesDescription"] = f"Missing_SeriesDesc_{random_part}"
 
             paths_and_dicom_tags = {
                 dicom_tags["SeriesDescription"]: {
