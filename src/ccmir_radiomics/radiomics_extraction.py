@@ -43,11 +43,11 @@ class RadiomicsExtractor:
         sub_dirs = sorted(sub_dirs, key=lambda x: os.path.basename(x))
         # paralellize
         if self.multiprocessing:
-            with ProcessPoolExecutor() as executor:
+            with ProcessPoolExecutor(max_workers=30) as executor:
                 list(executor.map(self.process_directory_wrapper, sub_dirs))
-
-        for dirpath in sub_dirs:
-            self.compute_patient_radiomics(dirpath)
+        else:
+            for dirpath in sub_dirs:
+                self.compute_patient_radiomics(dirpath)
 
     def compute_patient_radiomics(self, dirpath: str | os.PathLike) -> None:
         """Computes patient-level radiomics metrics from SUV and PETseg files.
@@ -140,9 +140,8 @@ class RadiomicsExtractor:
                 index=False,
             )
 
-    def process_directory_wrapper(self, args) -> None:
+    def process_directory_wrapper(self, dirpath) -> None:
         try:
-            dirpath, _ = args
             return self.compute_patient_radiomics(dirpath)
         except ValueError:
             return
