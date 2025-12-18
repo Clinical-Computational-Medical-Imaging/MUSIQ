@@ -39,7 +39,6 @@ class AutopetInference:
             for dirpath, _, filenames in os.walk(top_dir_path):
                 for filename in filenames:
                     if filename == "SUV.nii.gz":
-                        # current_dir = os.path.join(dirpath, os.path.dirname(filename))
                         logger.info(f"Processing {dirpath}")
                         patient_dirpath = os.path.dirname(dirpath)
                         study_date = dirpath.split(os.sep)[-1]
@@ -53,12 +52,12 @@ class AutopetInference:
                                 patient_info = json.load(json_file)
 
                         if os.path.isfile(os.path.join(dirpath, "PETseg.nii.gz")):
-                            patient_series = plb.Path(dirpath).parts[-2:]
-                            logger.info(f"Skipping {patient_series} as PETseg.nii.gz already exists.")
+                            logger.info(f"Skipping {patient_dirpath} as PETseg.nii.gz already exists.")
                             continue
 
                         if not os.path.isfile(os.path.join(dirpath, "CT.nii.gz")):
-                            logger.info(f"Skipping {patient_series} as CT.nii.gz is missing.")
+                            logger.info(f"Skipping {patient_dirpath} as CT.nii.gz is missing.")
+                            continue
 
                         ctres_fpath = os.path.join(dirpath, "CTres.nii.gz")
                         if not os.path.isfile(ctres_fpath):

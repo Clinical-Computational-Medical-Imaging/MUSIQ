@@ -154,7 +154,7 @@ ccmir_workflow --input-dirpath /data/raw --output-dirpath /data/processed --task
 ```
 - See `pyproject.toml` to see commands for running only parts of the pipeline in a modular way.
 
----
+
 - For development also install pre-commit hooks via
 ```bash
 pip install pre-commit
@@ -170,3 +170,9 @@ pre-commit install
 - **Moose 3.0**
    - Ferrara D, Pires M, Gutschmayer S, Yu J, Abdelhafez YG, Abenavoli E et al. Sharing a whole-/total-body [18F]FDG-PET/CT dataset with CT-derived segmentations: an ENHANCE.PETinitiative. 2025.
    - Sundar LKS, Yu J, Muzik O, Kulterer OC, Fueger B, Kifjak D et al. Fully Automated,Semantic Segmentation of Whole-Body18 F-FDG PET/CT Images Based on Data-CentricArtificial Intelligence. J Nucl Med. 2022;63(12):1941–8.
+
+---
+
+## Reference
+The corresponding paper **"AI-Based Automated Framework for Quantitative PET/CT Image Analysis"** was accepted at Bildverarbeitung für die Medizin (BVM) 2026 and will soon be published in the proceedings of the German Conference on Medical Image Computing,
+Regensburg, March 15-17, 2026.
