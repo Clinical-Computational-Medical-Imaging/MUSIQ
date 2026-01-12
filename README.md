@@ -1,10 +1,11 @@
-# PET/CT & MRI Radiomics Pipeline
+# MUSIQ - Multimodal Unified Segmentation & Image Quantification 
 
 This Python project provides an end-to-end pipeline for processing PET/CT and MRI scans retrieved from a PACS system. The pipeline supports DICOM to NIfTI conversion, segmentation, radiomics extraction, tumor quantification, and result aggregation.
 
 ---
 
 ## Features
+![Fig. 1: Overview of the PET/CT workflow. MRI not included in the image.](./images/musiq-workflow.png)
 
 1. **Interactive Series Selection & Conversion**
    - Allows interactive selection of PET and CT series per patient.
@@ -73,7 +74,7 @@ Each patient folder includes:
 - `CTseg.nii`
 - `CTsegres.nii`
 - `patient_info.json`
-- `CTmoose_organs`
+- `CTmoose_organs.nii`
 - Plots
 
 Summary for the whole cohort:
@@ -102,7 +103,7 @@ ccmir-radiomics/
 │   │   │   ├──series_id-1/
 │   │   │   │   ├── CT.json                     # CT DICOM tags
 │   │   │   │   ├── CT.nii                      # CT converted to nifti
-│   │   │   │   ├── CTmoose_organs.nii          # CT segmentation from Moose
+│   │   │   │   ├── CTmoose_organs.nii          # CT segmentation by Moose
 │   │   │   │   ├── CTres.nii                   # CT resampled to PET resolution
 │   │   │   │   ├── CTseg.json                  # CT segmentation metadata from totalsegmentator
 │   │   │   │   ├── CTseg.nii                   # CT segmentations from totalsegmentator
