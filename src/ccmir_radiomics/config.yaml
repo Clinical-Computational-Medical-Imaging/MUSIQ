@@ -1,12 +1,12 @@
-SERIE_KEYWORDS:
+SERIES_KEYWORDS:
   CT:
-    PRIMARY: ["knochen"]
-    SECONDARY: ["weichteil"]
+    PRIMARY: ["knochen", "i30f"]
+    SECONDARY: ["weichteil", "i70f"]
     EXCLUSION: []
   PT:
-    PRIMARY: ["pet gk ctac", "qc fx", "wb_ctac", "wb ctac"]
+    PRIMARY: ["pet gk ctac", "qc fx", "wb_ctac", "wb ctac", "tep tardif ac"]
     SECONDARY: []
-    EXCLUSION: ["nac motion free", "pet exam report", "mip"]
+    EXCLUSION: ["nac motion free", "pet exam report", "mip", "nac"]
   MR:
     PRIMARY: ["t1 tse", "t2 tse", "t2w_mvxd_sag", "t2w_tse_sag", "dyn", "dce mi fov", "dwi", "1400", "adc", "tracew"]
     SECONDARY: []

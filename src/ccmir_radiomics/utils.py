@@ -77,7 +77,7 @@ def setup_series_keywords(
         with open(config_path) as file:
             default_keywords = yaml.safe_load(file)
 
-        default_keywords = default_keywords["SERIE_KEYWORDS"]
+        default_keywords = default_keywords["SERIES_KEYWORDS"]
 
     return {
         "CT": {
