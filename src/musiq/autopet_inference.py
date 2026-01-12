@@ -127,7 +127,7 @@ def autopet_inference_entrypoint() -> None:
     from .utils import create_logger
 
     global logger
-    logger = create_logger("ccmir_radiomics.autopet_inference")
+    logger = create_logger("musiq.autopet_inference")
 
     import argparse
 

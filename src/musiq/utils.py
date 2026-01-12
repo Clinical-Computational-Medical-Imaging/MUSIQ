@@ -111,7 +111,7 @@ def create_logger(name=None) -> logging.Logger:
         format="%(asctime)s - %(name)s - %(lineno)d - %(levelname)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         handlers=[
-            logging.FileHandler(f"./logger/ccmir-radiomics_{datetime.now().strftime('%Y-%m-%d-%H-%M')}.log"),
+            logging.FileHandler(f"./logger/musiq_{datetime.now().strftime('%Y-%m-%d-%H-%M')}.log"),
             logging.StreamHandler(),
         ],
     )

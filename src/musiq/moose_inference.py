@@ -3,9 +3,9 @@ import os
 
 from moosez import moose
 
-from ccmir_radiomics.utils import create_logger, natural_key
+from musiq.utils import create_logger, natural_key
 
-logger = create_logger("ccmir_radiomics.moose_inference")
+logger = create_logger("musiq.moose_inference")
 
 
 class MooseInference:
@@ -118,10 +118,10 @@ class MooseInference:
 
 def moose_inference_entrypoint() -> None:
     """Entry point to run the script without full workflow."""
-    from ccmir_radiomics.utils import create_logger
+    from musiq.utils import create_logger
 
     global logger
-    logger = create_logger("ccmir_radiomics.moose_inference")
+    logger = create_logger("musiq.moose_inference")
 
     import argparse
 
