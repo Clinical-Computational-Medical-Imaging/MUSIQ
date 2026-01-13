@@ -125,7 +125,7 @@ musiq/
 ```
 
 ---
-## Usage
+## Standard Usage
 - Clone this repository and cd into it
 - Create the first virtual enviroment (tested with Python3.12) and install dependencies via the following commands:
 
@@ -161,8 +161,37 @@ musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_
 pip install pre-commit
 pre-commit install
 ```
----
 
+---
+## Docker Usage
+- Clone this repository and `cd` into it.
+- Make sure **Docker ≤ 19.03** is installed and running.  
+  - For **Windows**, use Docker Desktop 4.37.1 or later and enable WSL integration.
+- An **NVIDIA GPU** is required.
+- **NVIDIA Container Toolkit** must be installed and configured for Docker (not required on Windows).  
+  Installation guide: [https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+
+Before running the pipeline, replace:
+- `path/to/inputdir` with the path to your input directory
+- `path/to/outputdir` with the path to your output directory
+
+```bash
+docker build -t musiq_image .
+
+docker run -it --rm --gpus all --name musiq_container \
+  -v "path/to/inputdir:/data/input" \
+  -v "path/to/outputdir:/data/output" \
+  musiq_image musiq \
+  --input-dirpath /data/input \
+  --output-dirpath /data/output \
+  --tasks series_selection radiomics autopet totalsegmentator tumor moose
+```
+If you are using Windows, it is recommended to add the following flags to reduce resource usage:
+```bash
+--shm-size=8g -e NNUNET_n_proc_preprocessing=1 -e NNUNET_n_proc_DA=1
+```
+
+---
 ## Acknowledgements
 - **AutoPET3**
    - Isensee, F., Jaeger, P. F., Kohl, S. A., Petersen, J., & Maier-Hein, K. H. (2021). nnU-Net: a self-configuring method for deep learning-based biomedical image segmentation. Nature methods, 18(2), 203-211.
