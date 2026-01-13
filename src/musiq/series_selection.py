@@ -42,7 +42,7 @@ class SeriesSelection:
             "PatientBirthDate": ("0010", "0030"),
             "PatientSex": ("0010", "0040"),
         }
-        self.serie_tags = {
+        self.series_tags = {
             "PatientAge": ("0010", "1010"),
             "PatientSize": ("0010", "1020"),  # in meters
             "PatientWeight": ("0010", "1030"),  # in kilograms
@@ -127,9 +127,12 @@ class SeriesSelection:
                 out_path_patient_info = os.path.join(self.output_dirpath, patient_id, "patient_info.json")
                 out_path_CT = os.path.join(self.output_dirpath, patient_id, study_date, "CT.nii.gz")
                 out_path_PT = os.path.join(self.output_dirpath, patient_id, study_date, "PET.nii.gz")
+                out_path_SUV = os.path.join(self.output_dirpath, patient_id, study_date, "SUV.nii.gz")
                 out_path_MR = os.path.join(self.output_dirpath, patient_id, study_date, ".nii.gz")
                 if (
-                    (modality in ["CT", "PT"] and all([os.path.isfile(out_path_CT), os.path.isfile(out_path_PT)]))
+                    (modality in ["CT", "PT"] and all([os.path.isfile(out_path_CT), 
+                                                       os.path.isfile(out_path_PT),
+                                                       os.path.isfile(out_path_SUV)]))
                     or (modality == "MR" and any(out_path_MR))
                 ) and os.path.isfile(out_path_patient_info):
                     new_info = f"Processed files for patient {patient_id} in study {study_date} already exist."
@@ -145,7 +148,7 @@ class SeriesSelection:
                         "Modality": modality,
                         "SeriesDescription": series_desc,
                         "StudyDescription": study_desc,
-                        "SeriePath": dir,
+                        "SeriesPath": dir,
                         "StudyPath": dir.parent,
                         "PatientPath": plb.Path(*dir.parts[: dir.parts.index(patient_id) + 1]),
                         "Manufacturer": manufacturer,
@@ -230,13 +233,13 @@ class SeriesSelection:
             if patient_id not in self.patient_results:
                 self.patient_results[patient_id] = {
                     "InputDirPath": str(selected_series[patient_id][0]["PatientPath"]),
-                    **extract_dicom_data(plb.Path(selected_series[patient_id][0]["SeriePath"]), self.patient_tags),
+                    **extract_dicom_data(plb.Path(selected_series[patient_id][0]["SeriesPath"]), self.patient_tags),
                     "Studies": {},
                 }
 
-            serie_conversion_flags = self.handle_selected_series(selected_series)
-            if serie_conversion_flags:
-                for flag in serie_conversion_flags:
+            series_conversion_flags = self.handle_selected_series(selected_series)
+            if series_conversion_flags:
+                for flag in series_conversion_flags:
                     patient_conversion_flags[patient_id].append(flag)
 
         for patient_id in self.patient_results:
@@ -311,24 +314,24 @@ class SeriesSelection:
         patient_id = list(selected_series.keys())[0]
         flags = []
 
-        for i, serie in enumerate(selected_series[patient_id]):
-            study_date = serie["StudyDate"]
-            modality = serie["Modality"]
-            serie_desc = serie["SeriesDescription"]
-            serie_path = serie["SeriePath"]
-            study_path = serie["StudyPath"]
+        for i, series in enumerate(selected_series[patient_id]):
+            study_date = series["StudyDate"]
+            modality = series["Modality"]
+            series_desc = series["SeriesDescription"]
+            series_path = series["SeriesPath"]
+            study_path = series["StudyPath"]
 
             logger.info(
                 f"Processing Patient ID: {patient_id}, Date: {study_date}, "
-                f"Modality: {modality}, Description: {serie_desc}"
+                f"Modality: {modality}, Description: {series_desc}"
             )
             if i == 0:
                 self.patient_results[patient_id]["Studies"].update(
                     {
                         study_date: {
                             "InputDirPath": str(study_path),
-                            "StudyDescription": serie["StudyDescription"],
-                            **extract_dicom_data(serie_path, self.serie_tags),
+                            "StudyDescription": series["StudyDescription"],
+                            **extract_dicom_data(series_path, self.series_tags),
                             "Modalities": {},
                         }
                     }
@@ -338,7 +341,7 @@ class SeriesSelection:
 
             flag, paths_and_dicom_tags = self.start_dcm2nii(
                 modality=modality,
-                dicom_input_dirpath=serie_path,
+                dicom_input_dirpath=series_path,
                 out_dirpath=os.path.join(self.output_dirpath, patient_id, study_date),
             )
             if paths_and_dicom_tags:
@@ -347,7 +350,7 @@ class SeriesSelection:
                 )
 
             if flag:
-                flags.append([patient_id, study_date, serie_desc, serie_path])
+                flags.append([patient_id, study_date, series_desc, series_path])
         logger.info("-" * 90)
         return flags
 

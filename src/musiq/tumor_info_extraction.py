@@ -51,9 +51,9 @@ class TumorInfoExtraction:
     def process_study(study_dirpath) -> None:
         """Process a single study directory."""
         logger.info(f"Extracting tumor metrics for {study_dirpath}")
-        petseg_path = os.path.join(study_dirpath, "PETseg.nii.gz")
-        ctsegres_path = os.path.join(study_dirpath, "CTsegres.nii.gz")
-        suv_path = os.path.join(study_dirpath, "SUV.nii.gz")
+        petseg_fpath = os.path.join(study_dirpath, "PETseg.nii.gz")
+        ctsegres_fpath = os.path.join(study_dirpath, "CTsegres.nii.gz")
+        suv_fpath = os.path.join(study_dirpath, "SUV.nii.gz")
 
         patient_dirpath = os.path.dirname(study_dirpath)
 
@@ -65,7 +65,7 @@ class TumorInfoExtraction:
             with open(os.path.join(patient_dirpath, "patient_info.json")) as json_file:
                 patient_info = json.load(json_file)
 
-        if not os.path.exists(ctsegres_path):
+        if not os.path.exists(ctsegres_fpath):
             utils.resample_image(
                 source_img=os.path.join(study_dirpath, "CTseg.nii.gz"),
                 target_img=os.path.join(study_dirpath, "PET.nii.gz"),
@@ -75,10 +75,10 @@ class TumorInfoExtraction:
                 output_fname="CTsegres.nii.gz",
             )
 
-        petseg_array = metrics.get_3darray_from_niftipath(petseg_path)
-        ctsegres_array = metrics.get_3darray_from_niftipath(ctsegres_path)
-        suv_array = metrics.get_3darray_from_niftipath(suv_path)
-        spacing = utils.get_spacing_from_niftipath(suv_path)
+        petseg_array = metrics.get_3darray_from_niftipath(petseg_fpath)
+        ctsegres_array = metrics.get_3darray_from_niftipath(ctsegres_fpath)
+        suv_array = metrics.get_3darray_from_niftipath(suv_fpath)
+        spacing = utils.get_spacing_from_niftipath(suv_fpath)
         voxel_volume_cc = np.prod(spacing) / 1000
 
         study_date = study_dirpath.split(os.sep)[-1]

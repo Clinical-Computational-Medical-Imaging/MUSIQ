@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "musiq-radiomics"
+name = "musiq"
 authors = [
     { name = "Sonja Adomeit", email = "sonja.adomeit@med.uni-augsburg.de" },
     { name = "Lukas Förner", email = "lukas.foerner@med.uni-augsburg.de"},
