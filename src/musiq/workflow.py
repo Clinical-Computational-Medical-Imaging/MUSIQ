@@ -24,7 +24,7 @@ class Workflow:
         mr_exclusion_keywords: list[str] | None = None,
     ) -> None:
         """
-        Run the ccmir-radiomics workflow with the specified parameters.
+        Run the MUSIQ workflow with the specified parameters.
 
         Args:
             input_dir (str): Path to the input directory containing PET/CT images.
@@ -147,7 +147,7 @@ class Workflow:
                 logger.info("Using Linux paths to start the moose_venv Python interpreter.")
                 moose_venv_python = os.path.join(os.getcwd(), ".venv_moose", "bin", "python")
 
-            moose_script = os.path.join(os.getcwd(), "src", "ccmir_radiomics", "moose_inference.py")
+            moose_script = os.path.join(os.getcwd(), "src", "musiq", "moose_inference.py")
             cmd = [
                 moose_venv_python,
                 moose_script,
@@ -205,16 +205,16 @@ class Workflow:
 
 
 def workflow_entrypoint():
-    """Entrypoint to run the ccmir-radiomics workflow."""
+    """Entrypoint to run the MUSIQ workflow."""
     # Set the start method for multiprocessing to 'spawn' for compatibility
     mp.set_start_method("spawn", force=True)
 
     global logger
-    logger = create_logger("ccmir_radiomics.workflow")
+    logger = create_logger("musiq.workflow")
 
     import argparse
 
-    parser = argparse.ArgumentParser(description="Arguments for ccmir-radiomics pipeline.")
+    parser = argparse.ArgumentParser(description="Arguments for the MUSIQ pipeline.")
     parser.add_argument("--input-dirpath", help="Path to PET/CT input directory.", required=True)
     parser.add_argument("--output-dirpath", help="Path to designated output directory.", required=True)
     parser.add_argument(
@@ -252,7 +252,7 @@ def workflow_entrypoint():
 
     if not args.input_dirpath or not args.output_dirpath:
         logger.error("Input and output directories must be specified.")
-    logger.info(f"Starting ccmir-radiomics pipeline with arguments: {args}")
+    logger.info(f"Starting the MUSIQ pipeline with arguments: {args}")
 
     Workflow(
         input_dirpath=args.input_dirpath,

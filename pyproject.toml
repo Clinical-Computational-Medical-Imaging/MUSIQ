@@ -3,13 +3,13 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ccmir-radiomics"
+name = "musiq-radiomics"
 authors = [
-    { name = "Sonja Adomeit", email = "sonja.adomeit@uk-augsburg.de" },
-    { name = "Lukas Förner", email = "lukas.foerner@uk-augsburg.de"},
+    { name = "Sonja Adomeit", email = "sonja.adomeit@med.uni-augsburg.de" },
+    { name = "Lukas Förner", email = "lukas.foerner@med.uni-augsburg.de"},
     { name = "Clinical Computational Medical Imaging Research, University Hospital Augsburg, Germany" }
 ]
-description = "A Python package for radiomics feature extraction from medical images, specifically PET/CT scans."
+description = "MUSIQ - Multimodal Unified Segmentation & Image Quantification. A Python package for radiomics feature extraction from medical images, specifically PET/CT and MRI scans."
 readme = "README.md"
 dynamic = ["version"]
 requires-python = ">=3.12"
@@ -121,16 +121,16 @@ dependencies= [
 ]
 
 [project.scripts]
-ccmir_autopet_inference = "ccmir_radiomics.autopet_inference:autopet_inference_entrypoint"
-ccmir_export_validation = "ccmir_radiomics.export_validation:export_validation_entrypoint"
-ccmir_patient_info_extraction = "ccmir_radiomics.patient_info_extraction:patient_info_extraction_entrypoint"
-ccmir_plot_summary = "ccmir_radiomics.plot_summary:plot_summary_entrypoint"
-ccmir_radiomics_extraction = "ccmir_radiomics.radiomics_extraction:radiomics_extraction_entrypoint"
-ccmir_series_selection = "ccmir_radiomics.series_selection:series_selection_entrypoint"
-ccmir_summary_generation = "ccmir_radiomics.summary_generation:summary_generation_entrypoint"
-ccmir_totalsegmentator_inference = "ccmir_radiomics.totalsegmentator_inference:totalsegmentator_inference_entrypoint"
-ccmir_tumor_info_extraction = "ccmir_radiomics.tumor_info_extraction:tumor_info_extraction_entrypoint"
-ccmir_workflow = "ccmir_radiomics.workflow:workflow_entrypoint"
+musiq_autopet_inference = "musiq.autopet_inference:autopet_inference_entrypoint"
+musiq_export_validation = "musiq.export_validation:export_validation_entrypoint"
+musiq_patient_info_extraction = "musiq.patient_info_extraction:patient_info_extraction_entrypoint"
+musiq_plot_summary = "musiq.plot_summary:plot_summary_entrypoint"
+musiq_extraction = "musiq.radiomics_extraction:radiomics_extraction_entrypoint"
+musiq_series_selection = "musiq.series_selection:series_selection_entrypoint"
+musiq_summary_generation = "musiq.summary_generation:summary_generation_entrypoint"
+musiq_totalsegmentator_inference = "musiq.totalsegmentator_inference:totalsegmentator_inference_entrypoint"
+musiq_tumor_info_extraction = "musiq.tumor_info_extraction:tumor_info_extraction_entrypoint"
+musiq = "musiq.workflow:workflow_entrypoint"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -147,7 +147,7 @@ testing = ["setuptools", "pytest", "pytest-cov"]
 pre-commit = ["pre-commit", "ruff", "black"]
 
 [tool.pytest.ini_options]
-addopts = "--cov ccmir-radiomics --cov-report term-missing --verbose"
+addopts = "--cov musiq --cov-report term-missing --verbose"
 testpaths = ["tests"]
 filterwarnings = ["error"]
 
@@ -172,7 +172,7 @@ select = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["ccmir_radiomics"]
+known-first-party = ["musiq"]
 
 # Ignore `E402` (import violations) in all `__init__.py` files, and in select subdirectories.
 [tool.ruff.lint.per-file-ignores]

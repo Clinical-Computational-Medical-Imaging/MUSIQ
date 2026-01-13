@@ -88,7 +88,7 @@ Summary for the whole cohort:
 Eventually, the project and its output are structured as follows:
 
 ```
-ccmir-radiomics/
+musiq/
 ├── autopet-3-submission/          # Cloned AutoPET3 repository
 ├── autopet-3-model/               # Downloaded AutoPET3 checkpoints
 ├── data/                          # Can be anywhere in your file system
@@ -151,7 +151,7 @@ pip install moosez --no-deps
 
 - To start the whole workflow run:
 ```bash
-ccmir_workflow --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet totalsegmentator tumor moose
+musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet totalsegmentator tumor moose
 ```
 - See `pyproject.toml` to see commands for running only parts of the pipeline in a modular way.
 
