@@ -149,6 +149,7 @@ pre-commit = ["pre-commit", "ruff", "black"]
 [tool.pytest.ini_options]
 addopts = "--cov musiq --cov-report term-missing --verbose"
 testpaths = ["tests"]
+pythonpath = ["src"]
 filterwarnings = ["error"]
 
 [tool.ruff]
