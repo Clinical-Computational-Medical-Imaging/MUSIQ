@@ -160,6 +160,16 @@ class SeriesSelection:
                 continue
         return grouped
 
+    def get_number_of_slices(self, series_path:os.PathLike):
+        number_of_slices = 0
+        for dicom_file in os.listdir(series_path):
+            try:
+                ds = pydicom.dcmread(os.path.join(series_path, dicom_file), stop_before_pixels=True)
+                number_of_slices += 1
+            except Exception as e:
+                logger.debug(f"didn't count file: {dicom_file} ({e})")
+        return number_of_slices
+
     def interactive_selection(self) -> None:
         """Interactive selection of DICOM series for conversion to NIfTI.
         This method allows the user to select series based on keywords and flags studies if no suitable series is found.
@@ -170,13 +180,13 @@ class SeriesSelection:
         patient_conversion_flags = {}
         user_wants_to_select = (
             input(
-                "Do you want to select series interactively and flag studies? (y) manually (n) pre-selected (a) all: "
+                "Do you want to select manually? (y) yes manually, (N) No use pre-selected indices: "
             )
             .strip()
             .lower()
         )
-        if user_wants_to_select not in ("y", "n", "a"):
-            logger.warning("Invalid input. Starting without interactive selection using pre-selected indices.")
+        if user_wants_to_select not in ("y", "n"):
+            logger.warning(f"You want: {user_wants_to_select}. Starting without interactive selection using (n) pre-selected indices.")
             user_wants_to_select = "n"
 
         for idx, ((patient_id, study_date), study_info) in enumerate(sorted(self.grouped_series.items())):
@@ -190,12 +200,15 @@ class SeriesSelection:
             logger.info(f"Manufacturer: {study_info[0]['Manufacturer']}")
             logger.info("Available Series:")
 
-            preselected_indices, fallback_flag = self.find_default_indices(study_info, user_wants_to_select == "a")
+            preselected_indices, fallback_flag = self.find_default_indices(study_info)
 
             for i, s in enumerate(study_info):
                 pre = i in preselected_indices
                 mark = "[*]" if pre else "[ ]"
-                logger.info(f"{mark} [{i:2}] {s['Modality']:>3} | {s['SeriesDescription']}")
+                if "NumSlices" in s:
+                    logger.info(f"{mark} [{i:2}] {s['Modality']:>3} | slices: {s['NumSlices']} | {s['SeriesDescription']}")
+                else:
+                    logger.info(f"{mark} [{i:2}] {s['Modality']:>3} | {s['SeriesDescription']}")
 
             if fallback_flag:
                 logger.info(
@@ -205,7 +218,7 @@ class SeriesSelection:
                 )
 
             default_input = ",".join(str(i) for i in preselected_indices)
-            if user_wants_to_select in ["n", "a"]:
+            if user_wants_to_select in ["n"]:
                 logger.info(
                     f"Skipping interactive selection for Patient ID: {patient_id} - "
                     f"Study Date: {study_date}. Using preselected indices: {default_input}"
@@ -254,19 +267,39 @@ class SeriesSelection:
                 self.patient_results[patient_id] = make_json_safe(self.patient_results[patient_id])
                 json.dump(self.patient_results[patient_id], f)
 
-    def find_default_indices(self, series_list: list, include_all: bool = False) -> tuple[list, bool]:
+    def find_default_indices(self, series_list: list) -> tuple[list, bool]:
         """Find default indices based on series keywords.
         This method checks the series descriptions against predefined keywords for primary and secondary selection.
+        It also checks if there are other series descriptions with the same naming and safes the number of slices.
         It returns a list of indices for the selected series and a flag indicating if secondary keywords were used.
         """
-        if include_all:
+        has_none = any(
+            v is None
+            for inner in self.series_keywords.values()
+            for v in inner.values()
+        )
+        empty_dict = all(
+            hasattr(v, "__len__") and len(v) == 0
+            for inner in self.series_keywords.values()
+            for v in inner.values()
+        )
+        if has_none or empty_dict:
+            logger.info("No Keywords given, using all series")
             preselected_indices = list(range(len(series_list)))
             return preselected_indices, False
 
+        desc_groups = defaultdict(list)
+        for idx, s in enumerate(series_list):
+            desc_groups[s["SeriesDescription"]].append(idx)
+
+        for desc, entries in desc_groups.items():
+            if len(entries) > 1:
+                for idx in entries:
+                    if "NumSlices" not in series_list[idx]:
+                        series_list[idx]["NumSlices"] = self.get_number_of_slices(series_list[idx]["SeriesPath"])
+
         preselected_indices = []
         secondary_used = False
-
-        # Track modality-wise matches
         modality_matches = {}
 
         for i, s in enumerate(series_list):
@@ -284,23 +317,32 @@ class SeriesSelection:
             if any(excl in desc for excl in exclusion_keywords) or desc is None or desc == "":
                 continue
 
-            # Initialize modality record if needed
             if modality not in modality_matches:
                 modality_matches[modality] = {"primary": [], "secondary": []}
 
-            # Classify into primary or secondary match
             if any(pk in desc for pk in primary_keywords):
                 modality_matches[modality]["primary"].append(i)
             elif any(sk in desc for sk in secondary_keywords):
                 modality_matches[modality]["secondary"].append(i)
 
-        # Combine selected indices and evaluate flag
-        for match in modality_matches.values():
-            if match["primary"]:
-                preselected_indices.extend(match["primary"])
-            elif match["secondary"]:
-                preselected_indices.extend(match["secondary"])
-                secondary_used = True
+        for match_type in ["primary", "secondary"]:
+            for modality, match in modality_matches.items():
+                indices = match[match_type]
+                if not indices:
+                    continue
+
+                desc_group_indices = defaultdict(list)
+                for idx in indices:
+                    desc_group_indices[series_list[idx]["SeriesDescription"]].append(idx)
+
+                for entries in desc_group_indices.values():
+                    if len(entries) == 1:
+                        preselected_indices.append(entries[0])
+                    else:
+                        best_idx = max(entries, key=lambda x: series_list[x]["NumSlices"])
+                        preselected_indices.append(best_idx)
+                        if match_type == "secondary":
+                            secondary_used = True
 
         should_flag = not preselected_indices or secondary_used
         return preselected_indices, should_flag
