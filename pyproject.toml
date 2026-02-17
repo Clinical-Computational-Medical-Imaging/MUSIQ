@@ -88,6 +88,7 @@ dependencies= [
     "pyarrow==20.0.0",
     "pydicom==3.0.1",
     "pyparsing==3.2.3",
+    "pytest==9.0.2",
     "python-dateutil==2.9.0.post0",
     "python-gdcm==3.0.25",
     "pytz==2025.2",
@@ -148,7 +149,7 @@ pre-commit = ["pre-commit", "ruff", "black"]
 
 [tool.pytest.ini_options]
 addopts = "--cov musiq --cov-report term-missing --verbose"
-testpaths = ["tests"]
+testpaths = ["test"]
 pythonpath = ["src"]
 filterwarnings = ["error"]
 
