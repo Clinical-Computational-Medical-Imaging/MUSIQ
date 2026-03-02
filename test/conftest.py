@@ -3,30 +3,26 @@ from pathlib import Path
 
 @pytest.fixture()
 def dummy_dicom_dataset():
-        class DummyDS1:
-                PatientID = "P001"
-                StudyDate = "20240101"
-                Modality = "CT"
-                SeriesDescription = "series_desc"
-                StudyDescription = "study_desc"
-                Manufacturer = "manufacturer"
-        """
-        class DummyDS_1_mr:
-                PatientID = "P001"
-                StudyDate = "20240101"
-                Modality = "CT"
-                SeriesDescription = "series_desc"
-                StudyDescription = "study_desc"
-                Manufacturer = "manufacturer"
-        """
-        class DummyDS2:
-                PatientID = "P002"
-                StudyDate = "20240102"
-                Modality = "MR"
-                SeriesDescription = "series_desc2"
-                StudyDescription = "study_desc2"
-                Manufacturer = "manufacturer2"
-        return {"P001": DummyDS1(), "P002": DummyDS2()} 
+    class DummyDS:
+        def __init__(self, patientID, studyDate, modality,
+                     seriesDescription, studyDescription, manufacturer):
+            self.PatientID = patientID
+            self.StudyDate = studyDate
+            self.Modality = modality
+            self.SeriesDescription = seriesDescription
+            self.StudyDescription = studyDescription
+            self.Manufacturer = manufacturer
+
+    return {
+        "P001": DummyDS(
+            "P001", "20240101", "CT",
+            "series_desc", "study_desc", "manufacturer"
+        ),
+        "P002": DummyDS(
+            "P002", "20240102", "MR",
+            "series_desc2", "study_desc2", "manufacturer2"
+        )
+    }
 
 @pytest.fixture()
 def tmp_input_output(tmp_path):
@@ -41,8 +37,21 @@ def tmp_input_output(tmp_path):
         (series_dir / "100000E1").touch()
         (series_dir / "100000E2").touch()
         (input_dir / "P001" / "DICOMDIR").touch()
-        (input_dir / "P001" / "test.DS_Store").touch()
         (input_dir / "P001" / "test.zip").touch()
+        (input_dir / "P001" / "test.inf").touch()
+        (input_dir / "P001" / "test.jar").touch()
+        (input_dir / "P001" / "test.icns").touch()
+        (input_dir / "P001" / "test.info").touch()
+        (input_dir / "P001" / "test.exe").touch()
+        (input_dir / "P001" / "test.pdf").touch()
+        (input_dir / "P001" / "test.txt").touch()
+        (input_dir / "P001" / "test.ini").touch()
+        (input_dir / "P001" / "test.xml").touch()
+        (input_dir / "P001" / "test.bmp").touch()
+        (input_dir / "P001" / "test.sh").touch()
+        (input_dir / "P001" / "DeepUnity Media Viewer Mac").touch()
+        (input_dir / "P001" / "test.DS_Store").touch()
+
 
         series_dir = input_dir / "P001" / "10000000" / "10000001" / "100001AA"
         series_dir.mkdir(parents=True)
@@ -52,7 +61,6 @@ def tmp_input_output(tmp_path):
         series_dir = input_dir / "P002" / "1000031B" / "1000031C" / "100004A9"
         series_dir.mkdir(parents=True)
         (series_dir / "100004AA").touch()
-        (input_dir / "P002" / "test.info").touch()
 
         return input_dir, output_dir
 
