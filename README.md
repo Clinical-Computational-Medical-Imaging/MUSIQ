@@ -138,7 +138,10 @@ unzip autoPET-3-LesionTracer.zip -d ./autopet-3-model/
 rm autoPET-3-LesionTracer.zip
 pip install -r requirements.txt
 ```
-
+- For the TotalSegmentaor muscle and fat segmentation the TS licese need to be set
+```bash
+totalseg_set_license -l aca_...
+```
 - In order to use the pipeline with the moose extention we need a second virtual enviroment:
 
 ```bash
