@@ -59,6 +59,7 @@ class Workflow:
                 "plot",
                 "moose",
                 "moose_task",
+                "muscle_fat",
             ]
         else:
             tasks_error = bool(
@@ -73,6 +74,7 @@ class Workflow:
                         "plot",
                         "moose",
                         "moose_task",
+                        "muscle_fat",
                     ]
                     for t in tasks or []
                 )
@@ -81,12 +83,14 @@ class Workflow:
                 raise ValueError(
                     "Invalid tasks specified. Possible values are: "
                     "'series_selection', 'radiomics', 'autopet', "
-                    "'totalsegmentator', 'tumor', 'plot', 'moose', 'moose_task'."
+                    "'totalsegmentator', 'tumor', 'plot', 'moose', "
+                    "'moose_task', 'muscle_fat'."
                 )
 
         self.series_selection = "series_selection" in (tasks or [])
         self.autopet = "autopet" in (tasks or [])
         self.totalsegmentator = "totalsegmentator" in (tasks or [])
+        self.muscle_fat = "muscle_fat" in (tasks or [])
         self.moose = "moose" in (tasks or [])
         self.radiomics = "radiomics" in (tasks or [])
         self.tumor = "tumor" in (tasks or [])
@@ -134,6 +138,14 @@ class Workflow:
 
             logger.info("\n" + "#" * 50 + "\nStarting Total Segmentator Inference\n" + "#" * 50)
             TotalSegmentatorInference(
+                input_dirpath_processed=self.output_dirpath,
+            ).run()
+
+        if self.muscle_fat:
+            from .totalsegmentator_muscle_fat import TotalSegmentatorMuscleFat
+
+            logger.info("\n" + "#" * 50 + "\nStarting Total Segmentator Muscle Fat\n" + "#" * 50)
+            TotalSegmentatorMuscleFat(
                 input_dirpath_processed=self.output_dirpath,
             ).run()
 

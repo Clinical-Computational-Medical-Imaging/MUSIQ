@@ -13,7 +13,7 @@ from .utils import natural_key
 logger = logging.getLogger(__name__)
 
 
-class TotalSegmentatorInference:
+class TotalSegmentatorMuscleFat:
     def __init__(self, input_dirpath_processed: os.PathLike | str) -> None:
         """Class to handle TotalSegmentator muscle fat analysis on CT.nii.gz files in a specified folder.
         It processes each file, runs segmentation, extracts label mapping. Creates CTseg.nii.
@@ -64,8 +64,8 @@ class TotalSegmentatorInference:
                         task = "tissue_types_mr"
                         modality = "MR"
 
-                    metadata_key = f"{modality}seg_metadata"                                            #json remove?
-                    seg_path_key = f"{modality}segPath"                                                 #json remove?
+                    metadata_key = f"{modality}muscle_fat_metadata" 
+                    seg_path_key = f"{modality}muscle_fatPath"
 
                     if os.path.isfile(output_fpath):
                         logger.info(f"Output file {output_fpath} already exists.")
@@ -115,7 +115,6 @@ class TotalSegmentatorInference:
                         "settings": {"input_fpath": input_fpath, "task": task, "ml": True},
                         "model": "total",
                         "ts_version": get_version(),
-                        "labels": label_map_dict,
                     }
                     if json_exists and patient_info is not None:
                         study_date = dirpath.split(os.sep)[-1]
@@ -140,16 +139,17 @@ class TotalSegmentatorInference:
                         series_name = next(
                             iter(patient_info["Studies"][study_date]["Modalities"][modality][series_index])
                         )
-                        patient_info["Studies"][study_date]["Modalities"][modality][series_index][series_name].update(
-                            {seg_path_key: output_fpath}
+                        analysis_dict = patient_info["Studies"][study_date]["Modalities"][modality][series_index][series_name].setdefault(
+                            "body_composition_analysis", {}
                         )
+                        logger.info(f"Series: {filename}")
+                        logger.info(f"Output path: {output_fpath}")
+                        logger.info(f"Series index: {series_index}")
+                        analysis_dict.update({seg_path_key: output_fpath})
+                        analysis_dict.update({metadata_key: seg_metadata})
                         for label, value in calculation.items():
-                            patient_info["Studies"][study_date]["Modalities"][modality][series_index][series_name].update(
-                                {label: value}
-                        )
-                        patient_info["Studies"][study_date]["Modalities"][modality][series_index][series_name].update(
-                            {metadata_key: seg_metadata}
-                        )
+                            analysis_dict[label] = value
+
                         with open(patient_info_path, "w") as f:
                             json.dump(patient_info, f)
                     else:
@@ -168,7 +168,8 @@ class TotalSegmentatorInference:
 
             Returns:
                 dict[str, float]: Dictionary with volume per label (mL) and
-                        total fat/muscle percentages to the body volume (%).        
+                        total fat/muscle percentages to the body volume (%)
+                        muscle/fat ratio.        
         """
         base_img = nib.load(path)
         
@@ -199,6 +200,7 @@ class TotalSegmentatorInference:
 
         result_dict["total_fat_in_%"] = total_fat / total_vol * 100
         result_dict["total_muscle_in_%"] = total_muscle / total_vol * 100
+        result_dict["muscle_fat_ratio"] = total_muscle / total_fat 
 
         return result_dict
 
@@ -220,7 +222,7 @@ def totalsegmentator_muscle_fat_entrypoint() -> None:
     )
     args = parser.parse_args()
 
-    TotalSegmentatorInference(
+    TotalSegmentatorMuscleFat(
         input_dirpath_processed=args.input_dirpath_processed,
     ).run()
 

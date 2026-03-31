@@ -154,7 +154,7 @@ pip install moosez --no-deps
 
 - To start the whole workflow run:
 ```bash
-musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet totalsegmentator tumor moose
+musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet totalsegmentator tumor moose muscle_fat
 ```
 - See `pyproject.toml` to see commands for running only parts of the pipeline in a modular way.
 
