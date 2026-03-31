@@ -25,8 +25,8 @@ class TotalSegmentatorMuscleFat:
 
     def run(self) -> None:
         """
-        Recursively search the folder for CT.nii.gz files.
-        For each found file, create a 'CTseg' subfolder, run segmentation using ml option,
+        Recursively search the folder for CT.nii.gz/ MR.nii.gz files.
+        For each found file, run segmentation using ml option,
         extract the label mapping from the segmentation output, and save a metadata JSON file.
         """
         if not os.path.isdir(self.input_dirpath):
@@ -108,55 +108,57 @@ class TotalSegmentatorMuscleFat:
                         logger.error(f"Error loading segmentation file {output_fpath}: {e}")
                         label_map_dict = {}
 
-                    calculation = self.calc_size(input_fpath, segmentation_img, label_map_dict)
+                    layers = ["full_picture", "l3", "glut_to_c6"]
+                    for layer in layers:
+                        calculation = self.calc_size(input_fpath, segmentation_img, label_map_dict, layer)
 
-                    # Prepare metadata with settings, task/model info, and the label mapping obtained.
-                    seg_metadata = {
-                        "settings": {"input_fpath": input_fpath, "task": task, "ml": True},
-                        "model": "total",
-                        "ts_version": get_version(),
-                    }
-                    if json_exists and patient_info is not None:
-                        study_date = dirpath.split(os.sep)[-1]
-                        if modality == "CT":
-                            series_index = 0
-                        else:
-                            mr_series = patient_info["Studies"][study_date]["Modalities"][modality]
-                            # Find the index where the filename matches the MRPath value
-                            series_index = None
-                            for idx, serie in enumerate(mr_series):
-                                for _serie_name, serie_data in serie.items():
-                                    if "MRPath" in serie_data and filename in os.path.basename(serie_data["MRPath"]):
-                                        series_index = idx
+                        # Prepare metadata with settings, task/model info, and the label mapping obtained.
+                        seg_metadata = {
+                            "settings": {"input_fpath": input_fpath, "task": task, "ml": True},
+                            "model": "total",
+                            "ts_version": get_version(),
+                        }
+                        if json_exists and patient_info is not None:
+                            study_date = dirpath.split(os.sep)[-1]
+                            if modality == "CT":
+                                series_index = 0
+                            else:
+                                mr_series = patient_info["Studies"][study_date]["Modalities"][modality]
+                                # Find the index where the filename matches the MRPath value
+                                series_index = None
+                                for idx, serie in enumerate(mr_series):
+                                    for _serie_name, serie_data in serie.items():
+                                        if "MRPath" in serie_data and filename in os.path.basename(serie_data["MRPath"]):
+                                            series_index = idx
+                                            break
+                                    if series_index is not None:
                                         break
-                                if series_index is not None:
-                                    break
 
-                        if series_index is None:
-                            logger.error(f"Could not find series index for {filename} in patient_info.json.")
-                            continue
+                            if series_index is None:
+                                logger.error(f"Could not find series index for {filename} in patient_info.json.")
+                                continue
 
-                        series_name = next(
-                            iter(patient_info["Studies"][study_date]["Modalities"][modality][series_index])
-                        )
-                        analysis_dict = patient_info["Studies"][study_date]["Modalities"][modality][series_index][series_name].setdefault(
-                            "body_composition_analysis", {}
-                        )
-                        logger.info(f"Series: {filename}")
-                        logger.info(f"Output path: {output_fpath}")
-                        logger.info(f"Series index: {series_index}")
-                        analysis_dict.update({seg_path_key: output_fpath})
-                        analysis_dict.update({metadata_key: seg_metadata})
-                        for label, value in calculation.items():
-                            analysis_dict[label] = value
+                            series_name = next(
+                                iter(patient_info["Studies"][study_date]["Modalities"][modality][series_index])
+                            )
+                            analysis_dict = patient_info["Studies"][study_date]["Modalities"][modality][series_index][series_name].setdefault(
+                                "body_composition_analysis", {}
+                            )
+                            logger.info(f"Series: {filename}")
+                            logger.info(f"Output path: {output_fpath}")
+                            logger.info(f"Series index: {series_index}")
+                            analysis_dict.update({seg_path_key: output_fpath})
+                            analysis_dict.update({metadata_key: seg_metadata})
+                            for label, value in calculation.items():
+                                analysis_dict[layer][label] = value
 
-                        with open(patient_info_path, "w") as f:
-                            json.dump(patient_info, f)
-                    else:
-                        with open(f"{filename[:-7]}_muscle_fat.json", "w") as f:
-                            json.dump(seg_metadata, f)
+                            with open(patient_info_path, "w") as f:
+                                json.dump(patient_info, f)
+                        else:
+                            with open(f"{filename[:-7]}_muscle_fat.json", "w") as f:
+                                json.dump(seg_metadata, f)
     
-    def calc_size(self, path:os.PathLike, img:nib.Nifti1Image, labels:dict[int, str]) -> dict[str, float]:
+    def calc_size(self, ct_path:os.PathLike, fat_img:nib.Nifti1Image, labels:dict[int, str], layer:str) -> dict[float, float, float]:
         """
             Calculate the volume (in mL) of each label in a segmentation and 
             compute total fat and muscle percentages relative to the whole scan.
@@ -170,14 +172,48 @@ class TotalSegmentatorMuscleFat:
                 dict[str, float]: Dictionary with volume per label (mL) and
                         total fat/muscle percentages to the body volume (%)
                         muscle/fat ratio.        
-        """
-        base_img = nib.load(path)
+        """       
+        total_seg_path = str(ct_path)
+        total_seg_path = total_seg_path[:17] + "seg.nii.gz"
+
+        base_img = nib.load(ct_path)
+        total_seg_img, label_map_dict = load_multilabel_nifti(total_seg_path)
+
+        humerus = np.isin(total_seg_img, [label_map_dict["humerus_left"], label_map_dict["humerus_right"]])
+        t4 = (total_seg_img == label_map_dict["vertebrae_T4"])
+        h_min = np.argwhere(humerus)[:, 0].min()
+        t_max= np.argwhere(t4)[:, 0].max()
+        if h_min < t_max:
+            logger.warning(f"Arms are beside the body")
+            return {"total_fat_in_%": None,
+                    "total_muscle_in_%": None,
+                    "muscle_fat_ratio": None}
+
+        #img nur im bereich(maske)
+        if layer == "full_picture":
+            fat_img = fat_img
+        elif layer == "l3":
+            l3 = (total_seg_img == label_map_dict["vertebrae_L3"])
+            l_min, l_max = np.argwhere(l3)[:, 0].min(), np.argwhere(l3)[:, 0].max()
+            slice_mask = np.zeros_like(fat_img, dtype=bool)
+            slice_mask[l_min:l_max+1, :, :] = True
+            fat_img[~slice_mask] = 0
+
+        elif layer == "glut_to_c6":
+            glut = np.isin(total_seg_img, [label_map_dict["gluteus_maximus_left"], label_map_dict["gluteus_maximus_right"]])
+            g_min = np.argwhere(glut)[:, 0].min()
+            c6 = (total_seg_img == label_map_dict["vertebrae_C6"])
+            c_max = np.argwhere(c6)[:, 0].max()
+            slice_mask = np.zeros_like(fat_img, dtype=bool)
+            slice_mask[g_min:c_max+1, :, :] = True
+            fat_img[~slice_mask] = 0
+
         
-        voxel_spacing = img.header.get_zooms()
+        voxel_spacing = fat_img.header.get_zooms()
         voxel_volume = np.prod(voxel_spacing)
 
         base_data = np.asanyarray(base_img.dataobj)
-        labeled_data = np.asanyarray(img.dataobj)
+        labeled_data = np.asanyarray(fat_img.dataobj)
 
         base_mask = base_data > -1000
         total_vol = np.sum(base_mask) * voxel_volume / 1000
