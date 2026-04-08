@@ -67,9 +67,9 @@ class TotalSegmentatorMuscleFat:
                     metadata_key = f"{modality}muscle_fat_metadata" 
                     seg_path_key = f"{modality}muscle_fatPath"
 
-                    if os.path.isfile(output_fpath):
-                        logger.info(f"Output file {output_fpath} already exists.")
-                        continue
+                    #if os.path.isfile(output_fpath):
+                    #    logger.info(f"Output file {output_fpath} already exists.")
+                    #    continue
 
                     patient_dirpath = os.path.dirname(dirpath)
                     patient_info = None
@@ -85,20 +85,21 @@ class TotalSegmentatorMuscleFat:
                     logger.info(f"Processing file {filename} for patient {patient_id}.")
 
                     # Run TotalSegmentator using the Python API with ml option and appropriate task.
-                    try:
-                        totalsegmentator(
-                            input_fpath,
-                            output_fpath,
-                            ml=True,
-                            task=task,
-                            device="gpu:0",
-                            statistics=False,
-                            radiomics=False,
-                        )
-                        logger.info("Segmentation successfully completed.")
-                    except Exception as e:
-                        logger.error(f"Error during segmentation for {input_fpath}:\n  {e}")
-                        continue
+                    #try:
+                    #    totalsegmentator(
+                    #        input_fpath,
+                    #        output_fpath,
+                    #        ml=True,
+                    #        task=task,
+                    #        device="gpu:0",
+                    #        statistics=False,
+                    #        radiomics=False,
+                    #    )
+                    #    logger.info("Segmentation successfully completed.")
+                    #except Exception as e:
+                    #    logger.error(f"Error during segmentation for {input_fpath}:\n  {e}")
+                    #    continue
+                    
 
                     # Load the segmentation file to extract the label mapping from its extended header.
                     try:
@@ -107,6 +108,8 @@ class TotalSegmentatorMuscleFat:
                     except Exception as e:
                         logger.error(f"Error loading segmentation file {output_fpath}: {e}")
                         label_map_dict = {}
+
+                    #logger.info(f"Labels in segmentation {label_map_dict}")
 
                     layers = ["full_picture", "l3", "glut_to_c6"]
                     for layer in layers:
@@ -149,6 +152,7 @@ class TotalSegmentatorMuscleFat:
                             logger.info(f"Series index: {series_index}")
                             analysis_dict.update({seg_path_key: output_fpath})
                             analysis_dict.update({metadata_key: seg_metadata})
+                            analysis_dict.setdefault(layer, {})
                             for label, value in calculation.items():
                                 analysis_dict[layer][label] = value
 
@@ -173,47 +177,96 @@ class TotalSegmentatorMuscleFat:
                         total fat/muscle percentages to the body volume (%)
                         muscle/fat ratio.        
         """       
-        total_seg_path = str(ct_path)
-        total_seg_path = total_seg_path[:17] + "seg.nii.gz"
+        fallback_dict = {"total_fat_in_%": None,
+                    "total_muscle_in_%": None,
+                    "muscle_fat_ratio": None}
+        total_seg_path = str(ct_path).replace(".nii.gz", "seg.nii.gz")
+        if not os.path.isfile(total_seg_path):
+            logger.error(f"{total_seg_path} fehlt. Bitte TotalSegmentator task='total' zuerst ausführen.")
+            return fallback_dict
 
         base_img = nib.load(ct_path)
         total_seg_img, label_map_dict = load_multilabel_nifti(total_seg_path)
 
-        humerus = np.isin(total_seg_img, [label_map_dict["humerus_left"], label_map_dict["humerus_right"]])
-        t4 = (total_seg_img == label_map_dict["vertebrae_T4"])
-        h_min = np.argwhere(humerus)[:, 0].min()
-        t_max= np.argwhere(t4)[:, 0].max()
-        if h_min < t_max:
-            logger.warning(f"Arms are beside the body")
-            return {"total_fat_in_%": None,
-                    "total_muscle_in_%": None,
-                    "muscle_fat_ratio": None}
+
+
+        seg_data = total_seg_img.get_fdata().astype(int)  # Labels als int
+
+        # Alle eindeutigen Labels und deren Anzahl
+        #unique_labels, counts = np.unique(seg_data, return_counts=True)
+
+        #print("Eindeutige Labels:", unique_labels)
+
+
+
+
+        name_to_label = {v: k for k, v in label_map_dict.items()}
+        #logger.info(f"Labels in segmentation {name_to_label}")
+
+        # affine aus der Nifti-Datei
+        affine = total_seg_img.affine
+        axcodes = nib.aff2axcodes(affine)
+
+        # Z-Achse als längste Achse
+        #axis_lengths = [seg_data.shape[i] * abs(affine[i,i]) for i in range(3)]
+        #z_axis = np.argmax(axis_lengths)
+
+        axcodes = nib.aff2axcodes(total_seg_img.affine)
+        # S = superior, I = inferior
+        z_axis = next((i for i, c in enumerate(axcodes) if c in ('S', 'I')), None)
+        if z_axis is None:
+            raise ValueError("Keine Kopf-Fuß-Achse gefunden!")
+
+        # Humerus-Koordinaten
+        humerus = np.isin(seg_data, [name_to_label["humerus_left"], name_to_label["humerus_right"]])
+        coords = np.argwhere(humerus)
+        if coords.size == 0:
+            logger.error("No humerus found")
+        else:
+            coords_h = np.c_[coords, np.ones(len(coords))]
+            hum_coords = coords_h @ affine.T
+            hum_coords = hum_coords[:, :3]
+            hum_z_min = np.percentile(hum_coords[:, z_axis], 5)
+
+            # T4-Koordinaten
+            t4 = (seg_data == name_to_label["vertebrae_T4"])
+            t4_coords = np.argwhere(t4)
+            coords_h_t4 = np.c_[t4_coords, np.ones(len(t4_coords))]
+            t4_world = coords_h_t4 @ affine.T
+            t4_world = t4_world[:, :3]
+            t4_z_max = np.percentile(t4_world[:, z_axis], 95)
+
+            # Vergleich
+            if hum_z_min < t4_z_max - 100:
+                logger.warning("Arms are beside the body")
+                return fallback_dict
+
+        fat_data = np.asanyarray(fat_img.dataobj).copy()
 
         #img nur im bereich(maske)
         if layer == "full_picture":
-            fat_img = fat_img
+            fat_data = fat_data
         elif layer == "l3":
-            l3 = (total_seg_img == label_map_dict["vertebrae_L3"])
+            l3 = (seg_data == name_to_label["vertebrae_L3"])
             l_min, l_max = np.argwhere(l3)[:, 0].min(), np.argwhere(l3)[:, 0].max()
-            slice_mask = np.zeros_like(fat_img, dtype=bool)
+            slice_mask = np.zeros_like(fat_data, dtype=bool)
             slice_mask[l_min:l_max+1, :, :] = True
-            fat_img[~slice_mask] = 0
+            fat_data[~slice_mask] = 0
 
         elif layer == "glut_to_c6":
-            glut = np.isin(total_seg_img, [label_map_dict["gluteus_maximus_left"], label_map_dict["gluteus_maximus_right"]])
+            glut = np.isin(seg_data, [name_to_label["gluteus_maximus_left"], name_to_label["gluteus_maximus_right"]])
             g_min = np.argwhere(glut)[:, 0].min()
-            c6 = (total_seg_img == label_map_dict["vertebrae_C6"])
+            c6 = (seg_data == name_to_label["vertebrae_C6"])
             c_max = np.argwhere(c6)[:, 0].max()
-            slice_mask = np.zeros_like(fat_img, dtype=bool)
+            slice_mask = np.zeros_like(fat_data, dtype=bool)
             slice_mask[g_min:c_max+1, :, :] = True
-            fat_img[~slice_mask] = 0
-
+            fat_data[~slice_mask] = 0
         
         voxel_spacing = fat_img.header.get_zooms()
         voxel_volume = np.prod(voxel_spacing)
 
         base_data = np.asanyarray(base_img.dataobj)
-        labeled_data = np.asanyarray(fat_img.dataobj)
+        labeled_data = fat_data
 
         base_mask = base_data > -1000
         total_vol = np.sum(base_mask) * voxel_volume / 1000
@@ -236,8 +289,7 @@ class TotalSegmentatorMuscleFat:
 
         result_dict["total_fat_in_%"] = total_fat / total_vol * 100
         result_dict["total_muscle_in_%"] = total_muscle / total_vol * 100
-        result_dict["muscle_fat_ratio"] = total_muscle / total_fat 
-
+        result_dict["muscle_fat_ratio"] = total_muscle / total_fat if total_fat > 0 else None
         return result_dict
 
 def totalsegmentator_muscle_fat_entrypoint() -> None:
