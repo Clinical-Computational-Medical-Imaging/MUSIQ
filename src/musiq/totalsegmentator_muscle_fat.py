@@ -8,7 +8,7 @@ from totalsegmentator.config import get_version
 from totalsegmentator.nifti_ext_header import load_multilabel_nifti
 from totalsegmentator.python_api import totalsegmentator
 
-from .utils import natural_key
+from .utils import natural_key, conv_time
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +161,27 @@ class TotalSegmentatorMuscleFat:
                         else:
                             with open(f"{filename[:-7]}_muscle_fat.json", "w") as f:
                                 json.dump(seg_metadata, f)
+
+                    pet_path = os.isfile(os.join(dirpath, "PET.nii.gz"))
+                    if not pet_path:
+                        logger.info(f"No PET file found for {patient_id}")
+
+                    with open(patient_info_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+
+                    series_name = next(
+                                iter(data["Studies"][study_date]["Modalities"][modality][series_index])
+                            )
+                    weight = data["Studies"][study_date]["Modalities"][modality][series_index][series_name]["DICOM"]["PatientWeight"]
+                    fat_in_percent = data["Studies"][study_date]["Modalities"][modality][series_index][series_name]["body_composition_analysis"]["glut_to_c6"]["total_fat_in_%"]
+                    lean_bodymas = weight * (1 - fat_in_percent)
+                    sul_path = self.convert_pet2sul(dirpath, lean_bodymas, study_date)
+
+                    data["Studies"][study_date]["Modalities"][modality][series_index][series_name]["SULPath"] = sul_path
+                    data["Studies"][study_date]["Modalities"][modality][series_index][series_name]["PatientLBM"] = lean_bodymas
+                    
     
+
     def calc_size(self, path:os.PathLike, fat_img:nib.Nifti1Image, labels:dict[int, str], layer:str) -> dict[float, float, float]:
         """
             Calculate the volume (in mL) of each label in a segmentation and 
@@ -295,6 +315,41 @@ class TotalSegmentatorMuscleFat:
         result_dict["total_muscle_in_%"] = total_muscle / total_vol * 100
         result_dict["muscle_fat_ratio"] = total_muscle / total_fat if total_fat > 0 else None
         return result_dict
+    
+
+    def convert_pet2sul(self, output_dirpath: str | os.PathLike, lean_bodymas:float, study_date:str) -> os.PathLike:
+        out_pet_fpath = os.path.join(output_dirpath, "PET.nii.gz")
+        out_sul_fpath = os.path.join(output_dirpath, "SUL.nii.gz")  
+
+        if os.path.isfile(out_sul_fpath):
+            logger.info(f"SUL NIfTI already exist at {out_pet_fpath}")
+            return 
+        else:      
+            sul_corr_factor = self.load_sul_faktor(output_dirpath, lean_bodymas, study_date)
+
+            # convert pet images to quantitative suv images and save nifti file
+            sul_pet_nii = self.convert_pet(
+                nib.load(out_pet_fpath),
+                suv_factor=sul_corr_factor,  # type: ignore
+            )
+            nib.save(img=sul_pet_nii, filename=out_sul_fpath)  # type: ignore
+            
+            return out_sul_fpath
+
+
+    def load_sul_faktor(self, path:os.PathLike, lean_bodymas:float, study_date:str) -> float:
+
+        with open(os.path.join(path, "patient_info.json"), "r") as f:
+            data = json.load(f)
+        total_dose = data["Studies"][study_date]["Modalitys"]["PT"]["InjectedRadioactivity"] * 1e6
+        half_life = data["Studies"][study_date]["Modalitys"]["PT"]["RadionuclideHalfLife"]
+        acq_time = data["Studies"][study_date]["Modalitys"]["PT"]["AcquisitionTime"]
+        start_time = data["Studies"][study_date]["Modalitys"]["PT"]["FrameTimesStart"]
+        #doseCalibrationFactor = data["Studies"][study_date]["Modalitys"]["PT"]["DoseCalibrationFactor"]
+        time_diff = conv_time(acq_time) - conv_time(start_time)
+        act_dose = total_dose * 0.5 ** (time_diff / half_life)
+        suv_factor = 1000 * lean_bodymas / act_dose
+        return suv_factor
 
 def totalsegmentator_muscle_fat_entrypoint() -> None:
     """Entry point to run the script without full workflow."""
