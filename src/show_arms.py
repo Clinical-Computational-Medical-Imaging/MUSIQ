@@ -13,21 +13,17 @@ class Show:
 
     def run(self):
         print("start")
-        pat_folder = sorted([f for f in self.path.iterdir() if f.is_dir()])        
-        for p in pat_folder:
-            if (p / "CT_muscle_fat.nii.gz").is_file():
-                with open(p.parent / "patient_info.json") as f:
-                    info = json.load(f)
-                
-                ct_img = nib.load(p / "CT.nii.gz")
-                ct_data = ct_img.get_fdata()
-            else: 
-                continue
+        for seg_file in self.path.rglob("CT.nii.gz"):
+            p = seg_file.parent     
+            with open(p.parent / "patient_info.json") as f:
+                info = json.load(f)
+            ct_img = nib.load(p / "CT.nii.gz")
+            ct_data = ct_img.get_fdata()
 
-            ct_series_list = info["Studies"][p.parent.name]["Modalities"]["CT"]
+            ct_series_list = info["Studies"][p.name]["Modalities"]["CT"]
 
-            serie_dict = ct_series_list[0]              # Liste → Dict
-            series_name = next(iter(serie_dict))       # Name extrahieren
+            serie_dict = ct_series_list[0]
+            series_name = next(iter(serie_dict))
             series_data = serie_dict[series_name]
             if series_data["body_composition_analysis"]["full_picture"]["total_fat_in_%"] is None:
                 y = ct_data.shape[1] // 2 - 20
@@ -35,11 +31,11 @@ class Show:
 
                 # Plot
                 plt.figure(figsize=(12, 8))
-                plt.subplot(2, 1, 1)
+                #plt.subplot(2, 1, 1)
                 plt.imshow(np.rot90(ct_slice), cmap="gray")
                 plt.title("CT")
                 plt.axis("off")
-                plt.show() #savefig(f"{p.parent.parent.name}_all_labels.png", dpi=150)
+                plt.savefig(f"{p.parent.name}_all_labels.png", dpi=150)
                 plt.close()
         print("finish")
 

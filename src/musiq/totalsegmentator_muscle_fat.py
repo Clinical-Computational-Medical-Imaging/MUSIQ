@@ -25,7 +25,7 @@ class TotalSegmentatorMuscleFat:
 
     def run(self) -> None:
         """
-        Recursively search the folder for CT.nii.gz/ MR.nii.gz files.
+        Recursively search the folder for CT.nii.gz files.
         For each found file, run segmentation using ml option,
         extract the label mapping from the segmentation output, and save a metadata JSON file.
         """
@@ -67,9 +67,9 @@ class TotalSegmentatorMuscleFat:
                     metadata_key = f"{modality}muscle_fat_metadata" 
                     seg_path_key = f"{modality}muscle_fatPath"
 
-                    #if os.path.isfile(output_fpath):
-                    #    logger.info(f"Output file {output_fpath} already exists.")
-                    #    continue
+                    if os.path.isfile(output_fpath):
+                        logger.info(f"Output file {output_fpath} already exists.")
+                        continue
 
                     patient_dirpath = os.path.dirname(dirpath)
                     patient_info = None
@@ -85,20 +85,20 @@ class TotalSegmentatorMuscleFat:
                     logger.info(f"Processing file {filename} for patient {patient_id}.")
 
                     # Run TotalSegmentator using the Python API with ml option and appropriate task.
-                    #try:
-                    #    totalsegmentator(
-                    #        input_fpath,
-                    #        output_fpath,
-                    #        ml=True,
-                    #        task=task,
-                    #        device="gpu:0",
-                    #        statistics=False,
-                    #        radiomics=False,
-                    #    )
-                    #    logger.info("Segmentation successfully completed.")
-                    #except Exception as e:
-                    #    logger.error(f"Error during segmentation for {input_fpath}:\n  {e}")
-                    #    continue
+                    try:
+                        totalsegmentator(
+                            input_fpath,
+                            output_fpath,
+                            ml=True,
+                            task=task,
+                            device="gpu:0",
+                            statistics=False,
+                            radiomics=False,
+                        )
+                        logger.info("Segmentation successfully completed.")
+                    except Exception as e:
+                        logger.error(f"Error during segmentation for {input_fpath}:\n  {e}")
+                        continue
                     
 
                     # Load the segmentation file to extract the label mapping from its extended header.
@@ -162,7 +162,7 @@ class TotalSegmentatorMuscleFat:
                             with open(f"{filename[:-7]}_muscle_fat.json", "w") as f:
                                 json.dump(seg_metadata, f)
     
-    def calc_size(self, ct_path:os.PathLike, fat_img:nib.Nifti1Image, labels:dict[int, str], layer:str) -> dict[float, float, float]:
+    def calc_size(self, path:os.PathLike, fat_img:nib.Nifti1Image, labels:dict[int, str], layer:str) -> dict[float, float, float]:
         """
             Calculate the volume (in mL) of each label in a segmentation and 
             compute total fat and muscle percentages relative to the whole scan.
@@ -180,18 +180,21 @@ class TotalSegmentatorMuscleFat:
         fallback_dict = {"total_fat_in_%": None,
                     "total_muscle_in_%": None,
                     "muscle_fat_ratio": None}
-        total_seg_path = str(ct_path).replace(".nii.gz", "seg.nii.gz")
+        total_seg_path = str(path).replace(".nii.gz", "seg.nii.gz")
         if not os.path.isfile(total_seg_path):
             logger.error(f"{total_seg_path} fehlt. Bitte TotalSegmentator task='total' zuerst ausführen.")
             return fallback_dict
 
-        base_img = nib.load(ct_path)
+        base_img = nib.load(path)
         total_seg_img, label_map_dict = load_multilabel_nifti(total_seg_path)
-
-
 
         seg_data = total_seg_img.get_fdata().astype(int)  # Labels als int
 
+        if base_img.shape != total_seg_img.shape:
+            logger.error("Shape mismatch!")
+
+        if not np.allclose(base_img.affine, total_seg_img.affine):
+            logger.warning("Affine mismatch!")
         # Alle eindeutigen Labels und deren Anzahl
         #unique_labels, counts = np.unique(seg_data, return_counts=True)
 
@@ -246,6 +249,7 @@ class TotalSegmentatorMuscleFat:
         #img nur im bereich(maske)
         if layer == "full_picture":
             fat_data = fat_data
+            
         elif layer == "l3":
             l3 = (seg_data == name_to_label["vertebrae_L3"])
             l_min, l_max = np.argwhere(l3)[:, 0].min(), np.argwhere(l3)[:, 0].max()
