@@ -26,8 +26,9 @@ class TotalSegmentatorMuscleFat:
     def run(self) -> None:
         """
         Recursively search the folder for CT.nii.gz files.
-        For each found file, run segmentation using ml option,
+        For each found file, run the tissue_4_types segmentation using ml option,
         extract the label mapping from the segmentation output, and save a metadata JSON file.
+        It also calculates the lean bodymas and starts the SUL image creation.
         """
         if not os.path.isdir(self.input_dirpath):
             logger.error(f"Error: {self.input_dirpath} is not a valid directory.")
@@ -162,7 +163,7 @@ class TotalSegmentatorMuscleFat:
                             with open(f"{filename[:-7]}_muscle_fat.json", "w") as f:
                                 json.dump(seg_metadata, f)
 
-                    pet_path = os.isfile(os.join(dirpath, "PET.nii.gz"))
+                    pet_path = os.path.isfile(os.path.join(dirpath, "PET.nii.gz"))
                     if not pet_path:
                         logger.info(f"No PET file found for {patient_id}")
 
@@ -174,14 +175,15 @@ class TotalSegmentatorMuscleFat:
                             )
                     weight = data["Studies"][study_date]["Modalities"][modality][series_index][series_name]["DICOM"]["PatientWeight"]
                     fat_in_percent = data["Studies"][study_date]["Modalities"][modality][series_index][series_name]["body_composition_analysis"]["glut_to_c6"]["total_fat_in_%"]
-                    lean_bodymas = weight * (1 - fat_in_percent)
+                    lean_bodymas = weight * (1 - fat_in_percent / 100)
                     sul_path = self.convert_pet2sul(dirpath, lean_bodymas, study_date)
 
                     data["Studies"][study_date]["Modalities"][modality][series_index][series_name]["SULPath"] = sul_path
                     data["Studies"][study_date]["Modalities"][modality][series_index][series_name]["PatientLBM"] = lean_bodymas
                     
+                    with open(patient_info_path, "w") as f:
+                        json.dump(data, f)
     
-
     def calc_size(self, path:os.PathLike, fat_img:nib.Nifti1Image, labels:dict[int, str], layer:str) -> dict[float, float, float]:
         """
             Calculate the volume (in mL) of each label in a segmentation and 
@@ -318,6 +320,17 @@ class TotalSegmentatorMuscleFat:
     
 
     def convert_pet2sul(self, output_dirpath: str | os.PathLike, lean_bodymas:float, study_date:str) -> os.PathLike:
+        """
+        Coordinates the conversion of PET to SUL image.
+
+        Args:
+            path (os.PathLike): Path to the NIfTI images.
+            lean_bodymas (float): Body weight without the weight of the fat.
+            study_date (str): Date of the study for json access.
+
+        Returns:
+            path (os.PathLike): Path to the SUL NIfTI image.
+        """
         out_pet_fpath = os.path.join(output_dirpath, "PET.nii.gz")
         out_sul_fpath = os.path.join(output_dirpath, "SUL.nii.gz")  
 
@@ -327,29 +340,71 @@ class TotalSegmentatorMuscleFat:
         else:      
             sul_corr_factor = self.load_sul_faktor(output_dirpath, lean_bodymas, study_date)
 
-            # convert pet images to quantitative suv images and save nifti file
             sul_pet_nii = self.convert_pet(
                 nib.load(out_pet_fpath),
-                suv_factor=sul_corr_factor,  # type: ignore
+                sul_factor=sul_corr_factor,  # type: ignore
             )
             nib.save(img=sul_pet_nii, filename=out_sul_fpath)  # type: ignore
             
             return out_sul_fpath
 
+    def time_to_seconds(self, t: str | float | int) -> float:
+        """
+        Converts time as str to float to seconds after 00:00, 
+
+        Args:
+            t (str | float | int): Time as str in the formate of HHMMSS.MS or HH:MM:SS.MS.
+            
+        Returns:
+            float: Time in seconds.  
+        """
+        t = str(t).strip()
+
+        if ":" in t:
+            h, m, s = t.split(":")
+            return int(h)*3600 + int(m)*60 + float(s)
+
+        h = int(t[0:2])
+        m = int(t[2:4])
+        s = float(t[4:])
+        return h*3600 + m*60 + s
 
     def load_sul_faktor(self, path:os.PathLike, lean_bodymas:float, study_date:str) -> float:
+        """
+        Reads the safed patient_info.json file to get the PET infos and calculatest the SUL factor.
 
-        with open(os.path.join(path, "patient_info.json"), "r") as f:
+        Args:
+            path (os.PathLike): Path to the NIfTI images.
+            lean_bodymas (float): Body weight without the weight of the fat.
+            study_date (str): Date of the study for json access.
+
+        Returns:
+            float: SUL factor.  
+        """
+        with open(os.path.join(os.path.dirname(path), "patient_info.json"), "r") as f:
             data = json.load(f)
-        total_dose = data["Studies"][study_date]["Modalitys"]["PT"]["InjectedRadioactivity"] * 1e6
-        half_life = data["Studies"][study_date]["Modalitys"]["PT"]["RadionuclideHalfLife"]
-        acq_time = data["Studies"][study_date]["Modalitys"]["PT"]["AcquisitionTime"]
-        start_time = data["Studies"][study_date]["Modalitys"]["PT"]["FrameTimesStart"]
-        #doseCalibrationFactor = data["Studies"][study_date]["Modalitys"]["PT"]["DoseCalibrationFactor"]
-        time_diff = conv_time(acq_time) - conv_time(start_time)
+
+        series_name = next(
+            iter(data["Studies"][study_date]["Modalities"]["PT"][0])
+        )
+        total_dose = data["Studies"][study_date]["Modalities"]["PT"][0][series_name]["DICOM"]["InjectedRadioactivity"]
+        half_life = data["Studies"][study_date]["Modalities"]["PT"][0][series_name]["DICOM"]["RadionuclideHalfLife"]
+        acq_time = data["Studies"][study_date]["Modalities"]["PT"][0][series_name]["DICOM"]["AcquisitionTime"]
+        start_time = data["Studies"][study_date]["Modalities"]["PT"][0][series_name]["DICOM"]["RadiopharmaceuticalStartTime"]
+
+        time_diff = self.time_to_seconds(acq_time) - self.time_to_seconds(start_time)
         act_dose = total_dose * 0.5 ** (time_diff / half_life)
-        suv_factor = 1000 * lean_bodymas / act_dose
-        return suv_factor
+        sul_factor = 1000 * lean_bodymas / act_dose
+
+        return sul_factor
+
+    def convert_pet(self, pet, sul_factor) -> nib.Nifti1Image:
+        """Conversion of PET values to SUL (should work on Siemens PET/CT)"""
+        affine = pet.affine
+        pet_data = pet.get_fdata()
+        pet_suv_data = (pet_data * sul_factor).astype(np.float32)
+        pet_suv = nib.Nifti1Image(pet_suv_data, affine)  # type: ignore
+        return pet_suv
 
 def totalsegmentator_muscle_fat_entrypoint() -> None:
     """Entry point to run the script without full workflow."""

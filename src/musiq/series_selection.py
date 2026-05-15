@@ -496,7 +496,7 @@ class SeriesSelection:
             return dicom_tags
         else:
             first_pt_dcm = os.listdir(PET_dcm_dirpath)[0]
-            suv_corr_factor = self.calculate_suv_factor(os.path.join(PET_dcm_dirpath, first_pt_dcm))
+            suv_corr_factor, pt_start_time = self.calculate_suv_factor(os.path.join(PET_dcm_dirpath, first_pt_dcm))
 
             with tempfile.TemporaryDirectory() as tmp:  # convert PET
                 tmp = plb.Path(str(tmp))
@@ -510,6 +510,9 @@ class SeriesSelection:
                 nii = next(tmp.glob("*json"))
                 with open(nii) as json_file:
                     dicom_tags = json.load(json_file)
+
+                dicom_tags["RadiopharmaceuticalStartTime"] = pt_start_time
+                dicom_tags["SUVFactor"] = suv_corr_factor
 
                 # convert pet images to quantitative suv images and save nifti file
                 out_suv_fpath = os.path.join(output_dirpath, "SUV.nii.gz")
@@ -574,7 +577,7 @@ class SeriesSelection:
         time_diff = conv_time(acq_time) - conv_time(start_time)
         act_dose = total_dose * 0.5 ** (time_diff / half_life)
         suv_factor = 1000 * weight / act_dose
-        return suv_factor
+        return suv_factor, start_time
 
     def convert_pet(self, pet, suv_factor) -> nib.Nifti1Image:
         """Conversion of PET values to SUV (should work on Siemens PET/CT)"""
