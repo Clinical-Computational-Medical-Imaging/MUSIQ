@@ -123,7 +123,9 @@ dependencies= [
 
 [project.scripts]
 musiq_autopet_inference = "musiq.autopet_inference:autopet_inference_entrypoint"
+musiq_cads_inference = "musiq.cads_inference:cads_inference_entrypoint"
 musiq_export_validation = "musiq.export_validation:export_validation_entrypoint"
+musiq_moose_inference = "musiq.moose_inference:moose_inference_entrypoint"
 musiq_patient_info_extraction = "musiq.patient_info_extraction:patient_info_extraction_entrypoint"
 musiq_plot_summary = "musiq.plot_summary:plot_summary_entrypoint"
 musiq_extraction = "musiq.radiomics_extraction:radiomics_extraction_entrypoint"

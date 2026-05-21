@@ -37,6 +37,7 @@ class Workflow:
                 - "radiomics": Extract radiomics features from selected series.
                 - "tumor": Compute tumor level statistics.
                 - "plot": Create visualisations.
+                - "cads": Run CADS on CT images.
             ct_primary_keywords (list[str] | None): Keywords for primary selection of CT series.
             ct_secondary_keywords (list[str] | None): Keywords for secondary selection of CT series.
             ct_exclusion_keywords (list[str] | None): Keywords to exclude CT series.
@@ -58,7 +59,7 @@ class Workflow:
                 "tumor",
                 "plot",
                 "moose",
-                "moose_task",
+                "cads",
             ]
         else:
             tasks_error = bool(
@@ -72,7 +73,7 @@ class Workflow:
                         "tumor",
                         "plot",
                         "moose",
-                        "moose_task",
+                        "cads",
                     ]
                     for t in tasks or []
                 )
@@ -81,11 +82,12 @@ class Workflow:
                 raise ValueError(
                     "Invalid tasks specified. Possible values are: "
                     "'series_selection', 'radiomics', 'autopet', "
-                    "'totalsegmentator', 'tumor', 'plot', 'moose', 'moose_task'."
+                    "'totalsegmentator', 'tumor', 'plot', 'moose', 'cads'."
                 )
 
         self.series_selection = "series_selection" in (tasks or [])
         self.autopet = "autopet" in (tasks or [])
+        self.cads = "cads"
         self.totalsegmentator = "totalsegmentator" in (tasks or [])
         self.moose = "moose" in (tasks or [])
         self.radiomics = "radiomics" in (tasks or [])
@@ -127,6 +129,14 @@ class Workflow:
                 autopet_checkpoint_dirpath=os.path.join(
                     "./autopet-3-model/Dataset222_AutoPETIII_2024/autoPET3_Trainer__nnUNetResEncUNetLPlansMultiTalent__3d_fullres_bs3"
                 ),
+            ).run()
+
+        if self.cads:
+            from .cads_inference import CadsInference
+
+            logger.info("\n" + "#" * 50 + "\nStarting CADS Inference\n" + "#" * 50)
+            CadsInference(
+                input_dirpath_processed=self.output_dirpath,
             ).run()
 
         if self.totalsegmentator:

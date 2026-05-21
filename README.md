@@ -24,20 +24,26 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
       - `PETseg.nii`
       - Expands `patient_info.json` with serie information
 
-3. **CT Segmentation with TotalSegmentator**
+3. **CT Segmentation with CADS**
+   - Performs miscellaneous structures for radiation therapy using the task: 556.
+   - Output:
+      - `CTcat.nii.gz`
+      - Expands `patient_info.json` with serie information
+
+4. **CT Segmentation with TotalSegmentator**
    - Performs organ segmentation on CT images using TotalSegmentator.
    - Outputs:
      - `CTseg.nii` – Segmentation mask
      - Expands `patient_info.json` with TS information
 
-4. **CT Segmentation with Moose**
+5. **CT Segmentation with Moose**
    - Performs organ segmentation on CT images using Moose.
    - Moose can only take one CT per series.
    - Outputs:
      - `CTmoose_organs.nii` – Segmentation mask
      - Expands `patient_info.json` with Moose information
 
-5. **Radiomics Extraction**
+6. **Radiomics Extraction**
    - Computes key radiomics metrics from PET and CT scans.
    - Output: Extension of `patient_info.json`
       - SUV (mean, max, peak median, std)
@@ -50,7 +56,7 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
       - Tumor Dissemination standardized by patient's height and weight(SDmax)
       - Surface Area
 
-6. **Tumor Size Analysis**
+7. **Tumor Size Analysis**
    - Quantifies tumor volume per organ based on segmentations.
    - Output:
       - `CTsegres.nii` – Resampled segmentation mask to PT
@@ -60,7 +66,7 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
          - SUV (mean, max, peak median, std)
          - Surface area
 
-7. **Optional Plotting**
+8. **Optional Plotting**
    - Generates visualizations
 
 ---
@@ -152,7 +158,7 @@ pip install moosez --no-deps
 
 - To start the whole workflow run:
 ```bash
-musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet totalsegmentator tumor moose
+musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet totalsegmentator tumor moose cads
 ```
 - See `pyproject.toml` to see commands for running only parts of the pipeline in a modular way.
 
