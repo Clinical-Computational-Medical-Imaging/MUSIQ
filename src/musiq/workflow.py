@@ -13,6 +13,7 @@ class Workflow:
         input_dirpath: str,
         output_dirpath: str,
         tasks: list[str] | None = None,
+        cads_tasks: list[str] | None = None,
         ct_primary_keywords: list[str] | None = None,
         ct_secondary_keywords: list[str] | None = None,
         ct_exclusion_keywords: list[str] | None = None,
@@ -94,6 +95,31 @@ class Workflow:
         self.tumor = "tumor" in (tasks or [])
         self.plot = "plot" in (tasks or [])
 
+        cads_tasks_error = bool(
+                any(
+                    t
+                    not in [
+                        "551",
+                        "552",
+                        "553",
+                        "554",
+                        "555",
+                        "556",
+                        "557",
+                        "558",
+                        "559",
+                        "all",
+                        "",
+                    ]
+                    for t in cads_tasks or []
+                )
+            )
+        
+        if not cads_tasks_error:
+            logger.info("Wrong input tasks for CADS model. Please use one of the following: all, 551, 552, 553, 554, 555, 556, 557, 558, 559")
+
+        self.cads_tasks = cads_tasks
+
         self.series_keywords = setup_series_keywords(
             ct_primary_keywords,
             ct_secondary_keywords,
@@ -137,6 +163,7 @@ class Workflow:
             logger.info("\n" + "#" * 50 + "\nStarting CADS Inference\n" + "#" * 50)
             CadsInference(
                 input_dirpath_processed=self.output_dirpath,
+                tasks = self.cads_tasks,
             ).run()
 
         if self.totalsegmentator:
@@ -235,6 +262,13 @@ def workflow_entrypoint():
         default=None,
     )
     parser.add_argument(
+        "--cads-tasks",
+        nargs="+",
+        help="List of tasks to run in the CADS model. Possible tasks (different tasks can be sapperated by comma): series_selection, "
+        "all, 551, 552, 553, 554, 555, 556, 557, 558, 559.",
+        default=None,
+    )
+    parser.add_argument(
         "--ct-primary-keywords", help="List of keywords to look for in CT study descriptions for default selection."
     )
     parser.add_argument(
@@ -268,6 +302,7 @@ def workflow_entrypoint():
         input_dirpath=args.input_dirpath,
         output_dirpath=args.output_dirpath,
         tasks=args.tasks,
+        cads_tasks=args.cads_tasks,
         ct_primary_keywords=args.ct_primary_keywords,
         ct_secondary_keywords=args.ct_secondary_keywords,
         ct_exclusion_keywords=args.ct_exclusion_keywords,

@@ -143,6 +143,7 @@ git clone https://github.com/mic-dkfz/autopet-3-submission
 curl -L -o autoPET-3-LesionTracer.zip "https://zenodo.org/records/14007247/files/autoPET-3-LesionTracer.zip?download=1"
 unzip autoPET-3-LesionTracer.zip -d ./autopet-3-model/
 rm autoPET-3-LesionTracer.zip
+git clone https://github.com/murong-xu/CADS.git 
 pip install -r requirements.txt
 ```
 
