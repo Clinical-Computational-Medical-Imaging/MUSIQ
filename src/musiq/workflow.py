@@ -88,7 +88,7 @@ class Workflow:
 
         self.series_selection = "series_selection" in (tasks or [])
         self.autopet = "autopet" in (tasks or [])
-        self.cads = "cads"
+        self.cads = "cads" in (tasks or [])
         self.totalsegmentator = "totalsegmentator" in (tasks or [])
         self.moose = "moose" in (tasks or [])
         self.radiomics = "radiomics" in (tasks or [])
@@ -115,9 +115,10 @@ class Workflow:
                 )
             )
         
-        if not cads_tasks_error:
-            logger.info("Wrong input tasks for CADS model. Please use one of the following: all, 551, 552, 553, 554, 555, 556, 557, 558, 559")
-
+        if cads_tasks_error:
+            logger.warning("Wrong input tasks for CADS model. Please use one of the following: all, 551, 552, 553, 554, 555, 556, 557, 558, 559")
+            self.cads = False
+            
         self.cads_tasks = cads_tasks
 
         self.series_keywords = setup_series_keywords(
