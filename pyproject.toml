@@ -12,7 +12,7 @@ authors = [
 description = "MUSIQ - Multimodal Unified Segmentation & Image Quantification. A Python package for radiomics feature extraction from medical images, specifically PET/CT and MRI scans."
 license = {file = "LICENSE"}
 readme = "README.md"
-dynamic = ["0.1.0"]
+version = "0.1.0"
 requires-python = ">=3.12"
 classifiers = [
     "Development Status :: Development Status :: 4",

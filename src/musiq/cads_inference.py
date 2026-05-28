@@ -3,10 +3,6 @@ import logging
 import os
 import subprocess
 
-#from totalsegmentator.config import get_version
-#from totalsegmentator.nifti_ext_header import load_multilabel_nifti
-#from totalsegmentator.python_api import totalsegmentator
-
 from .utils import natural_key
 
 logger = logging.getLogger(__name__)
@@ -21,6 +17,7 @@ class CadsInference:
             input_dirpath_processed (str | os.PathLike): Directory containing the CT.nii.gz files. Can be nested.
         """
         self.input_dirpath = input_dirpath_processed
+        self.cads_path = "/home/jovyan/MUSIQ/CADS/cads/scripts/run_02_inference.py"
 
     def run(self) -> None:
         """
@@ -49,14 +46,14 @@ class CadsInference:
                         and not filename.endswith("seg.nii.gz")
                     )
 
-                    if not (is_ct or is_mr):
+                    if not is_ct: #or is_mr):
                         continue
                     patient_id = os.path.basename(os.path.dirname(dirpath))
                     input_fpath = os.path.join(dirpath, filename)
-                    if is_ct:
-                        output_fpath = os.path.join(dirpath, "CADSseg.nii.gz")
-                        task = "556"
-                        modality = "CT"
+
+                    task = "all"
+                    output_fpath = os.path.join(dirpath, f"CADS_{task}_seg.nii.gz")
+                    modality = "CT"
 
                     metadata_key = f"{modality}cads_metadata"
                     seg_path_key = f"{modality}cadsPath"
@@ -80,32 +77,31 @@ class CadsInference:
 
                     # Run TotalSegmentator using the Python API with ml option and appropriate task.
                     try:
-                        subprocess.run(
-                            "python", cads_path, \
-                            "-in_preprocessed_images", self.input_dirpath,
-                            "-out", output_fpath, 
+                        subprocess.run([
+                            "python",
+                            self.cads_path,
+                            "-in_preprocessed_images", input_fpath,
+                            "-out", dirpath,
                             "-task", task
-                        )
+                        ], check=True)
 
                         logger.info("Segmentation successfully completed.")
                     except Exception as e:
                         logger.error(f"Error during segmentation for {input_fpath}:\n  {e}")
                         continue
 
-                    # Load the segmentation file to extract the label mapping from its extended header.
-                    #try:
-                        #segmentation_img, label_map_dict = load_multilabel_nifti(output_fpath)
-                        #logger.info("Label mapping successfully loaded from segmentation file.")
-                    #except Exception as e:
-                    #    logger.error(f"Error loading segmentation file {output_fpath}: {e}")
-                    #    label_map_dict = {}
+                    os.rename(
+                        os.path.join(dirpath, "CT", f"CT_part_{task}.nii.gz"),
+                        output_fpath
+                    )
+                    os.rmdir(
+                        os.path.join(dirpath, "CT")
+                    )
 
                     # Prepare metadata with settings, task/model info, and the label mapping obtained.
                     seg_metadata = {
                         "settings": {"in_preprocessed_images": input_fpath, "out": output_fpath,  "task": task},
                         "model": "cads",
-                        #"ts_version": get_version(),
-                        #"labels": label_map_dict,
                     }
                     if json_exists and patient_info is not None:
                         study_date = dirpath.split(os.sep)[-1]
