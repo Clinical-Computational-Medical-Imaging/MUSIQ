@@ -265,7 +265,7 @@ def workflow_entrypoint():
     parser.add_argument(
         "--cads-tasks",
         nargs="+",
-        help="List of tasks to run in the CADS model. Possible tasks (different tasks can be sapperated by comma): series_selection, "
+        help="List of tasks to run in the CADS model. Possible tasks (different tasks can be sapperated by spaces): series_selection, "
         "all, 551, 552, 553, 554, 555, 556, 557, 558, 559.",
         default=None,
     )

@@ -3,6 +3,7 @@ import logging
 import os
 import subprocess
 import sys
+import shutil
 
 from .utils import natural_key
 
@@ -27,6 +28,31 @@ class CadsInference:
             input_dirpath_processed (str | os.PathLike): Directory containing the CT.nii.gz files. Can be nested.
         """        
         self.input_dirpath = input_dirpath_processed
+
+        cads_tasks_error = bool(
+            any(
+                t
+                not in [
+                    "551",
+                    "552",
+                    "553",
+                    "554",
+                    "555",
+                    "556",
+                    "557",
+                    "558",
+                    "559",
+                    "all",
+                    "",
+                ]
+                for t in tasks or []
+            )
+        )
+        
+        if cads_tasks_error:
+            logger.error("Wrong input tasks for CADS model. Please use one of the following: all, 551, 552, 553, 554, 555, 556, 557, 558, 559")
+            sys.exit(1)
+            
         self.tasks = tasks
         self.cads_path = "/home/jovyan/MUSIQ/CADS/cads/scripts/run_02_inference.py"
 
@@ -40,7 +66,7 @@ class CadsInference:
             logger.error(f"Error: {self.input_dirpath} is not a valid directory.")
             return
 
-        logger.info(f"Starting TotalSegmentator inference in {self.input_dirpath}")
+        logger.info(f"Starting CADS inference in {self.input_dirpath}")
         top_dirs = [d for d in os.listdir(self.input_dirpath) if os.path.isdir(os.path.join(self.input_dirpath, d))]
         top_dirs.sort(key=natural_key)
 
@@ -78,7 +104,7 @@ class CadsInference:
                     if self.tasks is None or self.tasks == "all" or tasks_error:
                         task_ids = [551,552,553,554,555,556,557,558,559]
                     else:
-                        task_ids = list(map(int, self.tasks.split(',')))
+                        task_ids = list(map(int, self.tasks))
                     
                     output_fpath = os.path.join(dirpath, f"CTcads.nii.gz")
                     modality = "CT"
@@ -118,25 +144,12 @@ class CadsInference:
                         save_separate_targets=False,
                         use_cpu=False,
                     )
-                    #try:
-                    #    subprocess.run([
-                    #        "python",
-                    #        self.cads_path,
-                    #        "-in_preprocessed_images", input_fpath,
-                    #        "-out", dirpath,
-                    #        "-task", task
-                    #    ], check=True)
-
-                    #    logger.info("Segmentation successfully completed.")
-                    #except Exception as e:
-                    #    logger.error(f"Error during segmentation for {input_fpath}:\n  {e}")
-                    #    continue
 
                     os.rename(
                         os.path.join(dirpath, "CT", f"CT_combined.nii.gz"),
                         output_fpath
                     )
-                    os.rmdir(
+                    shutil.rmtree(
                         os.path.join(dirpath, "CT")
                     )
 
@@ -197,10 +210,18 @@ def cads_inference_entrypoint() -> None:
     parser.add_argument(
         "--input-dirpath-processed", type=str, help="Path to the input folder containing CT.nii.gz files", required=True
     )
+    parser.add_argument(
+        "--cads-tasks",
+        nargs="+",
+        help="List of tasks to run in the CADS model. Possible tasks (different tasks can be sapperated by spaces): series_selection, "
+        "all, 551, 552, 553, 554, 555, 556, 557, 558, 559.",
+        default=None,
+    )
     args = parser.parse_args()
 
     CadsInference(
         input_dirpath_processed=args.input_dirpath_processed,
+        tasks=args.cads_tasks,
     ).run()
 
 
