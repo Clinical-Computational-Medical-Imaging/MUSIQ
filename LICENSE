@@ -1,42 +1,57 @@
 Non-Commercial Software License v1.0
+
+Copyright (c) 2026, University Hospital Augsburg 
+
+This software and associated documentation files (the "Software") are provided under the terms of this Non-commercial license: :
+
+1.	GRANT OF LICENSE:
+Subject to full compliance with the terms of this license, the copyright holder hereby grants you a non-exclusive, worldwide, royalty-free license to:
+-	Use the Software solely for personal, educational, or academic research purposes
+-	Modify the Software
+-	Copy and redistribute the original or modified Software for non-commercial purposes only
+
+2.	RESTRICTIONS:
+2. 1. COMMERCIAL USE: You may not use the Software or any derivative works for commercial purposes without obtaining a separate commercial license from the copyright holder. 
+Commercial purposes include, without limitation:
+-	Selling,licensing sublicencing, or monetizing the Software or derivative works
+-	Using the Software in any revenue-generating activity
+-	Integrating the Software into commercial products, services or platforms
+-	Using the Software to provide paid consulting, support, analysis or other services Use of the Software in contract research, industry‑funded projects, or activities primarily intended for commercial advantage
+
+2.	2. ATTRIBUTION: You must retain 
+-	all copyright notices 
+-	this license text
+-	any existing attribution notices
+
+in all opies of the Software and associated documentation. 
+
+2.	3. SHARE-ALIKE (Non – Commercial): 
+If you distribute modified versions of the software, you must:
  
-Copyright (c) 2026 the authors
- 
-This software and associated documentation files (the "Software") are provided
-under the following non-commercial license terms:
- 
-GRANT OF LICENSE:
-Subject to the terms of this license, you are granted a non-exclusive, worldwide,
-royalty-free license to:
-- Use the Software for personal, educational, or research purposes
-- Modify the Software
-- Distribute copies of the original or modified Software for non-commercial purposes
- 
- 
-RESTRICTIONS:
-1. COMMERCIAL USE: You may not use this Software or any derivative works for
-   commercial purposes without obtaining a separate commercial license from the
-   copyright holder. Commercial purposes include but are not limited to:
-   - Selling or licensing the Software or derivative works
-   - Using the Software in any revenue-generating activity
-   - Including the Software in commercial products or services
-   - Using the Software to provide paid services
- 
-2. ATTRIBUTION: You must retain all copyright notices and license statements in the Software and associated documentation.
- 
-3. SHARE-ALIKE: If you distribute modified versions, you must do so under the
-   same non-commercial terms.
- 
-DISCLAIMER:
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-TERMINATION:
-This license is automatically terminated if you fail to comply with any of its terms.
- 
- 
-For commercial licensing inquiries, please contact: sonja.adomeit [at] med.uni-augsburg.de
+-	Clearly indicate that changes were made
+-	Distribute such modifications under the same non‑commercial license terms
+-	Not impose additional restrictions that would limit the rights granted under this License
+
+3. NO MEDICAL USE / NO MEDICAL DEVICE USE/NO REGULATED HEALTHCARE USE :
+The Software is not intended for use as a medical device, nor as a component of a medical device, nor for any purpose related to the diagnosis, prevention, monitoring, treatment, or alleviation of disease or injury (medical use).
+
+You must not use, integrate, or distribute the Software in any context where it would:
+-	Qualify as a medical device or in vitro diagnostic under applicable laws or regulations (including but not limited to the EU Medical Device Regulation (MDR), EU In Vitro Diagnostic Medical Devices Regulation (IVDR) or U.S. FDA regulations), or
+-	Be used in clinical decision-making, patient care, or any healthcare-related application involving real patients.
+
+The Software has not been designed, developed, tested, validated, or approved in accordance with any medical device, in vitro diagnostic, or healthcare regulatory requirements. 
+
+The licensor explicitly disclaims any representation or warranty that the Software complies with such requirements.
+
+Any use of the Software in prohibited medical or healthcare contexts constitutes a material breach and violation of this License and is undertaken entirely at user´s.
+
+4. DISCLAIMER OF WARRANTY:
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSENON-INFRINGEMENT, OR REGULATORY COMPLIANCE. 
+
+5. LIMITATION OF LIABILITY
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS, OR CONTRIBUTORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+6. TERMINATION:
+This license shall automatically terminated if you fail to comply with any of its terms. Upon termination, you must immediately cease all use, distribution, and modification of the Software.
+
+For commercial licensing inquiries, please contact: thomas.wendler [at] uk-augsburg.de

@@ -1,4 +1,5 @@
-# MUSIQ - Multimodal Unified Segmentation & Image Quantification 
+![Fig. 1: Overview of the PET/CT workflow. MRI not included in the image.](./images/musiq.png) 
+# Multimodal Unified Segmentation & Image Quantification 
 
 This Python project provides an end-to-end pipeline for processing PET/CT and MRI scans retrieved from a PACS system. The pipeline supports DICOM to NIfTI conversion, segmentation, radiomics extraction, tumor quantification, and result aggregation.
 
@@ -207,5 +208,15 @@ If you are using Windows, it is recommended to add the following flags to reduce
 ---
 
 ## Reference
-The corresponding paper **"AI-Based Automated Framework for Quantitative PET/CT Image Analysis"** was accepted at Bildverarbeitung für die Medizin (BVM) 2026 and will soon be published in the proceedings of the German Conference on Medical Image Computing,
-Regensburg, March 15-17, 2026.
+If you use our pipeline, please cite:
+
+```bibtex
+@inproceedings{adomeit2026ai,
+  title={AI-based Automated Framework for Quantitative PET/CT Image Analysis},
+  author={Adomeit, Sonja and F{\"o}rner, Lukas and Scheurer, Elisabeth and B{\"a}{\ss}ler, Jan and de Llanes, Elina Gastreich and B{\"o}hringer, Jonas and Bundschuh, Ralph A and Lapa, Constantin and Tehlan, Kartikay and Wendler, Thomas},
+  booktitle={BVM Workshop},
+  pages={139--145},
+  year={2026},
+  organization={Springer}
+}
+```

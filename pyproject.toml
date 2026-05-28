@@ -10,11 +10,12 @@ authors = [
     { name = "Clinical Computational Medical Imaging Research, University Hospital Augsburg, Germany" }
 ]
 description = "MUSIQ - Multimodal Unified Segmentation & Image Quantification. A Python package for radiomics feature extraction from medical images, specifically PET/CT and MRI scans."
+license = {file = "LICENSE"}
 readme = "README.md"
-dynamic = ["version"]
+dynamic = ["0.1.0"]
 requires-python = ">=3.12"
 classifiers = [
-    "Development Status :: Development Status :: 0",
+    "Development Status :: Development Status :: 4",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Healthcare Industry",
@@ -140,8 +141,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [project.urls]
-homepage = "https://TBA.com"
-repository = "https://TBA.com"
+repository = "https://github.com/Clinical-Computational-Medical-Imaging/MUSIQ"
 
 [project.optional-dependencies]
 testing = ["setuptools", "pytest", "pytest-cov"]

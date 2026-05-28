@@ -241,7 +241,11 @@ class SeriesSelection:
                 indices = preselected_indices
             else:
                 indices = [int(i) for i in input_parts if i.isdigit() and 0 <= int(i) < len(study_info)]
-
+            
+            if not indices:
+                logger.warning(f"No series selected for patient: {patient_id}, study: {study_date}")
+                continue
+            
             selected_series = {patient_id: [study_info[i] for i in indices]}
             if patient_id not in self.patient_results:
                 self.patient_results[patient_id] = {
