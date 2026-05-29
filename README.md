@@ -160,8 +160,9 @@ pip install moosez --no-deps
 
 - To start the whole workflow run:
 ```bash
-musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet totalsegmentator tumor moose cads
+musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet totalsegmentator tumor moose cads --cads-tasks 556 558
 ```
+- To run cads you can run the different tasks givven on there repository or just run 'all'
 - See `pyproject.toml` to see commands for running only parts of the pipeline in a modular way.
 
 
