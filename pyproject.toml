@@ -37,6 +37,7 @@ keywords = [
 ]
 dependencies= [
     "acvl_utils==0.2.5",
+    "ants==0.0.7",
     "batchgenerators==0.25.1",
     "batchgeneratorsv2==0.3.0",
     "blosc2==3.4.0",
@@ -80,11 +81,13 @@ dependencies= [
     "nodeenv==1.9.1",
     "numexpr==2.11.0",
     "numpy==1.26.4",
+    "p_tqdm==1.4.2",
     "packaging==25.0",
     "pandas==2.3.0",
     "pillow==11.2.1",
     "platformdirs==4.3.8",
     "pre-commit==4.2.0",
+    "psutil==7.2.2",
     "py-cpuinfo==9.0.0",
     "pyarrow==20.0.0",
     "pydicom==3.0.1",

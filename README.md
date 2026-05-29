@@ -145,6 +145,7 @@ unzip autoPET-3-LesionTracer.zip -d ./autopet-3-model/
 rm autoPET-3-LesionTracer.zip
 git clone https://github.com/murong-xu/CADS.git 
 pip install -r requirements.txt
+pip install TPTBox==0.3.0 fastremap fill_voids --no-deps
 ```
 
 - In order to use the pipeline with the moose extention we need a second virtual enviroment:
