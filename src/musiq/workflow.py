@@ -110,6 +110,7 @@ class Workflow:
                         "559",
                         "all",
                         "",
+                        None,
                     ]
                     for t in cads_tasks or []
                 )
@@ -265,8 +266,8 @@ def workflow_entrypoint():
     parser.add_argument(
         "--cads-tasks",
         nargs="+",
-        help="List of tasks to run in the CADS model. Possible tasks (different tasks can be sapperated by spaces): series_selection, "
-        "all, 551, 552, 553, 554, 555, 556, 557, 558, 559.",
+        help="List of tasks to run in the CADS model. Possible tasks (different tasks can be separated by spaces): "
+        "all 551 552 553 554 555 556 557 558 559",
         default=None,
     )
     parser.add_argument(
