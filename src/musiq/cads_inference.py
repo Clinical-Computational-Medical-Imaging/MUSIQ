@@ -1,20 +1,17 @@
 import json
 import logging
 import os
-import sys
 import shutil
-
-from .utils import natural_key
-
+import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "CADS"))
 
-from cads.utils.libs import setup_nnunet_env
-setup_nnunet_env()
 from cads.utils.inference import predict
-from cads.utils.libs import get_model_weights_dir, check_or_download_model_weights
+from cads.utils.libs import check_or_download_model_weights, get_model_weights_dir, setup_nnunet_env
 
+from .utils import natural_key
 
+setup_nnunet_env()
 logger = logging.getLogger(__name__)
 
 
@@ -22,67 +19,35 @@ class CadsInference:
     def __init__(self, input_dirpath_processed: str | os.PathLike, tasks: list[str] | None = None) -> None:
         """Class to handle CADS model inference on CT.nii.gz files in a specified folder.
         It processes each file, runs segmentation, extracts label mapping. Creates CTcads.nii.
-        All given tasks are stored in one file ant the labels are set as in the labelmap_all_structure 
+        All given tasks are stored in one file and the labels are set as in the labelmap_all_structure
         shared by the cads model (https://github.com/murong-xu/CADS/blob/main/cads/dataset_utils/bodyparts_labelmaps.py).
 
         Args:
             input_dirpath_processed (str | os.PathLike): Directory containing the CT.nii.gz files. Can be nested.
-        """        
+        """
         self.input_dirpath = input_dirpath_processed
         self.tasks = tasks
 
-        cads_tasks_error = bool(
-            any(
-                t
-                not in [
-                    "551",
-                    "552",
-                    "553",
-                    "554",
-                    "555",
-                    "556",
-                    "557",
-                    "558",
-                    "559",
-                    "all",
-                    "",
-                ]
-                for t in tasks or []
+        VALID_TASK_IDS = {551, 552, 553, 554, 555, 556, 557, 558, 559}
+        VALID_STR_TASKS = {str(t) for t in VALID_TASK_IDS} | {"all", ""}
+        tasks = tasks or []
+        if any(t not in VALID_STR_TASKS for t in tasks):
+            logger.error(
+                "Wrong input tasks for CADS model. Please use one/ some of "
+                "the following separated by spaces: all 551 552 553 554 555 556 557 558 559"
             )
-        )
-        
-        if cads_tasks_error:
-            logger.error("Wrong input tasks for CADS model. Please use one/ some of the following separated by spaces: all 551 552 553 554 555 556 557 558 559")
             sys.exit(1)
-
-        tasks_error = bool(
-            any(
-                t
-                not in [
-                    "551",
-                    "552",
-                    "553",
-                    "554",
-                    "555",
-                    "556",
-                    "557",
-                    "558",
-                    "559",
-                ]
-                for t in tasks or []
-            )
-        )
-
-        if tasks is None or "all" in tasks or tasks_error:
-            self.task_ids = [551,552,553,554,555,556,557,558,559]
+        if not tasks or "all" in tasks:
+            self.task_ids = sorted(list(VALID_TASK_IDS))
         else:
-            self.task_ids = list(map(int, tasks))
-    
+            # Filter out empty strings before mapping to int
+            self.task_ids = [int(t) for t in tasks if t]
+
     def run(self) -> None:
         """
         Recursively search the folder for CT.nii.gz files.
         For each found file, create a 'CTcads' file, run segmentation using the given task options,
-        extract the SUL image using the segmentation output, and save a metadata to the JSON file.
+        extract the segmentation output, and save a metadata to the JSON file.
         """
         if not os.path.isdir(self.input_dirpath):
             logger.error(f"Error: {self.input_dirpath} is not a valid directory.")
@@ -104,8 +69,8 @@ class CadsInference:
                         continue
                     patient_id = os.path.basename(os.path.dirname(dirpath))
                     input_fpath = os.path.join(dirpath, filename)
-                    
-                    output_fpath = os.path.join(dirpath, f"CTcads.nii.gz")
+
+                    output_fpath = os.path.join(dirpath, "CTcads.nii.gz")
                     modality = "CT"
 
                     if os.path.isfile(output_fpath):
@@ -124,7 +89,7 @@ class CadsInference:
                         logger.error(f"Missing patient_info.json in {patient_dirpath}.")
 
                     logger.info(f"Processing file {filename} for patient {patient_id}.")
-                    
+
                     model_folder = get_model_weights_dir()
 
                     for task_id in self.task_ids:
@@ -135,40 +100,23 @@ class CadsInference:
                         dirpath,
                         model_folder,
                         self.task_ids,
-                        folds='all',
+                        folds="all",
                         save_all_combined_seg=True,
                         save_separate_targets=False,
                         use_cpu=False,
                     )
 
-                    os.rename(
-                        os.path.join(dirpath, "CT", f"CT_combined.nii.gz"),
-                        output_fpath
-                    )
-                    shutil.rmtree(
-                        os.path.join(dirpath, "CT")
-                    )
+                    os.rename(os.path.join(dirpath, "CT", "CT_combined.nii.gz"), output_fpath)
+                    shutil.rmtree(os.path.join(dirpath, "CT"))
 
                     # Prepare metadata with settings, task/model info, and the label mapping obtained.
                     seg_metadata = {
-                        "settings": {"in_preprocessed_images": input_fpath, "out": output_fpath,  "task": self.task_ids},
+                        "settings": {"in_preprocessed_images": input_fpath, "out": output_fpath, "task": self.task_ids},
                         "model": "cads v1.0.0",
                     }
                     if json_exists and patient_info is not None:
                         study_date = dirpath.split(os.sep)[-1]
-                        if modality == "CT":
-                            series_index = 0
-                        else:
-                            mr_series = patient_info["Studies"][study_date]["Modalities"][modality]
-                            # Find the index where the filename matches the MRPath value
-                            series_index = None
-                            for idx, serie in enumerate(mr_series):
-                                for _serie_name, serie_data in serie.items():
-                                    if "MRPath" in serie_data and filename in os.path.basename(serie_data["MRPath"]):
-                                        series_index = idx
-                                        break
-                                if series_index is not None:
-                                    break
+                        series_index = 0
 
                         if series_index is None:
                             logger.error(f"Could not find series index for {filename} in patient_info.json.")
@@ -200,7 +148,7 @@ def cads_inference_entrypoint() -> None:
 
     parser = argparse.ArgumentParser(
         description="Recursively run CADS model on all CT.nii.gz files in a folder. "
-        "Extract SUL images using the segmentation output and save metadata to json."
+        "Extract the segmentation output and save metadata to json."
     )
     parser.add_argument(
         "--input-dirpath-processed", type=str, help="Path to the input folder containing CT.nii.gz files", required=True
