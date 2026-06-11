@@ -13,6 +13,7 @@ class Workflow:
         input_dirpath: str,
         output_dirpath: str,
         tasks: list[str] | None = None,
+        cads_tasks: list[str] | None = None,
         ct_primary_keywords: list[str] | None = None,
         ct_secondary_keywords: list[str] | None = None,
         ct_exclusion_keywords: list[str] | None = None,
@@ -37,6 +38,7 @@ class Workflow:
                 - "radiomics": Extract radiomics features from selected series.
                 - "tumor": Compute tumor level statistics.
                 - "plot": Create visualisations.
+                - "cads": Run CADS on CT images.
             ct_primary_keywords (list[str] | None): Keywords for primary selection of CT series.
             ct_secondary_keywords (list[str] | None): Keywords for secondary selection of CT series.
             ct_exclusion_keywords (list[str] | None): Keywords to exclude CT series.
@@ -60,6 +62,7 @@ class Workflow:
                 "moose",
                 "moose_task",
                 "muscle_fat",
+                "cads",
             ]
         else:
             tasks_error = bool(
@@ -75,6 +78,7 @@ class Workflow:
                         "moose",
                         "moose_task",
                         "muscle_fat",
+                        "cads",
                     ]
                     for t in tasks or []
                 )
@@ -84,17 +88,49 @@ class Workflow:
                     "Invalid tasks specified. Possible values are: "
                     "'series_selection', 'radiomics', 'autopet', "
                     "'totalsegmentator', 'tumor', 'plot', 'moose', "
-                    "'moose_task', 'muscle_fat'."
+                    "'moose_task', 'muscle_fat', 'cads'."
                 )
 
         self.series_selection = "series_selection" in (tasks or [])
         self.autopet = "autopet" in (tasks or [])
+        self.cads = "cads" in (tasks or [])
         self.totalsegmentator = "totalsegmentator" in (tasks or [])
         self.muscle_fat = "muscle_fat" in (tasks or [])
         self.moose = "moose" in (tasks or [])
         self.radiomics = "radiomics" in (tasks or [])
         self.tumor = "tumor" in (tasks or [])
         self.plot = "plot" in (tasks or [])
+
+        cads_tasks_error = bool(
+            any(
+                t
+                not in [
+                    "551",
+                    "552",
+                    "553",
+                    "554",
+                    "555",
+                    "556",
+                    "557",
+                    "558",
+                    "559",
+                    "all",
+                    "",
+                    None,
+                ]
+                for t in cads_tasks or []
+            )
+        )
+
+        if cads_tasks_error:
+            logger.warning(
+                "Wrong input tasks for CADS model."
+                "Please use one of the following: "
+                "all, 551, 552, 553, 554, 555, 556, 557, 558, 559"
+            )
+            self.cads = False
+
+        self.cads_tasks = cads_tasks
 
         self.series_keywords = setup_series_keywords(
             ct_primary_keywords,
@@ -131,6 +167,15 @@ class Workflow:
                 autopet_checkpoint_dirpath=os.path.join(
                     "./autopet-3-model/Dataset222_AutoPETIII_2024/autoPET3_Trainer__nnUNetResEncUNetLPlansMultiTalent__3d_fullres_bs3"
                 ),
+            ).run()
+
+        if self.cads:
+            from .cads_inference import CadsInference
+
+            logger.info("\n" + "#" * 50 + "\nStarting CADS Inference\n" + "#" * 50)
+            CadsInference(
+                input_dirpath_processed=self.output_dirpath,
+                tasks=self.cads_tasks,
             ).run()
 
         if self.totalsegmentator:
@@ -237,6 +282,13 @@ def workflow_entrypoint():
         default=None,
     )
     parser.add_argument(
+        "--cads-tasks",
+        nargs="+",
+        help="List of tasks to run in the CADS model. Possible tasks (different tasks can be separated by spaces): "
+        "all 551 552 553 554 555 556 557 558 559",
+        default=None,
+    )
+    parser.add_argument(
         "--ct-primary-keywords", help="List of keywords to look for in CT study descriptions for default selection."
     )
     parser.add_argument(
@@ -270,6 +322,7 @@ def workflow_entrypoint():
         input_dirpath=args.input_dirpath,
         output_dirpath=args.output_dirpath,
         tasks=args.tasks,
+        cads_tasks=args.cads_tasks,
         ct_primary_keywords=args.ct_primary_keywords,
         ct_secondary_keywords=args.ct_secondary_keywords,
         ct_exclusion_keywords=args.ct_exclusion_keywords,
