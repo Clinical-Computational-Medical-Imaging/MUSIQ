@@ -60,7 +60,6 @@ class Workflow:
                 "tumor",
                 "plot",
                 "moose",
-                "moose_task",
                 "muscle_fat",
                 "cads",
             ]
@@ -76,7 +75,6 @@ class Workflow:
                         "tumor",
                         "plot",
                         "moose",
-                        "moose_task",
                         "muscle_fat",
                         "cads",
                     ]
@@ -88,7 +86,7 @@ class Workflow:
                     "Invalid tasks specified. Possible values are: "
                     "'series_selection', 'radiomics', 'autopet', "
                     "'totalsegmentator', 'tumor', 'plot', 'moose', "
-                    "'moose_task', 'muscle_fat', 'cads'."
+                    "'muscle_fat', 'cads'."
                 )
 
         self.series_selection = "series_selection" in (tasks or [])
@@ -278,7 +276,7 @@ def workflow_entrypoint():
         "--tasks",
         nargs="+",
         help="List of tasks to run. Possible values: series_selection, "
-        "radiomics, autopet, totalsegmentator, tumor, plot, moose, moose_task.",
+        "radiomics, autopet, totalsegmentator, tumor, plot, moose, muscle_fat, cads.",
         default=None,
     )
     parser.add_argument(
