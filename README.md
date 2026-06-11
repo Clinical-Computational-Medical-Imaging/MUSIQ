@@ -22,22 +22,28 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
    - Output:
       - `CTres.nii`
       - `PETseg.nii`
-      - Expands `patient_info.json` with serie information
+      - Expands `patient_info.json` with series information
 
-3. **CT Segmentation with TotalSegmentator**
+3. **CT Segmentation with CADS v1.0.0**
+   - Performs organ segmentation on CT images using the CADS model using the specified tasks and saves everything to a single file. The labels are set as the labelmap_all_structure  as shown here https://github.com/murong-xu/CADS/tree/main/cads/dataset_utils.
+   - Output:
+      - `CTcads.nii.gz`
+      - Expands `patient_info.json` with CADS information
+
+4. **CT Segmentation with TotalSegmentator**
    - Performs organ segmentation on CT images using TotalSegmentator.
    - Outputs:
      - `CTseg.nii` – Segmentation mask
      - Expands `patient_info.json` with TS information
 
-4. **CT Segmentation with Moose**
+5. **CT Segmentation with Moose**
    - Performs organ segmentation on CT images using Moose.
    - Moose can only take one CT per series.
    - Outputs:
      - `CTmoose_organs.nii` – Segmentation mask
      - Expands `patient_info.json` with Moose information
 
-5. **Radiomics Extraction**
+6. **Radiomics Extraction**
    - Computes key radiomics metrics from PET and CT scans.
    - Output: Extension of `patient_info.json`
       - SUV (mean, max, peak median, std)
@@ -50,7 +56,7 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
       - Tumor Dissemination standardized by patient's height and weight(SDmax)
       - Surface Area
 
-6. **Tumor Size Analysis**
+7. **Tumor Size Analysis**
    - Quantifies tumor volume per organ based on segmentations.
    - Output:
       - `CTsegres.nii` – Resampled segmentation mask to PT
@@ -60,7 +66,7 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
          - SUV (mean, max, peak median, std)
          - Surface area
 
-7. **Optional Plotting**
+8. **Optional Plotting**
    - Generates visualizations
 
 ---
@@ -128,7 +134,7 @@ musiq/
 ---
 ## Standard Usage
 - Clone this repository and cd into it
-- Create the first virtual enviroment (tested with Python3.12) and install dependencies via the following commands:
+- Create the first virtual environment (tested with Python3.12) and install dependencies via the following commands:
 
 ```bash
 python3.12 -m venv .venv
@@ -137,10 +143,12 @@ git clone https://github.com/mic-dkfz/autopet-3-submission
 curl -L -o autoPET-3-LesionTracer.zip "https://zenodo.org/records/14007247/files/autoPET-3-LesionTracer.zip?download=1"
 unzip autoPET-3-LesionTracer.zip -d ./autopet-3-model/
 rm autoPET-3-LesionTracer.zip
+git clone https://github.com/murong-xu/CADS.git 
 pip install -r requirements.txt
+pip install TPTBox==0.3.0 fastremap fill_voids --no-deps
 ```
 
-- In order to use the pipeline with the moose extention we need a second virtual enviroment:
+- In order to use the pipeline with the moose extension we need a second virtual environment:
 
 ```bash
 deactivate
@@ -152,8 +160,9 @@ pip install moosez --no-deps
 
 - To start the whole workflow run:
 ```bash
-musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet totalsegmentator tumor moose
+musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet totalsegmentator tumor moose cads --cads-tasks 556 558
 ```
+- To run CADS you can run the different tasks given on their repository or just run 'all'
 - See `pyproject.toml` to see commands for running only parts of the pipeline in a modular way.
 
 
@@ -201,7 +210,8 @@ If you are using Windows, it is recommended to add the following flags to reduce
 - **Moose 3.0**
    - Ferrara D, Pires M, Gutschmayer S, Yu J, Abdelhafez YG, Abenavoli E et al. Sharing a whole-/total-body [18F]FDG-PET/CT dataset with CT-derived segmentations: an ENHANCE.PETinitiative. 2025.
    - Sundar LKS, Yu J, Muzik O, Kulterer OC, Fueger B, Kifjak D et al. Fully Automated,Semantic Segmentation of Whole-Body18 F-FDG PET/CT Images Based on Data-CentricArtificial Intelligence. J Nucl Med. 2022;63(12):1941–8.
-
+- **CADS**
+   - Xu, M., Amiranashvili, T., Navarro, F., Fritsak, M., Hamamci, I.E., Shit, S., Wittmann, B., Er, S., Christ, S.M., de la Rosa, E. and Deseoe, J., 2025. CADS: A Comprehensive Anatomical Dataset and Segmentation for Whole-Body Anatomy in Computed Tomography. arXiv preprint arXiv:2507.22953.
 ---
 
 ## Reference

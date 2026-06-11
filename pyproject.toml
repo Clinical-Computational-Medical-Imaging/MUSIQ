@@ -12,7 +12,7 @@ authors = [
 description = "MUSIQ - Multimodal Unified Segmentation & Image Quantification. A Python package for radiomics feature extraction from medical images, specifically PET/CT and MRI scans."
 license = {file = "LICENSE"}
 readme = "README.md"
-dynamic = ["0.1.0"]
+version = "0.1.0"
 requires-python = ">=3.12"
 classifiers = [
     "Development Status :: Development Status :: 4",
@@ -37,6 +37,7 @@ keywords = [
 ]
 dependencies= [
     "acvl_utils==0.2.5",
+    "ants==0.0.7",
     "batchgenerators==0.25.1",
     "batchgeneratorsv2==0.3.0",
     "blosc2==3.4.0",
@@ -80,11 +81,13 @@ dependencies= [
     "nodeenv==1.9.1",
     "numexpr==2.11.0",
     "numpy==1.26.4",
+    "p_tqdm==1.4.2",
     "packaging==25.0",
     "pandas==2.3.0",
     "pillow==11.2.1",
     "platformdirs==4.3.8",
     "pre-commit==4.2.0",
+    "psutil==7.2.2",
     "py-cpuinfo==9.0.0",
     "pyarrow==20.0.0",
     "pydicom==3.0.1",
@@ -123,7 +126,9 @@ dependencies= [
 
 [project.scripts]
 musiq_autopet_inference = "musiq.autopet_inference:autopet_inference_entrypoint"
+musiq_cads_inference = "musiq.cads_inference:cads_inference_entrypoint"
 musiq_export_validation = "musiq.export_validation:export_validation_entrypoint"
+musiq_moose_inference = "musiq.moose_inference:moose_inference_entrypoint"
 musiq_patient_info_extraction = "musiq.patient_info_extraction:patient_info_extraction_entrypoint"
 musiq_plot_summary = "musiq.plot_summary:plot_summary_entrypoint"
 musiq_extraction = "musiq.radiomics_extraction:radiomics_extraction_entrypoint"
