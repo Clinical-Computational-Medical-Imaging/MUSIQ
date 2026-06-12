@@ -13,7 +13,14 @@ import nibabel as nib
 import numpy as np
 import pydicom
 
-from .utils import agnostic_path, conv_time, extract_dicom_data, make_json_safe, run_dcm2niix, setup_series_keywords
+from .utils import (
+    agnostic_path,
+    extract_dicom_data,
+    make_json_safe,
+    run_dcm2niix,
+    setup_series_keywords,
+    time_to_seconds,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -130,9 +137,12 @@ class SeriesSelection:
                 out_path_SUV = os.path.join(self.output_dirpath, patient_id, study_date, "SUV.nii.gz")
                 out_path_MR = os.path.join(self.output_dirpath, patient_id, study_date, ".nii.gz")
                 if (
-                    (modality in ["CT", "PT"] and all([os.path.isfile(out_path_CT), 
-                                                       os.path.isfile(out_path_PT),
-                                                       os.path.isfile(out_path_SUV)]))
+                    (
+                        modality in ["CT", "PT"]
+                        and all(
+                            [os.path.isfile(out_path_CT), os.path.isfile(out_path_PT), os.path.isfile(out_path_SUV)]
+                        )
+                    )
                     or (modality == "MR" and any(out_path_MR))
                 ) and os.path.isfile(out_path_patient_info):
                     new_info = f"Processed files for patient {patient_id} in study {study_date} already exist."
@@ -160,11 +170,11 @@ class SeriesSelection:
                 continue
         return grouped
 
-    def get_number_of_slices(self, series_path:os.PathLike):
+    def get_number_of_slices(self, series_path: os.PathLike):
         number_of_slices = 0
         for dicom_file in os.listdir(series_path):
             try:
-                ds = pydicom.dcmread(os.path.join(series_path, dicom_file), stop_before_pixels=True)
+                _ = pydicom.dcmread(os.path.join(series_path, dicom_file), stop_before_pixels=True)
                 number_of_slices += 1
             except Exception as e:
                 logger.debug(f"didn't count file: {dicom_file} ({e})")
@@ -179,14 +189,13 @@ class SeriesSelection:
         user_flags = {}
         patient_conversion_flags = {}
         user_wants_to_select = (
-            input(
-                "Do you want to select manually? (y) yes manually, (N) No use pre-selected indices: "
-            )
-            .strip()
-            .lower()
+            input("Do you want to select manually? (y) yes manually, (N) No use pre-selected indices: ").strip().lower()
         )
         if user_wants_to_select not in ("y", "n"):
-            logger.warning(f"You want: {user_wants_to_select}. Starting without interactive selection using (n) pre-selected indices.")
+            logger.warning(
+                f"You want: {user_wants_to_select}. Starting without interactive "
+                "selection using (n) pre-selected indices."
+            )
             user_wants_to_select = "n"
 
         for idx, ((patient_id, study_date), study_info) in enumerate(sorted(self.grouped_series.items())):
@@ -206,7 +215,9 @@ class SeriesSelection:
                 pre = i in preselected_indices
                 mark = "[*]" if pre else "[ ]"
                 if "NumSlices" in s:
-                    logger.info(f"{mark} [{i:2}] {s['Modality']:>3} | slices: {s['NumSlices']} | {s['SeriesDescription']}")
+                    logger.info(
+                        f"{mark} [{i:2}] {s['Modality']:>3} | slices: {s['NumSlices']} | {s['SeriesDescription']}"
+                    )
                 else:
                     logger.info(f"{mark} [{i:2}] {s['Modality']:>3} | {s['SeriesDescription']}")
 
@@ -241,11 +252,11 @@ class SeriesSelection:
                 indices = preselected_indices
             else:
                 indices = [int(i) for i in input_parts if i.isdigit() and 0 <= int(i) < len(study_info)]
-            
+
             if not indices:
                 logger.warning(f"No series selected for patient: {patient_id}, study: {study_date}")
                 continue
-            
+
             selected_series = {patient_id: [study_info[i] for i in indices]}
             if patient_id not in self.patient_results:
                 self.patient_results[patient_id] = {
@@ -277,15 +288,9 @@ class SeriesSelection:
         It also checks if there are other series descriptions with the same naming and safes the number of slices.
         It returns a list of indices for the selected series and a flag indicating if secondary keywords were used.
         """
-        has_none = any(
-            v is None
-            for inner in self.series_keywords.values()
-            for v in inner.values()
-        )
+        has_none = any(v is None for inner in self.series_keywords.values() for v in inner.values())
         empty_dict = all(
-            hasattr(v, "__len__") and len(v) == 0
-            for inner in self.series_keywords.values()
-            for v in inner.values()
+            hasattr(v, "__len__") and len(v) == 0 for inner in self.series_keywords.values() for v in inner.values()
         )
         if has_none or empty_dict:
             logger.info("No Keywords given, using all series")
@@ -296,7 +301,7 @@ class SeriesSelection:
         for idx, s in enumerate(series_list):
             desc_groups[s["SeriesDescription"]].append(idx)
 
-        for desc, entries in desc_groups.items():
+        for _desc, entries in desc_groups.items():
             if len(entries) > 1:
                 for idx in entries:
                     if "NumSlices" not in series_list[idx]:
@@ -330,7 +335,7 @@ class SeriesSelection:
                 modality_matches[modality]["secondary"].append(i)
 
         for match_type in ["primary", "secondary"]:
-            for modality, match in modality_matches.items():
+            for _modality, match in modality_matches.items():
                 indices = match[match_type]
                 if not indices:
                     continue
@@ -500,7 +505,13 @@ class SeriesSelection:
             return dicom_tags
         else:
             first_pt_dcm = os.listdir(PET_dcm_dirpath)[0]
-            suv_corr_factor, pt_start_time = self.calculate_suv_factor(os.path.join(PET_dcm_dirpath, first_pt_dcm))
+            ds = pydicom.dcmread(os.path.join(PET_dcm_dirpath, first_pt_dcm))
+            total_dose = ds.RadiopharmaceuticalInformationSequence[0].RadionuclideTotalDose
+            start_time = ds.RadiopharmaceuticalInformationSequence[0].RadiopharmaceuticalStartTime
+            half_life = ds.RadiopharmaceuticalInformationSequence[0].RadionuclideHalfLife
+            acq_time = ds.AcquisitionTime
+            weight = ds.PatientWeight
+            suv_corr_factor = self.calculate_suv_factor(total_dose, start_time, half_life, acq_time, weight)
 
             with tempfile.TemporaryDirectory() as tmp:  # convert PET
                 tmp = plb.Path(str(tmp))
@@ -515,7 +526,7 @@ class SeriesSelection:
                 with open(nii) as json_file:
                     dicom_tags = json.load(json_file)
 
-                dicom_tags["RadiopharmaceuticalStartTime"] = pt_start_time
+                dicom_tags["RadiopharmaceuticalStartTime"] = start_time
                 dicom_tags["SUVFactor"] = suv_corr_factor
 
                 # convert pet images to quantitative suv images and save nifti file
@@ -570,18 +581,14 @@ class SeriesSelection:
                 dicom_tags = json.load(json_file)
         return nii_path, dicom_tags
 
-    def calculate_suv_factor(self, dcm_path: str | os.PathLike) -> float:
+    def calculate_suv_factor(
+        self, total_dose: float, start_time: str, half_life: float, acq_time: str, weight: float
+    ) -> float:
         """Calculation of the SUV conversion factor"""
-        ds = pydicom.dcmread(dcm_path)
-        total_dose = ds.RadiopharmaceuticalInformationSequence[0].RadionuclideTotalDose
-        start_time = ds.RadiopharmaceuticalInformationSequence[0].RadiopharmaceuticalStartTime
-        half_life = ds.RadiopharmaceuticalInformationSequence[0].RadionuclideHalfLife
-        acq_time = ds.AcquisitionTime
-        weight = ds.PatientWeight
-        time_diff = conv_time(acq_time) - conv_time(start_time)
+        time_diff = time_to_seconds(acq_time) - time_to_seconds(start_time)
         act_dose = total_dose * 0.5 ** (time_diff / half_life)
         suv_factor = 1000 * weight / act_dose
-        return suv_factor, start_time
+        return suv_factor
 
     def convert_pet(self, pet, suv_factor) -> nib.Nifti1Image:
         """Conversion of PET values to SUV (should work on Siemens PET/CT)"""

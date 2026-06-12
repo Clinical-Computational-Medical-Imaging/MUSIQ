@@ -187,10 +187,10 @@ class Workflow:
             ).run()
 
         if self.muscle_fat:
-            from .totalsegmentator_muscle_fat import TotalSegmentatorMuscleFat
+            from .totalsegmentator_musle_fat_sul import TotalSegmentatorMuscleFatSUL
 
-            logger.info("\n" + "#" * 50 + "\nStarting Total Segmentator Muscle Fat\n" + "#" * 50)
-            TotalSegmentatorMuscleFat(
+            logger.info("\n" + "#" * 50 + "\nStarting TotalSegmentator Muscle Fat\n" + "#" * 50)
+            TotalSegmentatorMuscleFatSUL(
                 input_dirpath_processed=self.output_dirpath,
             ).run()
 

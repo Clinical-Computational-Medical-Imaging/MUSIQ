@@ -1,9 +1,9 @@
 import logging
 import os
 import pathlib as plb
+import re
 import subprocess
 from datetime import datetime
-import re
 from typing import Any
 
 import dicom2nifti
@@ -101,6 +101,28 @@ def setup_series_keywords(
 def conv_time(time_str: str) -> float:
     # function for time conversion in DICOM tag
     return float(time_str[:2]) * 3600 + float(time_str[2:4]) * 60 + float(time_str[4:13])
+
+
+def time_to_seconds(t: str | float | int) -> float:
+    """
+    Converts time as str to float to seconds after 00:00,
+
+    Args:
+        t (str | float | int): Time as str in the formate of HHMMSS.MS or HH:MM:SS.MS.
+
+    Returns:
+        float: Time in seconds.
+    """
+    t = str(t).strip()
+
+    if ":" in t:
+        h, m, s = t.split(":")
+        return int(h) * 3600 + int(m) * 60 + float(s)
+
+    h = int(t[0:2])
+    m = int(t[2:4])
+    s = float(t[4:])
+    return h * 3600 + m * 60 + s
 
 
 def create_logger(name=None) -> logging.Logger:

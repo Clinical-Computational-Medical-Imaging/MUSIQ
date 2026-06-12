@@ -36,14 +36,20 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
      - `CTseg.nii` – Segmentation mask
      - Expands `patient_info.json` with TS information
 
-5. **CT Segmentation with Moose**
+5. **CT Body Composition Analysis with TotalSegmentator for SUL computation**
+   - Performs muscle and fat segmentation using TotalSegmentator and compute a SUL image.
+   - Outputs:
+      - `SUL.nii.gz` - SUV image corrected by using the lean body mass
+      - Expands `patient_info.json` with muscle, fat, and SUL information
+
+6. **CT Segmentation with Moose**
    - Performs organ segmentation on CT images using Moose.
    - Moose can only take one CT per series.
    - Outputs:
      - `CTmoose_organs.nii` – Segmentation mask
      - Expands `patient_info.json` with Moose information
 
-6. **Radiomics Extraction**
+7. **Radiomics Extraction**
    - Computes key radiomics metrics from PET and CT scans.
    - Output: Extension of `patient_info.json`
       - SUV (mean, max, peak median, std)
@@ -56,7 +62,7 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
       - Tumor Dissemination standardized by patient's height and weight(SDmax)
       - Surface Area
 
-7. **Tumor Size Analysis**
+8. **Tumor Size Analysis**
    - Quantifies tumor volume per organ based on segmentations.
    - Output:
       - `CTsegres.nii` – Resampled segmentation mask to PT
@@ -66,7 +72,7 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
          - SUV (mean, max, peak median, std)
          - Surface area
 
-8. **Optional Plotting**
+9. **Optional Plotting**
    - Generates visualizations
 
 ---
@@ -147,11 +153,11 @@ git clone https://github.com/murong-xu/CADS.git
 pip install -r requirements.txt
 pip install TPTBox==0.3.0 fastremap fill_voids --no-deps
 ```
-- For the TotalSegmentaor muscle and fat segmentation the TS licese need to be set
+- For the TotalSegmentator muscle and fat segmentation the TS licese needs to be set:
 ```bash
 totalseg_set_license -l aca_...
 ```
-- In order to use the pipeline with the moose extention we need a second virtual enviroment:
+- In order to use the pipeline with the moose extension we need a second virtual enviroment:
 
 ```bash
 deactivate
