@@ -60,6 +60,7 @@ class Workflow:
                 "tumor",
                 "plot",
                 "moose",
+                "muscle_fat",
                 "cads",
             ]
         else:
@@ -74,6 +75,7 @@ class Workflow:
                         "tumor",
                         "plot",
                         "moose",
+                        "muscle_fat",
                         "cads",
                     ]
                     for t in tasks or []
@@ -83,43 +85,49 @@ class Workflow:
                 raise ValueError(
                     "Invalid tasks specified. Possible values are: "
                     "'series_selection', 'radiomics', 'autopet', "
-                    "'totalsegmentator', 'tumor', 'plot', 'moose', 'cads'."
+                    "'totalsegmentator', 'tumor', 'plot', 'moose', "
+                    "'muscle_fat', 'cads'."
                 )
 
         self.series_selection = "series_selection" in (tasks or [])
         self.autopet = "autopet" in (tasks or [])
         self.cads = "cads" in (tasks or [])
         self.totalsegmentator = "totalsegmentator" in (tasks or [])
+        self.muscle_fat = "muscle_fat" in (tasks or [])
         self.moose = "moose" in (tasks or [])
         self.radiomics = "radiomics" in (tasks or [])
         self.tumor = "tumor" in (tasks or [])
         self.plot = "plot" in (tasks or [])
 
         cads_tasks_error = bool(
-                any(
-                    t
-                    not in [
-                        "551",
-                        "552",
-                        "553",
-                        "554",
-                        "555",
-                        "556",
-                        "557",
-                        "558",
-                        "559",
-                        "all",
-                        "",
-                        None,
-                    ]
-                    for t in cads_tasks or []
-                )
+            any(
+                t
+                not in [
+                    "551",
+                    "552",
+                    "553",
+                    "554",
+                    "555",
+                    "556",
+                    "557",
+                    "558",
+                    "559",
+                    "all",
+                    "",
+                    None,
+                ]
+                for t in cads_tasks or []
             )
-        
+        )
+
         if cads_tasks_error:
-            logger.warning("Wrong input tasks for CADS model. Please use one of the following: all, 551, 552, 553, 554, 555, 556, 557, 558, 559")
+            logger.warning(
+                "Wrong input tasks for CADS model."
+                "Please use one of the following: "
+                "all, 551, 552, 553, 554, 555, 556, 557, 558, 559"
+            )
             self.cads = False
-            
+
         self.cads_tasks = cads_tasks
 
         self.series_keywords = setup_series_keywords(
@@ -165,7 +173,7 @@ class Workflow:
             logger.info("\n" + "#" * 50 + "\nStarting CADS Inference\n" + "#" * 50)
             CadsInference(
                 input_dirpath_processed=self.output_dirpath,
-                tasks = self.cads_tasks,
+                tasks=self.cads_tasks,
             ).run()
 
         if self.totalsegmentator:
@@ -173,6 +181,14 @@ class Workflow:
 
             logger.info("\n" + "#" * 50 + "\nStarting Total Segmentator Inference\n" + "#" * 50)
             TotalSegmentatorInference(
+                input_dirpath_processed=self.output_dirpath,
+            ).run()
+
+        if self.muscle_fat:
+            from .totalsegmentator_musle_fat_sul import TotalSegmentatorMuscleFatSUL
+
+            logger.info("\n" + "#" * 50 + "\nStarting TotalSegmentator Muscle Fat\n" + "#" * 50)
+            TotalSegmentatorMuscleFatSUL(
                 input_dirpath_processed=self.output_dirpath,
             ).run()
 
@@ -260,7 +276,7 @@ def workflow_entrypoint():
         "--tasks",
         nargs="+",
         help="List of tasks to run. Possible values: series_selection, "
-        "radiomics, autopet, totalsegmentator, tumor, plot, moose, moose_task.",
+        "radiomics, autopet, totalsegmentator, tumor, plot, moose, muscle_fat, cads.",
         default=None,
     )
     parser.add_argument(

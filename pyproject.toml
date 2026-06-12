@@ -135,6 +135,7 @@ musiq_extraction = "musiq.radiomics_extraction:radiomics_extraction_entrypoint"
 musiq_series_selection = "musiq.series_selection:series_selection_entrypoint"
 musiq_summary_generation = "musiq.summary_generation:summary_generation_entrypoint"
 musiq_totalsegmentator_inference = "musiq.totalsegmentator_inference:totalsegmentator_inference_entrypoint"
+musiq_totalsegmentator_muscle_fat = "musiq.totalsegmentator_muscle_fat:totalsegmentator_muscle_fat_entrypoint"
 musiq_tumor_info_extraction = "musiq.tumor_info_extraction:tumor_info_extraction_entrypoint"
 musiq = "musiq.workflow:workflow_entrypoint"
 

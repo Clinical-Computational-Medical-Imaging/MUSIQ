@@ -111,7 +111,6 @@ class TotalSegmentatorInference:
                         "settings": {"input_fpath": input_fpath, "task": task, "ml": True},
                         "model": "total",
                         "ts_version": get_version(),
-                        "labels": label_map_dict,
                     }
                     if json_exists and patient_info is not None:
                         study_date = dirpath.split(os.sep)[-1]
