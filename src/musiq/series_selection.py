@@ -10,16 +10,16 @@ import tempfile
 from collections import defaultdict
 
 import nibabel as nib
-import numpy as np
 import pydicom
 
 from .utils import (
     agnostic_path,
+    calculate_suv_factor,
+    convert_pet,
     extract_dicom_data,
     make_json_safe,
     run_dcm2niix,
     setup_series_keywords,
-    time_to_seconds,
 )
 
 logger = logging.getLogger(__name__)
@@ -526,7 +526,7 @@ class SeriesSelection:
             half_life = ds.RadiopharmaceuticalInformationSequence[0].RadionuclideHalfLife
             acq_time = ds.AcquisitionTime
             weight = ds.PatientWeight
-            suv_corr_factor = self.calculate_suv_factor(total_dose, start_time, half_life, acq_time, weight)
+            suv_corr_factor = calculate_suv_factor(total_dose, start_time, half_life, acq_time, weight)
 
             with tempfile.TemporaryDirectory() as tmp:  # convert PET
                 tmp = plb.Path(str(tmp))
@@ -546,7 +546,7 @@ class SeriesSelection:
 
                 # convert pet images to quantitative suv images and save nifti file
                 out_suv_fpath = os.path.join(output_dirpath, "SUV.nii.gz")
-                suv_pet_nii = self.convert_pet(
+                suv_pet_nii = convert_pet(
                     nib.load(os.path.join(output_dirpath, "PET.nii.gz")),
                     suv_factor=suv_corr_factor,  # type: ignore
                 )
@@ -595,23 +595,6 @@ class SeriesSelection:
             with open(jsn) as json_file:
                 dicom_tags = json.load(json_file)
         return nii_path, dicom_tags
-
-    def calculate_suv_factor(
-        self, total_dose: float, start_time: str, half_life: float, acq_time: str, weight: float
-    ) -> float:
-        """Calculation of the SUV conversion factor"""
-        time_diff = time_to_seconds(acq_time) - time_to_seconds(start_time)
-        act_dose = total_dose * 0.5 ** (time_diff / half_life)
-        suv_factor = 1000 * weight / act_dose
-        return suv_factor
-
-    def convert_pet(self, pet, suv_factor) -> nib.Nifti1Image:
-        """Conversion of PET values to SUV (should work on Siemens PET/CT)"""
-        affine = pet.affine
-        pet_data = pet.get_fdata()
-        pet_suv_data = (pet_data * suv_factor).astype(np.float32)
-        pet_suv = nib.Nifti1Image(pet_suv_data, affine)  # type: ignore
-        return pet_suv
 
     def validate_output(self, data_dict, output_csv_path, user_flag: bool, conversion_flags: list) -> None:
         """Validate the output of the series selection and conversion process.
@@ -712,19 +695,6 @@ class SeriesSelection:
                 if not file_exists:
                     writer.writeheader()
                 writer.writerows(errors)
-
-
-def calculate_suv_factor(total_dose: float, start_time: str, half_life: float, acq_time: str, weight: float) -> float:
-    """Calculation of the SUV conversion factor"""
-    time_diff = time_to_seconds(acq_time) - time_to_seconds(start_time)
-    act_dose = total_dose * 0.5 ** (time_diff / half_life)
-    return 1000 * weight / act_dose
-
-
-def convert_pet(pet, suv_factor) -> nib.Nifti1Image:
-    """Conversion of PET values to SUV (should work on Siemens PET/CT)"""
-    pet_suv_data = (pet.get_fdata() * suv_factor).astype(np.float32)
-    return nib.Nifti1Image(pet_suv_data, pet.affine)  # type: ignore
 
 
 def series_selection_entrypoint():

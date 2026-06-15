@@ -11,9 +11,7 @@ from totalsegmentator.config import get_version
 from totalsegmentator.nifti_ext_header import load_multilabel_nifti
 from totalsegmentator.python_api import totalsegmentator
 
-from .series_selection import calculate_suv_factor, convert_pet
-
-from .utils import is_mr_filename, load_mr_keywords, natural_key
+from .utils import calculate_suv_factor, convert_pet, is_mr_filename, load_mr_keywords, natural_key
 
 logger = logging.getLogger(__name__)
 

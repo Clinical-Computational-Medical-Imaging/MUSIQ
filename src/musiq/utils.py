@@ -368,6 +368,19 @@ def extract_dicom_data(dirpath: plb.Path, tags: dict) -> dict[Any, Any]:
         return {}
 
 
+def calculate_suv_factor(total_dose: float, start_time: str, half_life: float, acq_time: str, weight: float) -> float:
+    """Calculation of the SUV conversion factor"""
+    time_diff = time_to_seconds(acq_time) - time_to_seconds(start_time)
+    act_dose = total_dose * 0.5 ** (time_diff / half_life)
+    return 1000 * weight / act_dose
+
+
+def convert_pet(pet, suv_factor) -> nib.Nifti1Image:
+    """Conversion of PET values to SUV (should work on Siemens PET/CT)"""
+    pet_suv_data = (pet.get_fdata() * suv_factor).astype(np.float32)
+    return nib.Nifti1Image(pet_suv_data, pet.affine)  # type: ignore
+
+
 def make_json_safe(obj: Any) -> Any:
     """Convert a DICOM or NumPy object to a JSON-safe format."""
     non_serializable_types = MultiValue | PersonName | DSfloat | IS | UID
