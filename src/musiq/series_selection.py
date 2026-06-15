@@ -10,16 +10,16 @@ import tempfile
 from collections import defaultdict
 
 import nibabel as nib
-import numpy as np
 import pydicom
 
 from .utils import (
     agnostic_path,
+    calculate_suv_factor,
+    convert_pet,
     extract_dicom_data,
     make_json_safe,
     run_dcm2niix,
     setup_series_keywords,
-    time_to_seconds,
 )
 
 logger = logging.getLogger(__name__)
@@ -188,17 +188,28 @@ class SeriesSelection:
         """
         user_flags = {}
         patient_conversion_flags = {}
-        user_wants_to_select = (
-            input("Do you want to select manually? (y) yes manually, (N) No use pre-selected indices: ").strip().lower()
-        )
+        try:
+            user_wants_to_select = (
+                input(
+                    "Do you want to select manually? (y) yes manually, (N) No use pre-selected indices: "
+                )
+                .strip()
+                .lower()
+            )
+        except EOFError:
+            logger.warning("No interactive terminal detected. Using pre-selected indices (n).")
+            user_wants_to_select = "n"
         if user_wants_to_select not in ("y", "n"):
             logger.warning(
                 f"You want: {user_wants_to_select}. Starting without interactive "
                 "selection using (n) pre-selected indices."
             )
             user_wants_to_select = "n"
-
+            
         for idx, ((patient_id, study_date), study_info) in enumerate(sorted(self.grouped_series.items())):
+            if not study_info:
+                logger.warning(f"Skipping empty study: Patient ID: {patient_id} — Study Date: {study_date}")
+                continue
             user_flags[patient_id] = []
             if patient_id not in patient_conversion_flags:
                 patient_conversion_flags[patient_id] = []
@@ -499,19 +510,23 @@ class SeriesSelection:
         """
         out_pet_fpath = os.path.join(output_dirpath, "PET.nii.gz")
         out_suv_fpath = os.path.join(output_dirpath, "SUV.nii.gz")
+        first_pt_dcm = os.listdir(PET_dcm_dirpath)[0]
+        ds = pydicom.dcmread(os.path.join(PET_dcm_dirpath, first_pt_dcm))
         if os.path.isfile(out_pet_fpath) and os.path.isfile(out_suv_fpath):
             logger.info(f"PET NIfTI and SUV NIfTI already exist at {out_pet_fpath} and {out_suv_fpath}")
             dicom_tags = extract_dicom_data(plb.Path(PET_dcm_dirpath), self.dicom_tags)
+            seq = ds.RadiopharmaceuticalInformationSequence[0]
+            dicom_tags["RadiopharmaceuticalStartTime"] = seq.RadiopharmaceuticalStartTime
+            dicom_tags["InjectedRadioactivity"] = seq.RadionuclideTotalDose
+            dicom_tags["RadionuclideHalfLife"] = seq.RadionuclideHalfLife
             return dicom_tags
         else:
-            first_pt_dcm = os.listdir(PET_dcm_dirpath)[0]
-            ds = pydicom.dcmread(os.path.join(PET_dcm_dirpath, first_pt_dcm))
             total_dose = ds.RadiopharmaceuticalInformationSequence[0].RadionuclideTotalDose
             start_time = ds.RadiopharmaceuticalInformationSequence[0].RadiopharmaceuticalStartTime
             half_life = ds.RadiopharmaceuticalInformationSequence[0].RadionuclideHalfLife
             acq_time = ds.AcquisitionTime
             weight = ds.PatientWeight
-            suv_corr_factor = self.calculate_suv_factor(total_dose, start_time, half_life, acq_time, weight)
+            suv_corr_factor = calculate_suv_factor(total_dose, start_time, half_life, acq_time, weight)
 
             with tempfile.TemporaryDirectory() as tmp:  # convert PET
                 tmp = plb.Path(str(tmp))
@@ -531,7 +546,7 @@ class SeriesSelection:
 
                 # convert pet images to quantitative suv images and save nifti file
                 out_suv_fpath = os.path.join(output_dirpath, "SUV.nii.gz")
-                suv_pet_nii = self.convert_pet(
+                suv_pet_nii = convert_pet(
                     nib.load(os.path.join(output_dirpath, "PET.nii.gz")),
                     suv_factor=suv_corr_factor,  # type: ignore
                 )
@@ -580,23 +595,6 @@ class SeriesSelection:
             with open(jsn) as json_file:
                 dicom_tags = json.load(json_file)
         return nii_path, dicom_tags
-
-    def calculate_suv_factor(
-        self, total_dose: float, start_time: str, half_life: float, acq_time: str, weight: float
-    ) -> float:
-        """Calculation of the SUV conversion factor"""
-        time_diff = time_to_seconds(acq_time) - time_to_seconds(start_time)
-        act_dose = total_dose * 0.5 ** (time_diff / half_life)
-        suv_factor = 1000 * weight / act_dose
-        return suv_factor
-
-    def convert_pet(self, pet, suv_factor) -> nib.Nifti1Image:
-        """Conversion of PET values to SUV (should work on Siemens PET/CT)"""
-        affine = pet.affine
-        pet_data = pet.get_fdata()
-        pet_suv_data = (pet_data * suv_factor).astype(np.float32)
-        pet_suv = nib.Nifti1Image(pet_suv_data, affine)  # type: ignore
-        return pet_suv
 
     def validate_output(self, data_dict, output_csv_path, user_flag: bool, conversion_flags: list) -> None:
         """Validate the output of the series selection and conversion process.

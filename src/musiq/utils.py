@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 import pathlib as plb
 import re
 import subprocess
@@ -98,6 +99,23 @@ def setup_series_keywords(
     }
 
 
+def load_mr_keywords() -> dict[str, list[str]]:
+    """Load MR PRIMARY, SECONDARY, and EXCLUSION keywords from config.yaml."""
+    config_path = plb.Path(__file__).parent / "config.yaml"
+    with open(config_path) as f:
+        return yaml.safe_load(f)["SERIES_KEYWORDS"]["MR"]
+
+
+def is_mr_filename(filename: str, mr_keywords: dict[str, list[str]]) -> bool:
+    """Return True if filename matches MR inclusion keywords and no exclusion keywords."""
+    fname_lower = filename.lower()
+    inclusion = mr_keywords["PRIMARY"] + mr_keywords["SECONDARY"]
+    return (
+        any(kw in fname_lower for kw in inclusion)
+        and not any(kw in fname_lower for kw in mr_keywords["EXCLUSION"])
+    )
+
+
 def conv_time(time_str: str) -> float:
     # function for time conversion in DICOM tag
     return float(time_str[:2]) * 3600 + float(time_str[2:4]) * 60 + float(time_str[4:13])
@@ -134,7 +152,7 @@ def create_logger(name=None) -> logging.Logger:
         datefmt="%Y-%m-%d %H:%M:%S",
         handlers=[
             logging.FileHandler(f"./logger/musiq_{datetime.now().strftime('%Y-%m-%d-%H-%M')}.log"),
-            logging.StreamHandler(),
+            logging.StreamHandler(sys.stdout),
         ],
     )
     return logging.getLogger(name)
@@ -348,6 +366,19 @@ def extract_dicom_data(dirpath: plb.Path, tags: dict) -> dict[Any, Any]:
     except Exception as e:
         logger.error(f"Error processing file {first_file}: {e}\n")
         return {}
+
+
+def calculate_suv_factor(total_dose: float, start_time: str, half_life: float, acq_time: str, weight: float) -> float:
+    """Calculation of the SUV conversion factor"""
+    time_diff = time_to_seconds(acq_time) - time_to_seconds(start_time)
+    act_dose = total_dose * 0.5 ** (time_diff / half_life)
+    return 1000 * weight / act_dose
+
+
+def convert_pet(pet, suv_factor) -> nib.Nifti1Image:
+    """Conversion of PET values to SUV (should work on Siemens PET/CT)"""
+    pet_suv_data = (pet.get_fdata() * suv_factor).astype(np.float32)
+    return nib.Nifti1Image(pet_suv_data, pet.affine)  # type: ignore
 
 
 def make_json_safe(obj: Any) -> Any:

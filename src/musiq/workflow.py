@@ -1,8 +1,11 @@
 import json
 import multiprocessing as mp
 import os
+import pathlib as plb
 import platform
 import subprocess
+
+_REPO_ROOT = plb.Path(__file__).parent.parent.parent
 
 from .utils import create_logger, setup_series_keywords
 
@@ -14,6 +17,7 @@ class Workflow:
         output_dirpath: str,
         tasks: list[str] | None = None,
         cads_tasks: list[str] | None = None,
+        pet_metric: str = "SUV",
         ct_primary_keywords: list[str] | None = None,
         ct_secondary_keywords: list[str] | None = None,
         ct_exclusion_keywords: list[str] | None = None,
@@ -51,6 +55,7 @@ class Workflow:
         """
         self.input_dirpath = input_dirpath
         self.output_dirpath = output_dirpath
+        self.pet_metric = pet_metric
         if tasks is None:
             tasks = [
                 "series_selection",
@@ -162,9 +167,8 @@ class Workflow:
             logger.info("\n" + "#" * 50 + "\nStarting Autopet Inference\n" + "#" * 50)
             AutopetInference(
                 input_dirpath_processed=self.output_dirpath,
-                autopet_checkpoint_dirpath=os.path.join(
-                    "./autopet-3-model/Dataset222_AutoPETIII_2024/autoPET3_Trainer__nnUNetResEncUNetLPlansMultiTalent__3d_fullres_bs3"
-                ),
+                autopet_checkpoint_dirpath=_REPO_ROOT / "autopet-3-model/Dataset222_AutoPETIII_2024/autoPET3_Trainer__nnUNetResEncUNetLPlansMultiTalent__3d_fullres_bs3",
+                pet_metric=self.pet_metric,
             ).run()
 
         if self.cads:
@@ -185,7 +189,7 @@ class Workflow:
             ).run()
 
         if self.muscle_fat:
-            from .totalsegmentator_musle_fat_sul import TotalSegmentatorMuscleFatSUL
+            from .totalsegmentator_muscle_fat_sul import TotalSegmentatorMuscleFatSUL
 
             logger.info("\n" + "#" * 50 + "\nStarting TotalSegmentator Muscle Fat\n" + "#" * 50)
             TotalSegmentatorMuscleFatSUL(
@@ -310,6 +314,13 @@ def workflow_entrypoint():
         help="List of keywords to look for in MR study descriptions for alternative selection.",
     )
     parser.add_argument("--mr-exclusion-keywords", help="List of keywords to exclude MR studies from selection.")
+    parser.add_argument(
+        "--pet-metric",
+        type=str,
+        choices=["SUV", "SUL"],
+        default="SUV",
+        help="PET metric to use for AutoPET inference (default: SUV)",
+    )
     args = parser.parse_args()
 
     if not args.input_dirpath or not args.output_dirpath:
@@ -330,6 +341,7 @@ def workflow_entrypoint():
         mr_primary_keywords=args.mr_primary_keywords,
         mr_secondary_keywords=args.mr_secondary_keywords,
         mr_exclusion_keywords=args.mr_exclusion_keywords,
+        pet_metric=args.pet_metric,
     ).run()
 
 
