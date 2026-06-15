@@ -43,7 +43,7 @@ class TumorInfoExtraction:
             )
             return
 
-        study_dirs = sorted(study_dirs, key=lambda x: os.path.basename(x))
+        study_dirs = sorted(study_dirs, key=lambda x: os.path.basename(os.path.dirname(x)))
         for study_dirpath in tqdm(study_dirs):
             self.process_study(study_dirpath)
 

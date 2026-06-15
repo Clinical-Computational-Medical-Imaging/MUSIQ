@@ -40,7 +40,7 @@ class RadiomicsExtractor:
             logger.info("No directories found with necessary files: %s", necessary_files)
             return
 
-        sub_dirs = sorted(sub_dirs, key=lambda x: os.path.basename(x))
+        sub_dirs = sorted(sub_dirs, key=lambda x: os.path.basename(os.path.dirname(x)))
         # paralellize
         if self.multiprocessing:
             with ProcessPoolExecutor(max_workers=30) as executor:
@@ -157,11 +157,10 @@ def radiomics_extraction_entrypoint() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Recursively run TotalSegmentator (ml option) on all CT.nii.gz files in a folder. "
-        "Extract label mapping from the segmentation output and save metadata as CTseg.json."
+        description="Recursively run Radiomics computation."
     )
     parser.add_argument(
-        "--input-dirpath-processed", type=str, help="Path to the input folder containing CT.nii.gz files", required=True
+        "--input-dirpath-processed", type=str, help="Path to the input folder containing .nii.gz files", required=True
     )
     args = parser.parse_args()
 

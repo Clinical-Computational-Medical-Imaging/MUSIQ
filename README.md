@@ -153,7 +153,7 @@ git clone https://github.com/murong-xu/CADS.git
 pip install -r requirements.txt
 pip install TPTBox==0.3.0 fastremap fill_voids --no-deps
 ```
-- For the TotalSegmentator muscle and fat segmentation the TS licese needs to be set:
+- For the TotalSegmentator muscle and fat segmentation the TS license needs to be set:
 ```bash
 totalseg_set_license -l aca_...
 ```

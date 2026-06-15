@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import pathlib as plb
 import shutil
 import sys
 
@@ -60,14 +61,18 @@ class CadsInference:
         for top_dir in top_dirs:
             top_dir_path = os.path.join(self.input_dirpath, top_dir)
 
-            for dirpath, _, filenames in os.walk(top_dir_path):
+            for dirpath, dirnames, filenames in os.walk(top_dir_path):
+                rel_parts = plb.Path(os.path.relpath(dirpath, self.input_dirpath)).parts
+                if len(rel_parts) != 2:
+                    continue
+                dirnames.clear()
+                patient_id, study_date = rel_parts
                 for filename in filenames:
                     # Determine if this is a CT file and set parameters accordingly
                     is_ct = filename == "CT.nii.gz"
 
                     if not is_ct:
                         continue
-                    patient_id = os.path.basename(os.path.dirname(dirpath))
                     input_fpath = os.path.join(dirpath, filename)
 
                     output_fpath = os.path.join(dirpath, "CTcads.nii.gz")
@@ -115,12 +120,7 @@ class CadsInference:
                         "model": "cads v1.0.0",
                     }
                     if json_exists and patient_info is not None:
-                        study_date = dirpath.split(os.sep)[-1]
                         series_index = 0
-
-                        if series_index is None:
-                            logger.error(f"Could not find series index for {filename} in patient_info.json.")
-                            continue
                         series_name = next(
                             iter(patient_info["Studies"][study_date]["Modalities"][modality][series_index])
                         )

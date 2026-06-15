@@ -188,17 +188,28 @@ class SeriesSelection:
         """
         user_flags = {}
         patient_conversion_flags = {}
-        user_wants_to_select = (
-            input("Do you want to select manually? (y) yes manually, (N) No use pre-selected indices: ").strip().lower()
-        )
+        try:
+            user_wants_to_select = (
+                input(
+                    "Do you want to select manually? (y) yes manually, (N) No use pre-selected indices: "
+                )
+                .strip()
+                .lower()
+            )
+        except EOFError:
+            logger.warning("No interactive terminal detected. Using pre-selected indices (n).")
+            user_wants_to_select = "n"
         if user_wants_to_select not in ("y", "n"):
             logger.warning(
                 f"You want: {user_wants_to_select}. Starting without interactive "
                 "selection using (n) pre-selected indices."
             )
             user_wants_to_select = "n"
-
+            
         for idx, ((patient_id, study_date), study_info) in enumerate(sorted(self.grouped_series.items())):
+            if not study_info:
+                logger.warning(f"Skipping empty study: Patient ID: {patient_id} — Study Date: {study_date}")
+                continue
             user_flags[patient_id] = []
             if patient_id not in patient_conversion_flags:
                 patient_conversion_flags[patient_id] = []
@@ -499,13 +510,17 @@ class SeriesSelection:
         """
         out_pet_fpath = os.path.join(output_dirpath, "PET.nii.gz")
         out_suv_fpath = os.path.join(output_dirpath, "SUV.nii.gz")
+        first_pt_dcm = os.listdir(PET_dcm_dirpath)[0]
+        ds = pydicom.dcmread(os.path.join(PET_dcm_dirpath, first_pt_dcm))
         if os.path.isfile(out_pet_fpath) and os.path.isfile(out_suv_fpath):
             logger.info(f"PET NIfTI and SUV NIfTI already exist at {out_pet_fpath} and {out_suv_fpath}")
             dicom_tags = extract_dicom_data(plb.Path(PET_dcm_dirpath), self.dicom_tags)
+            seq = ds.RadiopharmaceuticalInformationSequence[0]
+            dicom_tags["RadiopharmaceuticalStartTime"] = seq.RadiopharmaceuticalStartTime
+            dicom_tags["InjectedRadioactivity"] = seq.RadionuclideTotalDose
+            dicom_tags["RadionuclideHalfLife"] = seq.RadionuclideHalfLife
             return dicom_tags
         else:
-            first_pt_dcm = os.listdir(PET_dcm_dirpath)[0]
-            ds = pydicom.dcmread(os.path.join(PET_dcm_dirpath, first_pt_dcm))
             total_dose = ds.RadiopharmaceuticalInformationSequence[0].RadionuclideTotalDose
             start_time = ds.RadiopharmaceuticalInformationSequence[0].RadiopharmaceuticalStartTime
             half_life = ds.RadiopharmaceuticalInformationSequence[0].RadionuclideHalfLife
@@ -697,6 +712,19 @@ class SeriesSelection:
                 if not file_exists:
                     writer.writeheader()
                 writer.writerows(errors)
+
+
+def calculate_suv_factor(total_dose: float, start_time: str, half_life: float, acq_time: str, weight: float) -> float:
+    """Calculation of the SUV conversion factor"""
+    time_diff = time_to_seconds(acq_time) - time_to_seconds(start_time)
+    act_dose = total_dose * 0.5 ** (time_diff / half_life)
+    return 1000 * weight / act_dose
+
+
+def convert_pet(pet, suv_factor) -> nib.Nifti1Image:
+    """Conversion of PET values to SUV (should work on Siemens PET/CT)"""
+    pet_suv_data = (pet.get_fdata() * suv_factor).astype(np.float32)
+    return nib.Nifti1Image(pet_suv_data, pet.affine)  # type: ignore
 
 
 def series_selection_entrypoint():
