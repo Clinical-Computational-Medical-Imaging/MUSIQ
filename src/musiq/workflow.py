@@ -17,7 +17,7 @@ class Workflow:
         output_dirpath: str,
         tasks: list[str] | None = None,
         cads_tasks: list[str] | None = None,
-        pet_metric: str | list[str] = "SUV",
+        pet_metric: str | list[str] = ["SUV", "SUL"],
         ct_primary_keywords: list[str] | None = None,
         ct_secondary_keywords: list[str] | None = None,
         ct_exclusion_keywords: list[str] | None = None,
@@ -52,6 +52,7 @@ class Workflow:
             mr_primary_keywords (list[str] | None): Keywords for primary selection of MR series.
             mr_secondary_keywords (list[str] | None): Keywords for secondary selection of MR series.
             mr_exclusion_keywords (list[str] | None): Keywords to exclude MR series.
+            pet_metric (str | list[str]): PET metric(s) to use for radiomics and tumor computations. Possible values are "SUV" and "SUL". Can pass one or both.
         """
         self.input_dirpath = input_dirpath
         self.output_dirpath = output_dirpath
