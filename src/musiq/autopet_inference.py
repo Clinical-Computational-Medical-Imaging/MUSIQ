@@ -18,7 +18,7 @@ class AutopetInference:
         self,
         input_dirpath_processed: str | os.PathLike,
         autopet_checkpoint_dirpath: str | os.PathLike,
-        pet_metric: str | list[str] = ["SUV", "SUL"],
+        pet_metric: str | list[str] | None = None,
     ) -> None:
         """Resamples CT.nii images to PT size and runs the AutoPET inference on all SUV.nii.gz or SUL.nii.gz
         files in the input directory. Creates CTres.nii and PETseg.nii.
@@ -28,8 +28,11 @@ class AutopetInference:
             input_dirpath_processed (str | os.PathLike): Directory containing the PET metric files. Can be nested.
             autopet_checkpoint_dirpath (str | os.PathLike): Directory containing the nnUNet checkpoint for
             AutoPET inference. See README for details on how to obtain the checkpoint and how to name the folder.
-            pet_metric (str | list[str]): PET metric(s) to use as input. "SUV", "SUL", or both (default: "SUV SUL").
+            pet_metric (str | list[str] | None): PET metric(s) to use as input.
+                Accepts "SUV", "SUL", or both. Defaults to ["SUV", "SUL"].
         """
+        if pet_metric is None:
+            pet_metric = ["SUV", "SUL"]
         pet_metrics = [pet_metric] if isinstance(pet_metric, str) else list(pet_metric)
         for m in pet_metrics:
             if m not in ("SUV", "SUL"):
@@ -93,14 +96,18 @@ class AutopetInference:
                                     )
 
                             with tempfile.TemporaryDirectory() as tmp:
-                                shutil.copy(os.path.join(dirpath, "CTres.nii.gz"), os.path.join(tmp, "case_0000.nii.gz"))
-                                shutil.copy(os.path.join(dirpath, f"{metric}.nii.gz"), os.path.join(tmp, "case_0001.nii.gz"))
+                                shutil.copy(
+                                    os.path.join(dirpath, "CTres.nii.gz"), os.path.join(tmp, "case_0000.nii.gz")
+                                )
+                                shutil.copy(
+                                    os.path.join(dirpath, f"{metric}.nii.gz"), os.path.join(tmp, "case_0001.nii.gz")
+                                )
                                 try:
                                     with tempfile.TemporaryDirectory() as output_folder:
                                         output_folder = plb.Path(str(output_folder))
-                                        os.environ["nnUNet_raw"] = ""
-                                        os.environ["nnUNet_preprocessed"] = ""
-                                        os.environ["nnUNet_results"] = ""
+                                        os.environ["nnUNet_raw"] = ""  # noqa: SIM112
+                                        os.environ["nnUNet_preprocessed"] = ""  # noqa: SIM112
+                                        os.environ["nnUNet_results"] = ""  # noqa: SIM112
 
                                         logger.info(f"GPU available: {torch.cuda.is_available()}")
 
@@ -122,13 +129,17 @@ class AutopetInference:
                                         nii = next(output_folder.glob("*nii.gz"))
                                         shutil.copy(nii, os.path.join(dirpath, petseg_fname))
                                     if flag_json_exists:
-                                        series_name = next(iter(patient_info["Studies"][study_date]["Modalities"]["PT"][0]))
+                                        series_name = next(
+                                            iter(patient_info["Studies"][study_date]["Modalities"]["PT"][0])
+                                        )
                                         patient_info["Studies"][study_date]["Modalities"]["PT"][0][series_name].update(
                                             {petseg_key: f"{dirpath}/{petseg_fname}"}
                                         )
 
                                 except subprocess.CalledProcessError as e:
-                                    logger.error(f"Error during nnUNet prediction: {e}\nstdout: {e.stdout}\nstderr: {e.stderr}")
+                                    logger.error(
+                                        f"Error during nnUNet prediction: {e}\nstdout: {e.stdout}\nstderr: {e.stderr}"
+                                    )
                                 except Exception as e:
                                     logger.error(f"Unexpected error: {e}")
 

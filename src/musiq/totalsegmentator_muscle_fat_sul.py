@@ -3,10 +3,9 @@ import logging
 import os
 import pathlib as plb
 
-import pydicom
-
 import nibabel as nib
 import numpy as np
+import pydicom
 from totalsegmentator.config import get_version
 from totalsegmentator.nifti_ext_header import load_multilabel_nifti
 from totalsegmentator.python_api import totalsegmentator
@@ -108,9 +107,7 @@ class TotalSegmentatorMuscleFatSUL:
                             series_index = None
                             for idx, serie in enumerate(mr_series):
                                 for _serie_name, serie_data in serie.items():
-                                    if "MRPath" in serie_data and filename in os.path.basename(
-                                        serie_data["MRPath"]
-                                    ):
+                                    if "MRPath" in serie_data and filename in os.path.basename(serie_data["MRPath"]):
                                         series_index = idx
                                         break
                                 if series_index is not None:
@@ -138,7 +135,8 @@ class TotalSegmentatorMuscleFatSUL:
                             "body_composition_analysis", {}
                         ):
                             logger.info(
-                                f"body_composition_analysis missing for {patient_id}, recomputing from existing segmentation."
+                                f"body_composition_analysis missing for {patient_id},"
+                                " recomputing from existing segmentation."
                             )
                             segmentation_exists = False
 
@@ -210,23 +208,28 @@ class TotalSegmentatorMuscleFatSUL:
                         data = json.load(f)
 
                     if study_date not in data.get("Studies", {}):
-                        logger.warning(f"study_date {study_date} not found in patient_info.json for {patient_id}, skipping.")
+                        logger.warning(
+                            f"study_date {study_date} not found in patient_info.json for {patient_id}, skipping."
+                        )
                         continue
 
                     series_name = next(iter(data["Studies"][study_date]["Modalities"][modality][series_index]))
                     series_data = data["Studies"][study_date]["Modalities"][modality][series_index][series_name]
                     weight = series_data["DICOM"]["PatientWeight"]
                     fat_in_percent = (
-                        series_data.get("body_composition_analysis", {})
-                        .get("glut_to_c6", {})
-                        .get("total_fat_in_%")
+                        series_data.get("body_composition_analysis", {}).get("glut_to_c6", {}).get("total_fat_in_%")
                     )
                     if fat_in_percent is None:
                         total_seg_path = input_fpath.replace(".nii.gz", "seg.nii.gz")
                         if not os.path.isfile(total_seg_path):
-                            reason = f"CTseg.nii.gz not found at {total_seg_path} — run TotalSegmentator task='total' first"
+                            reason = (
+                                f"CTseg.nii.gz not found at {total_seg_path} — run TotalSegmentator task='total' first"
+                            )
                         else:
-                            reason = "arms detected beside the body (humerus below T4 threshold); LBM cannot be estimated reliably"
+                            reason = (
+                                "arms detected beside the body (humerus below T4 threshold); "
+                                "LBM cannot be estimated reliably"
+                            )
                         logger.warning(f"Skipping LBM/SUL computation for {patient_id}: {reason}.")
                         continue
                     lean_body_mass = weight * (1 - fat_in_percent / 100)
@@ -382,7 +385,12 @@ class TotalSegmentatorMuscleFatSUL:
             series_name = next(iter(data["Studies"][study_date]["Modalities"]["PT"][0]))
             pt_series = data["Studies"][study_date]["Modalities"]["PT"][0][series_name]
             dicom_data = pt_series["DICOM"]
-            required = ["InjectedRadioactivity", "RadionuclideHalfLife", "AcquisitionTime", "RadiopharmaceuticalStartTime"]
+            required = [
+                "InjectedRadioactivity",
+                "RadionuclideHalfLife",
+                "AcquisitionTime",
+                "RadiopharmaceuticalStartTime",
+            ]
             missing = [k for k in required if k not in dicom_data]
             if missing:
                 input_dir = pt_series.get("InputDirPath")

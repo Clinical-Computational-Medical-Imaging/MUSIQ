@@ -190,9 +190,7 @@ class SeriesSelection:
         patient_conversion_flags = {}
         try:
             user_wants_to_select = (
-                input(
-                    "Do you want to select manually? (y) yes manually, (N) No, use pre-selected indices: "
-                )
+                input("Do you want to select manually? (y) yes manually, (N) No, use pre-selected indices: ")
                 .strip()
                 .lower()
             )
@@ -205,7 +203,7 @@ class SeriesSelection:
                 "selection using (n) pre-selected indices."
             )
             user_wants_to_select = "n"
-            
+
         for idx, ((patient_id, study_date), study_info) in enumerate(sorted(self.grouped_series.items())):
             if not study_info:
                 logger.warning(f"Skipping empty study: Patient ID: {patient_id} — Study Date: {study_date}")

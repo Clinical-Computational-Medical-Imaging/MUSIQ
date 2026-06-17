@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class TumorInfoExtraction:
-    def __init__(self, input_dirpath_processed: str | os.PathLike, pet_metric: str | list[str] = ["SUV", "SUL"]) -> None:
+    def __init__(self, input_dirpath_processed: str | os.PathLike, pet_metric: str | list[str] | None = None) -> None:
         """Class to handle tumor information extraction from PETseg, SUV/SUL, and CTseg files in a specified folder.
         Creates CTsegres.nii.gz if it does not exist.
         The existing patient_info.json is required to extract and save data.
@@ -21,8 +21,11 @@ class TumorInfoExtraction:
 
         Args:
             input_dirpath_processed (str | os.PathLike): Directory containing the CT.nii.gz file. Can be nested.
-            pet_metric (str | list[str]): PET metric(s) to use as input. "SUV", "SUL", or both (default: "SUV SUL").
+            pet_metric (str | list[str] | None): PET metric(s) to use as input.
+                Accepts "SUV", "SUL", or both. Defaults to ["SUV", "SUL"].
         """
+        if pet_metric is None:
+            pet_metric = ["SUV", "SUL"]
         pet_metrics = [pet_metric] if isinstance(pet_metric, str) else list(pet_metric)
         for m in pet_metrics:
             if m not in ("SUV", "SUL"):
@@ -50,7 +53,8 @@ class TumorInfoExtraction:
                     f"{', '.join(required_files)} are required in each patient/study directory."
                 )
                 if metric == "SUL":
-                    msg += " SUL.nii.gz and PETsegSUL.nii.gz are created by the muscle-fat and autopet tasks — make sure both have been run first."
+                    msg += " SUL.nii.gz and PETsegSUL.nii.gz are created by the muscle-fat and autopet tasks — "
+                    "make sure both have been run first."
                 logger.warning(msg)
                 continue
 

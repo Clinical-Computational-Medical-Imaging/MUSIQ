@@ -13,15 +13,18 @@ logger = logging.getLogger(__name__)
 
 
 class RadiomicsExtractor:
-    def __init__(self, input_dirpath_processed: str | os.PathLike, pet_metric: str | list[str] = ["SUV", "SUL"]) -> None:
+    def __init__(self, input_dirpath_processed: str | os.PathLike, pet_metric: str | list[str] | None = None) -> None:
         """Calculates patient-level statistics from PET and segmentation images.
         Expects exactly one PT and matching CT series per study date
 
         Args:
             input_dirpath_processed (str | os.PathLike): Directory containing the SUV/SUL, PETseg and PET.json files.
             Can be nested.
-            pet_metric (str | list[str]): PET metric(s) to use as input. "SUV", "SUL", or both (default: "SUV SUL").
+            pet_metric (str | list[str] | None): PET metric(s) to use as input.
+                Accepts "SUV", "SUL", or both. Defaults to ["SUV", "SUL"].
         """
+        if pet_metric is None:
+            pet_metric = ["SUV", "SUL"]
         pet_metrics = [pet_metric] if isinstance(pet_metric, str) else list(pet_metric)
         for m in pet_metrics:
             if m not in ("SUV", "SUL"):
@@ -42,7 +45,10 @@ class RadiomicsExtractor:
             if not sub_dirs:
                 msg = f"No directories found with necessary files for {metric}: {necessary_files}."
                 if metric == "SUL":
-                    msg += " SUL.nii.gz and PETsegSUL.nii.gz are created by the muscle-fat and autopet tasks — make sure both have been run first."
+                    msg += (
+                        " SUL.nii.gz and PETsegSUL.nii.gz are created by the muscle-fat and autopet tasks"
+                        " — make sure both have been run first."
+                    )
                 logger.warning(msg)
                 continue
 
@@ -168,9 +174,7 @@ def radiomics_extraction_entrypoint() -> None:
 
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Recursively run Radiomics computation."
-    )
+    parser = argparse.ArgumentParser(description="Recursively run Radiomics computation.")
     parser.add_argument(
         "--input-dirpath-processed", type=str, help="Path to the input folder containing .nii.gz files", required=True
     )
