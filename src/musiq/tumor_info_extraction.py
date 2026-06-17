@@ -13,47 +13,62 @@ logger = logging.getLogger(__name__)
 
 
 class TumorInfoExtraction:
-    def __init__(self, input_dirpath_processed: str | os.PathLike) -> None:
-        """Class to handle tumor information extraction from PETseg, SUV, and CTseg files in a specified folder.
+    def __init__(self, input_dirpath_processed: str | os.PathLike, pet_metric: str | list[str] = ["SUV", "SUL"]) -> None:
+        """Class to handle tumor information extraction from PETseg, SUV/SUL, and CTseg files in a specified folder.
         Creates CTsegres.nii.gz if it does not exist.
         The existing patient_info.json is required to extract and save data.
         Expects exactly one CT.nii.gz file per serie.
 
         Args:
             input_dirpath_processed (str | os.PathLike): Directory containing the CT.nii.gz file. Can be nested.
+            pet_metric (str | list[str]): PET metric(s) to use as input. "SUV", "SUL", or both (default: "SUV SUL").
         """
+        pet_metrics = [pet_metric] if isinstance(pet_metric, str) else list(pet_metric)
+        for m in pet_metrics:
+            if m not in ("SUV", "SUL"):
+                raise ValueError(f"pet_metric must be 'SUV' or 'SUL', got '{m}'")
         self.input_dirpath = input_dirpath_processed
+        self.pet_metrics = pet_metrics
 
     def run(self) -> None:
-        study_dirs = []
+        for metric in self.pet_metrics:
+            study_dirs = []
 
-        for dirpath, dirnames, _filenames in os.walk(self.input_dirpath):
-            for subdirname in dirnames:
-                subdirpath = os.path.join(dirpath, subdirname)
-                required_files = ["PETseg.nii.gz", "CTseg.nii.gz", "SUV.nii.gz"]
-                if all(os.path.exists(os.path.join(subdirpath, f)) for f in required_files):
-                    study_dirs.append(subdirpath)
-                    break  # Stop after first matching subdirectory
+            petseg_fname = "PETseg.nii.gz" if metric == "SUV" else "PETsegSUL.nii.gz"
+            required_files = [petseg_fname, "CTseg.nii.gz", f"{metric}.nii.gz"]
 
-        if not study_dirs:
-            logger.info(
-                "No complete studies found in the input directory. "
-                "PETseg.nii.gz, CTseg.nii.gz, SUV.nii.gz are "
-                "required in each patient/study directory."
-            )
-            return
+            for dirpath, dirnames, _filenames in os.walk(self.input_dirpath):
+                for subdirname in dirnames:
+                    subdirpath = os.path.join(dirpath, subdirname)
+                    if all(os.path.exists(os.path.join(subdirpath, f)) for f in required_files):
+                        study_dirs.append(subdirpath)
+                        break  # Stop after first matching subdirectory
 
-        study_dirs = sorted(study_dirs, key=lambda x: os.path.basename(os.path.dirname(x)))
-        for study_dirpath in tqdm(study_dirs):
-            self.process_study(study_dirpath)
+            if not study_dirs:
+                msg = (
+                    f"No complete studies found for {metric}. "
+                    f"{', '.join(required_files)} are required in each patient/study directory."
+                )
+                if metric == "SUL":
+                    msg += " SUL.nii.gz and PETsegSUL.nii.gz are created by the muscle-fat and autopet tasks — make sure both have been run first."
+                logger.warning(msg)
+                continue
+
+            logger.info("Running tumor info extraction for %s on %d studies.", metric, len(study_dirs))
+            study_dirs = sorted(study_dirs, key=lambda x: os.path.basename(os.path.dirname(x)))
+            for study_dirpath in tqdm(study_dirs, desc=metric):
+                self.process_study(study_dirpath, metric)
 
     @staticmethod
-    def process_study(study_dirpath) -> None:
+    def process_study(study_dirpath, pet_metric: str = "SUV") -> None:
         """Process a single study directory."""
         logger.info(f"Extracting tumor metrics for {study_dirpath}")
-        petseg_fpath = os.path.join(study_dirpath, "PETseg.nii.gz")
+        petseg_fname = "PETseg.nii.gz" if pet_metric == "SUV" else "PETsegSUL.nii.gz"
+        tumor_stats_key = "TumorStats" if pet_metric == "SUV" else "TumorStatsSUL"
+
+        petseg_fpath = os.path.join(study_dirpath, petseg_fname)
         ctsegres_fpath = os.path.join(study_dirpath, "CTsegres.nii.gz")
-        suv_fpath = os.path.join(study_dirpath, "SUV.nii.gz")
+        suv_fpath = os.path.join(study_dirpath, f"{pet_metric}.nii.gz")
 
         patient_dirpath = os.path.dirname(study_dirpath)
 
@@ -125,7 +140,7 @@ class TumorInfoExtraction:
                 }
             )
         if json_exists:
-            patient_info["Studies"][study_date]["TumorStats"].update({"Tumors": results})
+            patient_info["Studies"][study_date].setdefault(tumor_stats_key, {}).update({"Tumors": results})
             with open(os.path.join(patient_dirpath, "patient_info.json"), "w") as f:
                 json.dump(patient_info, f)
         else:
@@ -153,10 +168,19 @@ def tumor_info_extraction_entrypoint() -> None:
         help="Path to the input folder containing PETseg.nii.gz files",
         required=True,
     )
+    parser.add_argument(
+        "--pet-metric",
+        type=str,
+        nargs="+",
+        choices=["SUV", "SUL"],
+        default=["SUV", "SUL"],
+        help="PET metric(s) to use as input. Pass one or both: --pet-metric SUV SUL (default: SUV SUL)",
+    )
     args = parser.parse_args()
 
     TumorInfoExtraction(
         input_dirpath_processed=args.input_dirpath_processed,
+        pet_metric=args.pet_metric,
     ).run()
 
 

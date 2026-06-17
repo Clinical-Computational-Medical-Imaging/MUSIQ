@@ -17,7 +17,7 @@ class Workflow:
         output_dirpath: str,
         tasks: list[str] | None = None,
         cads_tasks: list[str] | None = None,
-        pet_metric: str = "SUV",
+        pet_metric: str | list[str] = "SUV",
         ct_primary_keywords: list[str] | None = None,
         ct_secondary_keywords: list[str] | None = None,
         ct_exclusion_keywords: list[str] | None = None,
@@ -161,6 +161,22 @@ class Workflow:
                 series_keywords=self.series_keywords,
             ).run()
 
+        if self.totalsegmentator:
+            from .totalsegmentator_inference import TotalSegmentatorInference
+
+            logger.info("\n" + "#" * 50 + "\nStarting Total Segmentator Inference\n" + "#" * 50)
+            TotalSegmentatorInference(
+                input_dirpath_processed=self.output_dirpath,
+            ).run()
+        
+        if self.muscle_fat:
+            from .totalsegmentator_muscle_fat_sul import TotalSegmentatorMuscleFatSUL
+
+            logger.info("\n" + "#" * 50 + "\nStarting TotalSegmentator Muscle Fat and SUL computation\n" + "#" * 50)
+            TotalSegmentatorMuscleFatSUL(
+                input_dirpath_processed=self.output_dirpath,
+            ).run()
+
         if self.autopet:
             from .autopet_inference import AutopetInference
 
@@ -178,22 +194,6 @@ class Workflow:
             CadsInference(
                 input_dirpath_processed=self.output_dirpath,
                 tasks=self.cads_tasks,
-            ).run()
-
-        if self.totalsegmentator:
-            from .totalsegmentator_inference import TotalSegmentatorInference
-
-            logger.info("\n" + "#" * 50 + "\nStarting Total Segmentator Inference\n" + "#" * 50)
-            TotalSegmentatorInference(
-                input_dirpath_processed=self.output_dirpath,
-            ).run()
-
-        if self.muscle_fat:
-            from .totalsegmentator_muscle_fat_sul import TotalSegmentatorMuscleFatSUL
-
-            logger.info("\n" + "#" * 50 + "\nStarting TotalSegmentator Muscle Fat\n" + "#" * 50)
-            TotalSegmentatorMuscleFatSUL(
-                input_dirpath_processed=self.output_dirpath,
             ).run()
 
         if self.moose:
@@ -227,6 +227,7 @@ class Workflow:
             logger.info("\n" + "#" * 50 + "\nStarting Radiomics Computation\n" + "#" * 50)
             RadiomicsExtractor(
                 input_dirpath_processed=self.output_dirpath,
+                pet_metric=self.pet_metric,
             ).run()
 
         if self.tumor:
@@ -235,6 +236,7 @@ class Workflow:
             logger.info("\n" + "#" * 50 + "\nStarting Tumor Info Extraction\n" + "#" * 50)
             TumorInfoExtraction(
                 input_dirpath_processed=self.output_dirpath,
+                pet_metric=self.pet_metric,
             ).run()
 
         logger.info("\n" + "#" * 50 + "\nStarting Cohort Info Creation\n" + "#" * 50)
@@ -317,9 +319,10 @@ def workflow_entrypoint():
     parser.add_argument(
         "--pet-metric",
         type=str,
+        nargs="+",
         choices=["SUV", "SUL"],
-        default="SUV",
-        help="PET metric to use for AutoPET inference (default: SUV)",
+        default=["SUV", "SUL"],
+        help="PET metric(s) to use. Pass one or both: --pet-metric SUV SUL (default: SUV SUL)",
     )
     args = parser.parse_args()
 

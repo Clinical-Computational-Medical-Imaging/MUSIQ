@@ -13,53 +13,64 @@ logger = logging.getLogger(__name__)
 
 
 class RadiomicsExtractor:
-    def __init__(self, input_dirpath_processed: str | os.PathLike) -> None:
+    def __init__(self, input_dirpath_processed: str | os.PathLike, pet_metric: str | list[str] = ["SUV", "SUL"]) -> None:
         """Calculates patient-level statistics from PET and segmentation images.
         Expects exactly one PT and matching CT series per study date
 
         Args:
-            input_dirpath_processed (str | os.PathLike): Directory containing the SUV, PETseg and PET.json files.
+            input_dirpath_processed (str | os.PathLike): Directory containing the SUV/SUL, PETseg and PET.json files.
             Can be nested.
+            pet_metric (str | list[str]): PET metric(s) to use as input. "SUV", "SUL", or both (default: "SUV SUL").
         """
+        pet_metrics = [pet_metric] if isinstance(pet_metric, str) else list(pet_metric)
+        for m in pet_metrics:
+            if m not in ("SUV", "SUL"):
+                raise ValueError(f"pet_metric must be 'SUV' or 'SUL', got '{m}'")
         self.input_dirpath = input_dirpath_processed
+        self.pet_metrics = pet_metrics
         self.multiprocessing = False
 
     def run(self) -> None:
-        necessary_files = [
-            "PETseg.nii.gz",
-            "SUV.nii.gz",
-            "CTseg.nii.gz",
-            "CT.nii.gz",
-        ]
-        sub_dirs = [
-            dirpath
-            for dirpath, _, filenames in os.walk(self.input_dirpath)
-            if all(f in filenames for f in necessary_files)
-        ]
-        if not sub_dirs:
-            logger.info("No directories found with necessary files: %s", necessary_files)
-            return
+        for metric in self.pet_metrics:
+            petseg_fname = "PETseg.nii.gz" if metric == "SUV" else "PETsegSUL.nii.gz"
+            necessary_files = [petseg_fname, f"{metric}.nii.gz", "CTseg.nii.gz", "CT.nii.gz"]
+            sub_dirs = [
+                dirpath
+                for dirpath, _, filenames in os.walk(self.input_dirpath)
+                if all(f in filenames for f in necessary_files)
+            ]
+            if not sub_dirs:
+                msg = f"No directories found with necessary files for {metric}: {necessary_files}."
+                if metric == "SUL":
+                    msg += " SUL.nii.gz and PETsegSUL.nii.gz are created by the muscle-fat and autopet tasks — make sure both have been run first."
+                logger.warning(msg)
+                continue
 
-        sub_dirs = sorted(sub_dirs, key=lambda x: os.path.basename(os.path.dirname(x)))
-        # paralellize
-        if self.multiprocessing:
-            with ProcessPoolExecutor(max_workers=30) as executor:
-                list(executor.map(self.process_directory_wrapper, sub_dirs))
-        else:
-            for dirpath in sub_dirs:
-                self.compute_patient_radiomics(dirpath)
+            sub_dirs = sorted(sub_dirs, key=lambda x: os.path.basename(os.path.dirname(x)))
+            logger.info("Running radiomics extraction for %s on %d directories.", metric, len(sub_dirs))
+            # paralellize
+            if self.multiprocessing:
+                with ProcessPoolExecutor(max_workers=30) as executor:
+                    list(executor.map(self.process_directory_wrapper, [(d, metric) for d in sub_dirs]))
+            else:
+                for dirpath in sub_dirs:
+                    self.compute_patient_radiomics(dirpath, metric)
 
-    def compute_patient_radiomics(self, dirpath: str | os.PathLike) -> None:
-        """Computes patient-level radiomics metrics from SUV and PETseg files.
+    def compute_patient_radiomics(self, dirpath: str | os.PathLike, pet_metric: str) -> None:
+        """Computes patient-level radiomics metrics from SUV/SUL and PETseg files.
 
         Args:
             dirpath (str | os.PathLike): Path to patient sub directory containing
-            SUV.nii.gz, PETseg.nii.gz, and patient_info.json.
+            SUV.nii.gz or SUL.nii.gz, PETseg.nii.gz or PETsegSUL.nii.gz, and patient_info.json.
+            pet_metric (str): PET metric to use ("SUV" or "SUL").
         """
+        petseg_fname = "PETseg.nii.gz" if pet_metric == "SUV" else "PETsegSUL.nii.gz"
+        tumor_stats_key = "TumorStats" if pet_metric == "SUV" else "TumorStatsSUL"
+
         ct_fpath = os.path.join(dirpath, "CT.nii.gz")
         ctseg_fpath = os.path.join(dirpath, "CTseg.nii.gz")
-        suv_fpath = os.path.join(dirpath, "SUV.nii.gz")
-        petseg_fpath = os.path.join(dirpath, "PETseg.nii.gz")
+        suv_fpath = os.path.join(dirpath, f"{pet_metric}.nii.gz")
+        petseg_fpath = os.path.join(dirpath, petseg_fname)
         patient_dirpath = os.path.dirname(dirpath)
         patient_info_path = os.path.join(patient_dirpath, "patient_info.json")
 
@@ -74,7 +85,7 @@ class RadiomicsExtractor:
 
             study_date = os.path.join(dirpath).split(os.sep)[-1]
             study = patient_info["Studies"].get(study_date, {})
-            existing_metrics = study.get("TumorStats", {})
+            existing_metrics = study.get(tumor_stats_key, {})
             if study.get("PatientWeight") and study.get("PatientSize"):
                 std_factor = np.sqrt(
                     (float(study.get("PatientWeight")) * (float(study.get("PatientSize")) * 100)) / 3600
@@ -131,7 +142,7 @@ class RadiomicsExtractor:
 
         # Append new metrics to the json file
         if new_metrics and os.path.isfile(patient_info_path):
-            patient_info["Studies"][study_date]["TumorStats"] = {**existing_metrics, **new_metrics}
+            patient_info["Studies"][study_date][tumor_stats_key] = {**existing_metrics, **new_metrics}
             with open(os.path.join(patient_dirpath, "patient_info.json"), "w") as f:
                 json.dump(make_json_safe(patient_info), f)
         elif new_metrics and not os.path.isfile(patient_info_path):
@@ -140,9 +151,10 @@ class RadiomicsExtractor:
                 index=False,
             )
 
-    def process_directory_wrapper(self, dirpath) -> None:
+    def process_directory_wrapper(self, args: tuple) -> None:
+        dirpath, pet_metric = args
         try:
-            return self.compute_patient_radiomics(dirpath)
+            return self.compute_patient_radiomics(dirpath, pet_metric)
         except ValueError:
             return
 
@@ -162,10 +174,19 @@ def radiomics_extraction_entrypoint() -> None:
     parser.add_argument(
         "--input-dirpath-processed", type=str, help="Path to the input folder containing .nii.gz files", required=True
     )
+    parser.add_argument(
+        "--pet-metric",
+        type=str,
+        nargs="+",
+        choices=["SUV", "SUL"],
+        default=["SUV", "SUL"],
+        help="PET metric(s) to use as input. Pass one or both: --pet-metric SUV SUL (default: SUV SUL)",
+    )
     args = parser.parse_args()
 
     RadiomicsExtractor(
         input_dirpath_processed=args.input_dirpath_processed,
+        pet_metric=args.pet_metric,
     ).run()
 
 

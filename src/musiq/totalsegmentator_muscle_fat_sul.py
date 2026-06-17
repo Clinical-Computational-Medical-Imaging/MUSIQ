@@ -122,7 +122,12 @@ class TotalSegmentatorMuscleFatSUL:
                         logger.error(f"Could not find series index for {filename} in patient_info.json.")
                         continue
 
-                    if segmentation_exists and json_exists and patient_info is not None:
+                    study_in_json = (
+                        patient_info is not None
+                        and study_date in patient_info.get("Studies", {})
+                        and modality in patient_info["Studies"][study_date].get("Modalities", {})
+                    )
+                    if segmentation_exists and json_exists and study_in_json:
                         series_name_check = next(
                             iter(patient_info["Studies"][study_date]["Modalities"][modality][series_index])
                         )
@@ -195,7 +200,7 @@ class TotalSegmentatorMuscleFatSUL:
                                 with open(f"{filename[:-7]}_muscle_fat.json", "w") as f:
                                     json.dump(seg_metadata, f)
                     else:
-                        logger.info(f"Output file {output_fpath} already exists, skipping segmentation.")
+                        logger.info(f"CT_muscle_fat.nii.gz already exists for {patient_id}, skipping segmentation.")
 
                     if not json_exists:
                         logger.error(f"Cannot compute LBM/SUL for {patient_id}: patient_info.json is missing.")
@@ -203,6 +208,10 @@ class TotalSegmentatorMuscleFatSUL:
 
                     with open(patient_info_path, encoding="utf-8") as f:
                         data = json.load(f)
+
+                    if study_date not in data.get("Studies", {}):
+                        logger.warning(f"study_date {study_date} not found in patient_info.json for {patient_id}, skipping.")
+                        continue
 
                     series_name = next(iter(data["Studies"][study_date]["Modalities"][modality][series_index]))
                     series_data = data["Studies"][study_date]["Modalities"][modality][series_index][series_name]

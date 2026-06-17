@@ -135,7 +135,7 @@ class SeriesSelection:
                 out_path_CT = os.path.join(self.output_dirpath, patient_id, study_date, "CT.nii.gz")
                 out_path_PT = os.path.join(self.output_dirpath, patient_id, study_date, "PET.nii.gz")
                 out_path_SUV = os.path.join(self.output_dirpath, patient_id, study_date, "SUV.nii.gz")
-                out_path_MR = os.path.join(self.output_dirpath, patient_id, study_date, ".nii.gz")
+                mr_study_dir = plb.Path(self.output_dirpath) / patient_id / study_date
                 if (
                     (
                         modality in ["CT", "PT"]
@@ -143,7 +143,7 @@ class SeriesSelection:
                             [os.path.isfile(out_path_CT), os.path.isfile(out_path_PT), os.path.isfile(out_path_SUV)]
                         )
                     )
-                    or (modality == "MR" and any(out_path_MR))
+                    or (modality == "MR" and any(mr_study_dir.glob("*.nii.gz")))
                 ) and os.path.isfile(out_path_patient_info):
                     new_info = f"Processed files for patient {patient_id} in study {study_date} already exist."
                     if new_info != info:
@@ -191,7 +191,7 @@ class SeriesSelection:
         try:
             user_wants_to_select = (
                 input(
-                    "Do you want to select manually? (y) yes manually, (N) No use pre-selected indices: "
+                    "Do you want to select manually? (y) yes manually, (N) No, use pre-selected indices: "
                 )
                 .strip()
                 .lower()
@@ -289,7 +289,15 @@ class SeriesSelection:
                 conversion_flags=patient_conversion_flags.get(patient_id, []),
             )
 
-            with open(os.path.join(self.output_dirpath, patient_id, "patient_info.json"), "w") as f:
+            json_path = os.path.join(self.output_dirpath, patient_id, "patient_info.json")
+            if os.path.isfile(json_path):
+                with open(json_path) as existing_f:
+                    existing_info = json.load(existing_f)
+                merged_studies = existing_info.get("Studies", {})
+                merged_studies.update(self.patient_results[patient_id].get("Studies", {}))
+                self.patient_results[patient_id]["Studies"] = merged_studies
+
+            with open(json_path, "w") as f:
                 self.patient_results[patient_id] = make_json_safe(self.patient_results[patient_id])
                 json.dump(self.patient_results[patient_id], f)
 
