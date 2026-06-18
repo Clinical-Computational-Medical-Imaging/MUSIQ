@@ -109,6 +109,8 @@ class CadsInference:
                         save_all_combined_seg=True,
                         save_separate_targets=False,
                         use_cpu=False,
+                        num_threads_preprocessing=2,
+                        nr_threads_saving=2,
                     )
 
                     os.rename(os.path.join(dirpath, "CT", "CT_combined.nii.gz"), output_fpath)

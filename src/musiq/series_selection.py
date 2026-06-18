@@ -135,7 +135,11 @@ class SeriesSelection:
                 out_path_CT = os.path.join(self.output_dirpath, patient_id, study_date, "CT.nii.gz")
                 out_path_PT = os.path.join(self.output_dirpath, patient_id, study_date, "PET.nii.gz")
                 out_path_SUV = os.path.join(self.output_dirpath, patient_id, study_date, "SUV.nii.gz")
-                out_path_MR = os.path.join(self.output_dirpath, patient_id, study_date, ".nii.gz")
+                mr_study_dir = plb.Path(self.output_dirpath) / patient_id / study_date
+                mr_series_desc_normalized = series_desc.replace("  ", "_").replace(" ", "_")
+                mr_series_nii_exists = any(
+                    mr_series_desc_normalized in f.name.lower() for f in mr_study_dir.glob("*.nii.gz")
+                )
                 if (
                     (
                         modality in ["CT", "PT"]
@@ -143,7 +147,7 @@ class SeriesSelection:
                             [os.path.isfile(out_path_CT), os.path.isfile(out_path_PT), os.path.isfile(out_path_SUV)]
                         )
                     )
-                    or (modality == "MR" and any(out_path_MR))
+                    or (modality == "MR" and mr_series_nii_exists)
                 ) and os.path.isfile(out_path_patient_info):
                     new_info = f"Processed files for patient {patient_id} in study {study_date} already exist."
                     if new_info != info:
@@ -190,9 +194,7 @@ class SeriesSelection:
         patient_conversion_flags = {}
         try:
             user_wants_to_select = (
-                input(
-                    "Do you want to select manually? (y) yes manually, (N) No use pre-selected indices: "
-                )
+                input("Do you want to select manually? (y) yes manually, (N) No, use pre-selected indices: ")
                 .strip()
                 .lower()
             )
@@ -205,7 +207,7 @@ class SeriesSelection:
                 "selection using (n) pre-selected indices."
             )
             user_wants_to_select = "n"
-            
+
         for idx, ((patient_id, study_date), study_info) in enumerate(sorted(self.grouped_series.items())):
             if not study_info:
                 logger.warning(f"Skipping empty study: Patient ID: {patient_id} — Study Date: {study_date}")
@@ -289,7 +291,15 @@ class SeriesSelection:
                 conversion_flags=patient_conversion_flags.get(patient_id, []),
             )
 
-            with open(os.path.join(self.output_dirpath, patient_id, "patient_info.json"), "w") as f:
+            json_path = os.path.join(self.output_dirpath, patient_id, "patient_info.json")
+            if os.path.isfile(json_path):
+                with open(json_path) as existing_f:
+                    existing_info = json.load(existing_f)
+                merged_studies = existing_info.get("Studies", {})
+                merged_studies.update(self.patient_results[patient_id].get("Studies", {}))
+                self.patient_results[patient_id]["Studies"] = merged_studies
+
+            with open(json_path, "w") as f:
                 self.patient_results[patient_id] = make_json_safe(self.patient_results[patient_id])
                 json.dump(self.patient_results[patient_id], f)
 

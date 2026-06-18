@@ -5,9 +5,9 @@ import pathlib as plb
 import platform
 import subprocess
 
-_REPO_ROOT = plb.Path(__file__).parent.parent.parent
-
 from .utils import create_logger, setup_series_keywords
+
+_REPO_ROOT = plb.Path(__file__).parent.parent.parent
 
 
 class Workflow:
@@ -17,7 +17,7 @@ class Workflow:
         output_dirpath: str,
         tasks: list[str] | None = None,
         cads_tasks: list[str] | None = None,
-        pet_metric: str = "SUV",
+        pet_metric: str | list[str] | None = None,
         ct_primary_keywords: list[str] | None = None,
         ct_secondary_keywords: list[str] | None = None,
         ct_exclusion_keywords: list[str] | None = None,
@@ -52,9 +52,13 @@ class Workflow:
             mr_primary_keywords (list[str] | None): Keywords for primary selection of MR series.
             mr_secondary_keywords (list[str] | None): Keywords for secondary selection of MR series.
             mr_exclusion_keywords (list[str] | None): Keywords to exclude MR series.
+            pet_metric (str | list[str] | None): PET metric(s) to use for radiomics and tumor computations.
+            Possible values are "SUV" and "SUL". Can pass one or both. Defaults to ["SUV", "SUL"].
         """
         self.input_dirpath = input_dirpath
         self.output_dirpath = output_dirpath
+        if pet_metric is None:
+            pet_metric = ["SUV", "SUL"]
         self.pet_metric = pet_metric
         if tasks is None:
             tasks = [
@@ -161,25 +165,6 @@ class Workflow:
                 series_keywords=self.series_keywords,
             ).run()
 
-        if self.autopet:
-            from .autopet_inference import AutopetInference
-
-            logger.info("\n" + "#" * 50 + "\nStarting Autopet Inference\n" + "#" * 50)
-            AutopetInference(
-                input_dirpath_processed=self.output_dirpath,
-                autopet_checkpoint_dirpath=_REPO_ROOT / "autopet-3-model/Dataset222_AutoPETIII_2024/autoPET3_Trainer__nnUNetResEncUNetLPlansMultiTalent__3d_fullres_bs3",
-                pet_metric=self.pet_metric,
-            ).run()
-
-        if self.cads:
-            from .cads_inference import CadsInference
-
-            logger.info("\n" + "#" * 50 + "\nStarting CADS Inference\n" + "#" * 50)
-            CadsInference(
-                input_dirpath_processed=self.output_dirpath,
-                tasks=self.cads_tasks,
-            ).run()
-
         if self.totalsegmentator:
             from .totalsegmentator_inference import TotalSegmentatorInference
 
@@ -191,9 +176,30 @@ class Workflow:
         if self.muscle_fat:
             from .totalsegmentator_muscle_fat_sul import TotalSegmentatorMuscleFatSUL
 
-            logger.info("\n" + "#" * 50 + "\nStarting TotalSegmentator Muscle Fat\n" + "#" * 50)
+            logger.info("\n" + "#" * 50 + "\nStarting TotalSegmentator Muscle Fat and SUL computation\n" + "#" * 50)
             TotalSegmentatorMuscleFatSUL(
                 input_dirpath_processed=self.output_dirpath,
+            ).run()
+
+        if self.autopet:
+            from .autopet_inference import AutopetInference
+
+            logger.info("\n" + "#" * 50 + "\nStarting Autopet Inference\n" + "#" * 50)
+            AutopetInference(
+                input_dirpath_processed=self.output_dirpath,
+                autopet_checkpoint_dirpath=_REPO_ROOT
+                / "autopet-3-model/Dataset222_AutoPETIII_2024/"
+                / "autoPET3_Trainer__nnUNetResEncUNetLPlansMultiTalent__3d_fullres_bs3",
+                pet_metric=self.pet_metric,
+            ).run()
+
+        if self.cads:
+            from .cads_inference import CadsInference
+
+            logger.info("\n" + "#" * 50 + "\nStarting CADS Inference\n" + "#" * 50)
+            CadsInference(
+                input_dirpath_processed=self.output_dirpath,
+                tasks=self.cads_tasks,
             ).run()
 
         if self.moose:
@@ -227,6 +233,7 @@ class Workflow:
             logger.info("\n" + "#" * 50 + "\nStarting Radiomics Computation\n" + "#" * 50)
             RadiomicsExtractor(
                 input_dirpath_processed=self.output_dirpath,
+                pet_metric=self.pet_metric,
             ).run()
 
         if self.tumor:
@@ -235,6 +242,7 @@ class Workflow:
             logger.info("\n" + "#" * 50 + "\nStarting Tumor Info Extraction\n" + "#" * 50)
             TumorInfoExtraction(
                 input_dirpath_processed=self.output_dirpath,
+                pet_metric=self.pet_metric,
             ).run()
 
         logger.info("\n" + "#" * 50 + "\nStarting Cohort Info Creation\n" + "#" * 50)
@@ -317,9 +325,10 @@ def workflow_entrypoint():
     parser.add_argument(
         "--pet-metric",
         type=str,
+        nargs="+",
         choices=["SUV", "SUL"],
-        default="SUV",
-        help="PET metric to use for AutoPET inference (default: SUV)",
+        default=["SUV", "SUL"],
+        help="PET metric(s) to use. Pass one or both: --pet-metric SUV SUL (default: SUV SUL)",
     )
     args = parser.parse_args()
 

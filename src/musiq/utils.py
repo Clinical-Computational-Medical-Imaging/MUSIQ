@@ -1,9 +1,9 @@
 import logging
 import os
-import sys
 import pathlib as plb
 import re
 import subprocess
+import sys
 from datetime import datetime
 from typing import Any
 
@@ -110,10 +110,7 @@ def is_mr_filename(filename: str, mr_keywords: dict[str, list[str]]) -> bool:
     """Return True if filename matches MR inclusion keywords and no exclusion keywords."""
     fname_lower = filename.lower()
     inclusion = mr_keywords["PRIMARY"] + mr_keywords["SECONDARY"]
-    return (
-        any(kw in fname_lower for kw in inclusion)
-        and not any(kw in fname_lower for kw in mr_keywords["EXCLUSION"])
-    )
+    return any(kw in fname_lower for kw in inclusion) and not any(kw in fname_lower for kw in mr_keywords["EXCLUSION"])
 
 
 def conv_time(time_str: str) -> float:
