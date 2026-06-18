@@ -308,8 +308,11 @@ class TotalSegmentatorMuscleFatSUL:
             t4_z_max = np.percentile(t4_world[:, z_axis], 95)
 
             if hum_z_min < t4_z_max - 100:
-                logger.warning("Arms are beside the body")
-                return fallback_dict
+                logger.warning("Arms are beside the body, remvoing arms")
+                fat_img = self.remove_arms(fat_img, path)
+
+                result_fpath = os.path.join(os.path.dirname(self.input_dirpath), "CTbody_masked.nii.gz")
+                nib.save(fat_img, result_fpath)
 
         fat_data = np.asanyarray(fat_img.dataobj).copy()
 
@@ -358,6 +361,45 @@ class TotalSegmentatorMuscleFatSUL:
         result_dict["total_muscle_in_%"] = total_muscle / total_vol * 100
         result_dict["muscle_fat_ratio"] = total_muscle / total_fat if total_fat > 0 else None
         return result_dict
+
+    def remove_arms(self, img: nib.Nifti1Image, input_fpath: os.PathLike) -> nib.Nifti1Image:
+        output_fpath = os.path.join(os.path.dirname(self.input_dirpath), "CTbody.nii.gz")
+        if not os.path.isfile(output_fpath):
+            try:
+                totalsegmentator(
+                    input_fpath,
+                    output_fpath,
+                    ml=True,
+                    task="body",
+                    device="gpu:0",
+                    statistics=False,
+                    radiomics=False,
+                )
+                logger.info("Segmentation successfully completed.")
+            except Exception as e:
+                logger.error(f"Error during segmentation for {input_fpath}:\n  {e}")
+                return img
+        body_img, label_map = load_multilabel_nifti(output_fpath)
+
+        name_to_label = {v: k for k, v in label_map.items()}
+        torso = (body_img.get_fdata() == name_to_label["body_trunc"]).astype(np.uint8)
+        z_slices = np.where(torso.any(axis=(0, 1)))[0]
+
+        best_z_top = z_slices[-10]  # 10ter vor dem letzten oben
+        best_z_bot = z_slices[9]  # 10ter vom ersten unten
+
+        torso_extended = torso.copy()
+        for z in range(best_z_top + 1, torso.shape[2]):
+            torso_extended[:, :, z] = torso[:, :, best_z_top]
+        for z in range(0, best_z_bot):
+            torso_extended[:, :, z] = torso[:, :, best_z_bot]
+
+        data = np.asanyarray(img.dataobj).copy()
+        for z in range(data.shape[2]):
+            if torso_extended[:, :, z].any():
+                data[:, :, z] *= torso_extended[:, :, z].astype(data.dtype)
+
+        return nib.Nifti1Image(data, img.affine, img.header)
 
     def convert_pet2sul(self, output_dirpath: str | os.PathLike, lean_body_mass: float, study_date: str) -> os.PathLike:
         """
