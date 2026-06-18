@@ -31,7 +31,8 @@ class TotalSegmentatorMuscleFatSUL:
         Recursively search the folder for CT.nii.gz files.
         For each found file, run the tissue_4_types for CT or tissue_types_mr for MRI segmentation,
         extract the label mapping from the segmentation output, and save a metadata JSON file.
-        It also calculates the lean body mass and starts the SUL image creation.
+        It also calculates the lean body mass (LBM) and starts the SUL image creation.
+        LBM is calculated from the fat percentage obtained from the segmentation and the patient weight.
         """
         if not os.path.isdir(self.input_dirpath):
             logger.error(f"Error: {self.input_dirpath} is not a valid directory.")
@@ -364,7 +365,7 @@ class TotalSegmentatorMuscleFatSUL:
         Coordinates the conversion of PET to SUL image.
 
         Args:
-            path (os.PathLike): Path to the NIfTI images.
+            output_dirpath (os.PathLike): Path to the output directory.
             lean_body_mass (float): Body weight without the weight of the fat.
             study_date (str): Date of the study for json access.
 
@@ -428,7 +429,13 @@ class TotalSegmentatorMuscleFatSUL:
             acq_time = dicom_data["AcquisitionTime"]
             start_time = dicom_data["RadiopharmaceuticalStartTime"]
 
-            sul_corr_factor = calculate_suv_factor(total_dose, start_time, half_life, acq_time, lean_body_mass)
+            sul_corr_factor = calculate_suv_factor(
+                total_dose=total_dose,
+                start_time=start_time,
+                half_life=half_life,
+                acq_time=acq_time,
+                weight=lean_body_mass,
+            )
 
             sul_pet_nii = convert_pet(
                 nib.load(out_pet_fpath),

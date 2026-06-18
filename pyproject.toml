@@ -12,7 +12,7 @@ authors = [
 description = "MUSIQ - Multimodal Unified Segmentation & Image Quantification. A Python package for radiomics feature extraction from medical images, specifically PET/CT and MRI scans."
 license = {file = "LICENSE"}
 readme = "README.md"
-version = "0.1.0"
+version = "0.1.1"
 requires-python = ">=3.12"
 classifiers = [
     "Development Status :: Development Status :: 4",
@@ -42,7 +42,6 @@ dependencies= [
     "batchgeneratorsv2==0.3.0",
     "blosc2==3.4.0",
     "certifi==2025.6.15",
-    "cfgv==3.4.0",
     "charset-normalizer==3.4.2",
     "colorama==0.4.6",
     "connected-components-3d==3.24.0",
@@ -50,17 +49,14 @@ dependencies= [
     "cycler==0.12.1",
     "dicom2nifti==2.6.2",
     "dcm2niix==1.0.20250506",
-    "distlib==0.3.9",
     "dynamic_network_architectures==0.3.1",
     "einops==0.8.1",
     "fft-conv-pytorch==1.2.0",
-    "filelock==3.18.0",
     "fonttools==4.58.4",
     "fsspec==2025.5.1",
     "future==1.0.0",
     "graphviz==0.21",
     "huggingface-hub==0.33.0",
-    "identify==2.6.12",
     "idna==3.10",
     "imagecodecs==2025.3.30",
     "imageio==2.37.0",
@@ -78,15 +74,12 @@ dependencies= [
     "networkx==3.5",
     "nibabel==5.3.2",
     "nilearn==0.12.0",
-    "nodeenv==1.9.1",
     "numexpr==2.11.0",
     "numpy==1.26.4",
     "p_tqdm==1.4.2",
     "packaging==25.0",
     "pandas==2.3.0",
     "pillow==11.2.1",
-    "platformdirs==4.3.8",
-    "pre-commit==4.2.0",
     "psutil==7.2.2",
     "py-cpuinfo==9.0.0",
     "pyarrow==20.0.0",
@@ -118,7 +111,6 @@ dependencies= [
     "tzdata==2025.2",
     "unittest2==1.1.0",
     "urllib3==2.5.0",
-    "virtualenv==20.31.2",
     "xmltodict==0.14.2",
     "xvfbwrapper==0.2.13",
     "yacs==0.1.8",
@@ -150,7 +142,7 @@ repository = "https://github.com/Clinical-Computational-Medical-Imaging/MUSIQ"
 
 [project.optional-dependencies]
 testing = ["setuptools", "pytest", "pytest-cov"]
-pre-commit = ["pre-commit", "ruff", "black"]
+pre-commit = ["pre-commit", "ruff"]
 
 [tool.pytest.ini_options]
 addopts = "--cov musiq --cov-report term-missing --verbose"
@@ -184,7 +176,3 @@ known-first-party = ["musiq"]
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["E402"]
 "**/{tests,docs,tools}/*" = ["E402"]
-
-[tool.black]
-line-length = 120
-extend-exclude = ".venv .eggs venv"
