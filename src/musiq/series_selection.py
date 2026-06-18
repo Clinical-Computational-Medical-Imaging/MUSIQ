@@ -136,6 +136,10 @@ class SeriesSelection:
                 out_path_PT = os.path.join(self.output_dirpath, patient_id, study_date, "PET.nii.gz")
                 out_path_SUV = os.path.join(self.output_dirpath, patient_id, study_date, "SUV.nii.gz")
                 mr_study_dir = plb.Path(self.output_dirpath) / patient_id / study_date
+                mr_series_desc_normalized = series_desc.replace("  ", "_").replace(" ", "_")
+                mr_series_nii_exists = any(
+                    mr_series_desc_normalized in f.name.lower() for f in mr_study_dir.glob("*.nii.gz")
+                )
                 if (
                     (
                         modality in ["CT", "PT"]
@@ -143,7 +147,7 @@ class SeriesSelection:
                             [os.path.isfile(out_path_CT), os.path.isfile(out_path_PT), os.path.isfile(out_path_SUV)]
                         )
                     )
-                    or (modality == "MR" and any(mr_study_dir.glob("*.nii.gz")))
+                    or (modality == "MR" and mr_series_nii_exists)
                 ) and os.path.isfile(out_path_patient_info):
                     new_info = f"Processed files for patient {patient_id} in study {study_date} already exist."
                     if new_info != info:
