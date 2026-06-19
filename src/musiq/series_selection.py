@@ -17,7 +17,9 @@ from .utils import (
     calculate_suv_factor,
     convert_pet,
     extract_dicom_data,
+    find_mr_niftis,
     make_json_safe,
+    mr_nifti_exists,
     run_dcm2niix,
     setup_series_keywords,
 )
@@ -124,6 +126,7 @@ class SeriesSelection:
                 series_desc = getattr(ds, "SeriesDescription", "").lower()
                 study_desc = getattr(ds, "StudyDescription", "N/A")
                 manufacturer = getattr(ds, "Manufacturer", "Unknown")
+                protocol_name = getattr(ds, "ProtocolName", None)
 
                 if not (patient_id and study_date and modality):
                     continue
@@ -136,10 +139,9 @@ class SeriesSelection:
                 out_path_PT = os.path.join(self.output_dirpath, patient_id, study_date, "PET.nii.gz")
                 out_path_SUV = os.path.join(self.output_dirpath, patient_id, study_date, "SUV.nii.gz")
                 mr_study_dir = plb.Path(self.output_dirpath) / patient_id / study_date
-                mr_series_desc_normalized = series_desc.replace("  ", "_").replace(" ", "_")
-                mr_series_nii_exists = any(
-                    mr_series_desc_normalized in f.name.lower() for f in mr_study_dir.glob("*.nii.gz")
-                )
+                # dcm2niix names MR NIfTIs from `%p` (ProtocolName, falling back to
+                # SeriesDescription when absent), so match on that to detect an already-converted series.
+                mr_series_nii_exists = modality == "MR" and mr_nifti_exists(mr_study_dir, protocol_name, series_desc)
                 if (
                     (
                         modality in ["CT", "PT"]
@@ -147,7 +149,7 @@ class SeriesSelection:
                             [os.path.isfile(out_path_CT), os.path.isfile(out_path_PT), os.path.isfile(out_path_SUV)]
                         )
                     )
-                    or (modality == "MR" and mr_series_nii_exists)
+                    or mr_series_nii_exists
                 ) and os.path.isfile(out_path_patient_info):
                     new_info = f"Processed files for patient {patient_id} in study {study_date} already exist."
                     if new_info != info:
@@ -295,9 +297,10 @@ class SeriesSelection:
             if os.path.isfile(json_path):
                 with open(json_path) as existing_f:
                     existing_info = json.load(existing_f)
-                merged_studies = existing_info.get("Studies", {})
-                merged_studies.update(self.patient_results[patient_id].get("Studies", {}))
-                self.patient_results[patient_id]["Studies"] = merged_studies
+                self.patient_results[patient_id]["Studies"] = self._merge_studies(
+                    existing_info.get("Studies", {}),
+                    self.patient_results[patient_id].get("Studies", {}),
+                )
 
             with open(json_path, "w") as f:
                 self.patient_results[patient_id] = make_json_safe(self.patient_results[patient_id])
@@ -575,12 +578,15 @@ class SeriesSelection:
             tuple: Path to the NIfTI file and a dictionary of DICOM tags."""
         first_dcm = os.listdir(MR_dcm_dirpath)[0]
         ds = pydicom.dcmread(str(str(MR_dcm_dirpath) + "/" + first_dcm), stop_before_pixels=True)
-        series_desc = str(ds.SeriesDescription).lower().replace("  ", "_").replace(" ", "_")
-        nii_files = [f for f in os.listdir(output_dirpath) if series_desc in f.lower() and f.endswith(".nii.gz")]
-        if nii_files:
+        # dcm2niix names MR NIfTIs from `%p` (ProtocolName, falling back to SeriesDescription);
+        # match on that to detect existing output.
+        existing_niftis = find_mr_niftis(
+            plb.Path(output_dirpath), getattr(ds, "ProtocolName", None), getattr(ds, "SeriesDescription", None)
+        )
+        if existing_niftis:
             logger.info(f"MRI NIfTI already exist at {output_dirpath}.")
             dicom_tags = extract_dicom_data(plb.Path(MR_dcm_dirpath), self.dicom_tags)
-            return os.path.join(output_dirpath, nii_files[0]), dicom_tags
+            return str(existing_niftis[0]), dicom_tags
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp = plb.Path(tmp)
@@ -605,6 +611,32 @@ class SeriesSelection:
             with open(jsn) as json_file:
                 dicom_tags = json.load(json_file)
         return nii_path, dicom_tags
+
+    def _merge_studies(self, existing: dict, new: dict) -> dict:
+        """Deep-merge new studies into existing ones without overwriting already-recorded series.
+
+        Merges at three levels: study date → modality → series list (deduplicated by series description key).
+        """
+        merged = dict(existing)
+        for study_date, new_study in new.items():
+            if study_date not in merged:
+                merged[study_date] = new_study
+                continue
+            existing_study = dict(merged[study_date])
+            existing_modalities = existing_study.get("Modalities", {})
+            for modality, new_series_list in new_study.get("Modalities", {}).items():
+                if modality not in existing_modalities:
+                    existing_modalities[modality] = new_series_list
+                else:
+                    existing_keys = {key for series_dict in existing_modalities[modality] for key in series_dict}
+                    for series_dict in new_series_list:
+                        for key in series_dict:
+                            if key not in existing_keys:
+                                existing_modalities[modality].append(series_dict)
+                                existing_keys.add(key)
+            existing_study["Modalities"] = existing_modalities
+            merged[study_date] = existing_study
+        return merged
 
     def validate_output(self, data_dict, output_csv_path, user_flag: bool, conversion_flags: list) -> None:
         """Validate the output of the series selection and conversion process.

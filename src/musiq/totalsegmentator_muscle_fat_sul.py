@@ -15,6 +15,21 @@ from .utils import calculate_suv_factor, convert_pet, is_mr_filename, load_mr_ke
 logger = logging.getLogger(__name__)
 
 
+def total_seg_path(input_fpath: str | os.PathLike) -> str:
+    """Path to the TotalSegmentator 'total' segmentation for a given input image.
+
+    Mirrors the naming produced by the totalsegmentator stage (see
+    totalsegmentator_inference.py): ``CT.nii.gz`` -> ``CTseg.nii.gz`` while an MR series
+    ``<stem>.nii.gz`` -> ``<stem>_seg.nii.gz``. A plain ``.nii.gz`` -> ``seg.nii.gz``
+    replacement only works for CT (it drops the underscore for MR), which is why the seg
+    was never found for MR series.
+    """
+    dirpath, filename = os.path.split(str(input_fpath))
+    if filename == "CT.nii.gz":
+        return os.path.join(dirpath, "CTseg.nii.gz")
+    return os.path.join(dirpath, f"{filename[:-7]}_seg.nii.gz")
+
+
 class TotalSegmentatorMuscleFatSUL:
     def __init__(self, input_dirpath_processed: os.PathLike | str) -> None:
         """Class to handle TotalSegmentator muscle fat analysis on CT.nii.gz and MRI files in a specified folder.
@@ -53,6 +68,10 @@ class TotalSegmentatorMuscleFatSUL:
                 dirnames.clear()
                 patient_id, study_date = rel_parts
                 for filename in filenames:
+                    # Skip existing muscle/fat segmentations - we don't want to segment them again.
+                    if filename.endswith("_muscle_fat.nii.gz"):
+                        continue
+
                     # Determine if this is a CT or MR file and set parameters accordingly
                     is_ct = filename == "CT.nii.gz"
                     is_mr = (
@@ -85,6 +104,12 @@ class TotalSegmentatorMuscleFatSUL:
 
                     segmentation_exists = os.path.isfile(output_fpath)
 
+                    # For MR we only produce the segmentation file (no muscle/fat %, LBM or SUL),
+                    # so if it already exists there is nothing left to do.
+                    if not is_ct and segmentation_exists:
+                        logger.info(f"MR segmentation already exists for {filename}, skipping.")
+                        continue
+
                     patient_dirpath = os.path.dirname(dirpath)
                     patient_info_path = os.path.join(patient_dirpath, "patient_info.json")
                     if os.path.isfile(patient_info_path):
@@ -107,7 +132,7 @@ class TotalSegmentatorMuscleFatSUL:
                             mr_series = patient_info["Studies"][study_date]["Modalities"][modality]
                             series_index = None
                             for idx, serie in enumerate(mr_series):
-                                for _serie_name, serie_data in serie.items():
+                                for serie_data in serie.values():
                                     if "MRPath" in serie_data and filename in os.path.basename(serie_data["MRPath"]):
                                         series_index = idx
                                         break
@@ -169,6 +194,11 @@ class TotalSegmentatorMuscleFatSUL:
                             logger.error(f"Error loading segmentation file {output_fpath}: {e}")
                             label_map_dict = {}
 
+                        # For MR we only want the segmentation file — muscle/fat % (and the LBM/SUL
+                        # it feeds) are CT/PET concepts, so skip them here.
+                        if not is_ct:
+                            continue
+
                         layers = ["full_picture", "l3", "glut_to_c6"]
                         for layer in layers:
                             calculation = self.calc_size(input_fpath, segmentation_img, label_map_dict, layer)
@@ -221,11 +251,9 @@ class TotalSegmentatorMuscleFatSUL:
                         series_data.get("body_composition_analysis", {}).get("glut_to_c6", {}).get("total_fat_in_%")
                     )
                     if fat_in_percent is None:
-                        total_seg_path = input_fpath.replace(".nii.gz", "seg.nii.gz")
-                        if not os.path.isfile(total_seg_path):
-                            reason = (
-                                f"CTseg.nii.gz not found at {total_seg_path} — run TotalSegmentator task='total' first"
-                            )
+                        seg_path = total_seg_path(input_fpath)
+                        if not os.path.isfile(seg_path):
+                            reason = f"segmentation not found at {seg_path} — run TotalSegmentator task='total' first"
                         else:
                             reason = (
                                 "arms detected beside the body (humerus below T4 threshold); "
@@ -267,13 +295,13 @@ class TotalSegmentatorMuscleFatSUL:
                     muscle/fat ratio.
         """
         fallback_dict = {"total_fat_in_%": None, "total_muscle_in_%": None, "muscle_fat_ratio": None}
-        total_seg_path = str(path).replace(".nii.gz", "seg.nii.gz")
-        if not os.path.isfile(total_seg_path):
-            logger.error(f"{total_seg_path} is mising. Please run TotalSegmentator task='total' first.")
+        seg_path = total_seg_path(path)
+        if not os.path.isfile(seg_path):
+            logger.error(f"{seg_path} is missing. Please run TotalSegmentator task='total' first.")
             return fallback_dict
 
         base_img = nib.load(path)
-        total_seg_img, label_map_dict = load_multilabel_nifti(total_seg_path)
+        total_seg_img, label_map_dict = load_multilabel_nifti(seg_path)
 
         seg_data = total_seg_img.get_fdata().astype(int)
 
