@@ -10,6 +10,7 @@ import tempfile
 from collections import defaultdict
 
 import nibabel as nib
+import numpy as np
 import pydicom
 
 from .utils import (
@@ -273,6 +274,10 @@ class SeriesSelection:
                 continue
 
             selected_series = {patient_id: [study_info[i] for i in indices]}
+            for s in selected_series[patient_id]:
+                siblings = self._dynamic_sibling_dirs(study_info, s)
+                if siblings:
+                    s["DynamicSiblingPaths"] = siblings
             if patient_id not in self.patient_results:
                 self.patient_results[patient_id] = {
                     "InputDirPath": str(selected_series[patient_id][0]["PatientPath"]),
@@ -418,6 +423,7 @@ class SeriesSelection:
                 modality=modality,
                 dicom_input_dirpath=series_path,
                 out_dirpath=os.path.join(self.output_dirpath, patient_id, study_date),
+                dynamic_sibling_dirs=series.get("DynamicSiblingPaths"),
             )
             if paths_and_dicom_tags:
                 self.patient_results[patient_id]["Studies"][study_date]["Modalities"][modality].append(
@@ -429,7 +435,7 @@ class SeriesSelection:
         logger.info("-" * 90)
         return flags
 
-    def start_dcm2nii(self, modality, dicom_input_dirpath, out_dirpath) -> tuple[bool, dict]:
+    def start_dcm2nii(self, modality, dicom_input_dirpath, out_dirpath, dynamic_sibling_dirs=None) -> tuple[bool, dict]:
         """Start the DICOM to NIfTI conversion process for the specified modality.
 
         Args:
@@ -454,7 +460,9 @@ class SeriesSelection:
                 dicom_tags = self.convert_dcm2nii_PET(PET_dcm_dirpath=dicom_input_dirpath, output_dirpath=out_dirpath)
             elif modality == "MR":
                 out_fpath, dicom_tags = self.convert_dcm2nii_MR(
-                    MR_dcm_dirpath=dicom_input_dirpath, output_dirpath=out_dirpath
+                    MR_dcm_dirpath=dicom_input_dirpath,
+                    output_dirpath=out_dirpath,
+                    dynamic_sibling_dirs=dynamic_sibling_dirs,
                 )
             if "SeriesDescription" not in dicom_tags:
                 chars = string.ascii_letters + string.digits
@@ -566,8 +574,88 @@ class SeriesSelection:
                 nib.save(img=suv_pet_nii, filename=out_suv_fpath)  # type: ignore
             return dicom_tags
 
+    def _dynamic_sibling_dirs(self, study_info: list, entry: dict) -> list | None:
+        """Detect a dynamic acquisition stored as separate DICOM series (one per timepoint).
+
+        Some scanners write each timepoint of a dynamic/DCE series as its own series (same
+        SeriesDescription, distinct SeriesNumber/AcquisitionTime) rather than one multi-frame
+        series. dcm2niix won't merge across series, so each would convert to a 3D volume.
+
+        Returns the sibling series dirs ordered by AcquisitionTime when ALL hold (strict, to
+        avoid wrongly merging genuinely separate acquisitions): same SeriesDescription, >= 3
+        series, >= 3 distinct AcquisitionTimes, and a dynamic marker (``dyn``/``dce`` in the
+        description or ``DYNAMIC`` in ImageType). Otherwise None (treat as a normal series).
+        Geometry consistency (shape/affine) is verified later, at stack time.
+        """
+        if entry["Modality"] != "MR":
+            return None
+        desc = entry["SeriesDescription"]
+        group = [s for s in study_info if s["Modality"] == "MR" and s["SeriesDescription"] == desc]
+        if len(group) < 3:
+            return None
+
+        dynamic_marker = "dyn" in desc.lower() or "dce" in desc.lower()
+        timed = []
+        for s in group:
+            files = [f for f in os.listdir(s["SeriesPath"]) if f.lower() != "dicomdir" and not f.startswith(".")]
+            if not files:
+                return None
+            try:
+                ds = pydicom.dcmread(os.path.join(s["SeriesPath"], files[0]), stop_before_pixels=True)
+            except Exception:
+                return None
+            if "DYNAMIC" in [str(x).upper() for x in getattr(ds, "ImageType", [])]:
+                dynamic_marker = True
+            timed.append((getattr(ds, "AcquisitionTime", None), s["SeriesPath"]))
+
+        times = [t for t, _ in timed]
+        if not dynamic_marker or any(t is None for t in times) or len(set(times)) < 3:
+            return None
+        timed.sort(key=lambda x: x[0])
+        return [p for _, p in timed]
+
+    def _convert_dynamic_mr(
+        self, sibling_dirs: list, output_dirpath: str | os.PathLike, fallback_dir: str | os.PathLike
+    ) -> tuple[str | os.PathLike, dict]:
+        """Convert each timepoint-series and stack them into one 4D NIfTI (ordered as given).
+
+        Aborts to a normal single-series conversion (of ``fallback_dir``) if any timepoint
+        fails to convert, is not 3D, or has geometry inconsistent with the first.
+        """
+        vols, affine, header, base_name, first_shape = [], None, None, None, None
+        with tempfile.TemporaryDirectory() as tmproot:
+            for i, d in enumerate(sibling_dirs):
+                sub = plb.Path(tmproot) / str(i)
+                sub.mkdir()
+                run_dcm2niix(d, sub, merge=True)
+                files = list(sub.glob("*.nii.gz"))
+                if not files:
+                    logger.warning(f"dynamic MR: no NIfTI for timepoint {d}; falling back to single volume.")
+                    return self.convert_dcm2nii_MR(fallback_dir, output_dirpath)
+                f = max(files, key=lambda x: (nib.load(str(x)).ndim, x.stat().st_size))
+                img = nib.load(str(f))
+                if img.ndim != 3:
+                    logger.warning(f"dynamic MR: timepoint {f.name} is {img.shape}, not 3D; falling back.")
+                    return self.convert_dcm2nii_MR(fallback_dir, output_dirpath)
+                if affine is None:
+                    affine, header, base_name, first_shape = img.affine, img.header, f.name, img.shape
+                elif img.shape != first_shape or not np.allclose(img.affine, affine, atol=1e-3):
+                    logger.warning(f"dynamic MR: geometry mismatch at {f.name}; falling back to single volume.")
+                    return self.convert_dcm2nii_MR(fallback_dir, output_dirpath)
+                vols.append(np.asanyarray(img.dataobj))
+
+        data4d = np.stack(vols, axis=3)
+        nii_path = os.path.join(output_dirpath, base_name)
+        nib.save(nib.Nifti1Image(data4d, affine, header), nii_path)
+        dicom_tags = extract_dicom_data(plb.Path(sibling_dirs[0]), self.dicom_tags)
+        logger.info(f"dynamic MR: stacked {len(vols)} timepoints -> {os.path.basename(nii_path)} {data4d.shape}")
+        return nii_path, dicom_tags
+
     def convert_dcm2nii_MR(
-        self, MR_dcm_dirpath: str | os.PathLike, output_dirpath: str | os.PathLike
+        self,
+        MR_dcm_dirpath: str | os.PathLike,
+        output_dirpath: str | os.PathLike,
+        dynamic_sibling_dirs: list | None = None,
     ) -> tuple[str | os.PathLike, dict]:
         """Conversion of MR DICOM (in the MR_dcm_path) to nifti and save in output_dirpath.
         Args:
@@ -588,10 +676,16 @@ class SeriesSelection:
             dicom_tags = extract_dicom_data(plb.Path(MR_dcm_dirpath), self.dicom_tags)
             return str(existing_niftis[0]), dicom_tags
 
+        # Dynamic stored as separate per-timepoint series: convert all and stack into 4D.
+        if dynamic_sibling_dirs and len(dynamic_sibling_dirs) > 1:
+            return self._convert_dynamic_mr(dynamic_sibling_dirs, output_dirpath, MR_dcm_dirpath)
+
         with tempfile.TemporaryDirectory() as tmp:
             tmp = plb.Path(tmp)
 
-            run_dcm2niix(MR_dcm_dirpath, tmp)
+            # merge=True so a dynamic/DCE series split by dcm2niix into one file per timepoint
+            # is reassembled into a single 4D NIfTI instead of collapsing to a 3D fragment.
+            run_dcm2niix(MR_dcm_dirpath, tmp, merge=True)
 
             nii_files = list(tmp.glob("*.nii.gz"))
 
@@ -599,15 +693,30 @@ class SeriesSelection:
                 logger.warning("No NIfTI files found. MRI conversion may have failed.")
                 return "", {}
 
-            try:
-                nii = next(tmp.glob("*nii.gz"))
-            except StopIteration:
-                logger.info("MR conversion failed")
+            # dcm2niix may still emit several files (e.g. DIXON water/fat/in/opp contrasts).
+            # Pick deterministically — the volume with the most dimensions, then the most
+            # timepoints, then the largest — rather than an arbitrary glob order, and never
+            # silently drop the rest.
+            def _rank(f: plb.Path):
+                shape = nib.load(str(f)).shape
+                ndim = len(shape)
+                n_time = shape[3] if ndim >= 4 else 1
+                return (ndim, n_time, f.stat().st_size)
 
-            # copy niftis to output folder with consistent naming
+            nii = max(nii_files, key=_rank)
+            if len(nii_files) > 1:
+                discarded = sorted(f.name for f in nii_files if f != nii)
+                logger.warning(
+                    f"dcm2niix produced {len(nii_files)} NIfTIs for MR series in {MR_dcm_dirpath}; "
+                    f"kept {nii.name} (shape {nib.load(str(nii)).shape}), discarded: {discarded}"
+                )
+
+            # copy chosen nifti out and read its matching sidecar (same stem)
             nii_path = os.path.join(output_dirpath, nii.name)
             shutil.copy(nii, nii_path)
-            jsn = next(tmp.glob("*.json"))
+            jsn = nii.with_suffix("").with_suffix(".json")
+            if not jsn.is_file():
+                jsn = next(tmp.glob("*.json"))
             with open(jsn) as json_file:
                 dicom_tags = json.load(json_file)
         return nii_path, dicom_tags
