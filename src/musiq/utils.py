@@ -196,6 +196,54 @@ def run_dcm2niix(input_folder: str | os.PathLike, output_folder: str | os.PathLi
         logger.error(f"Unexpected error: {e}")
 
 
+def normalize_dcm2niix_name(name: str | None) -> str:
+    """Normalize a string the way dcm2niix sanitizes filenames.
+
+    dcm2niix builds output filenames from the `%p` token by replacing characters that are
+    not filename-safe with underscores. Its exact rules vary across versions, so we
+    normalize defensively: lowercase and collapse every run of non-alphanumeric characters
+    into a single underscore. Applying this to both the source tag and to candidate
+    filenames makes matching robust to spaces, parentheses, slashes, dots, etc.
+    """
+    return re.sub(r"[^a-z0-9]+", "_", (name or "").lower()).strip("_")
+
+
+def find_mr_niftis(
+    study_dir: plb.Path, protocol_name: str | None, series_description: str | None = None
+) -> list[plb.Path]:
+    """Find NIfTIs already produced from an MR series by dcm2niix.
+
+    dcm2niix is run with `-f %p_%s` (see run_dcm2niix), so an MR series is written as
+    ``{%p}_{SeriesNumber}.nii.gz``. The `%p` token is ProtocolName, but dcm2niix falls back
+    to SeriesDescription when ProtocolName is absent/empty — which is the case for our MR
+    DICOMs (the 0018,1030 tag is not present, yet filenames clearly track SeriesDescription).
+    So the source stem is ``ProtocolName if non-empty else SeriesDescription``. We match that
+    normalized stem followed by the series-number token (``_<digits>``).
+
+    Side-project artifacts that share these study dirs (NIfTIs whose name starts with the
+    patient_id, e.g. ``mp_0008_ttp.nii.gz``) are excluded — real dcm2niix MR outputs are
+    named from the series tag and never start with the patient_id. Returns matches
+    shortest-name-first so the source NIfTI is preferred over derived files that share its
+    prefix.
+    """
+    stem = normalize_dcm2niix_name(protocol_name) or normalize_dcm2niix_name(series_description)
+    if not stem:
+        return []
+    patient_id = study_dir.parent.name
+    matches = [
+        f
+        for f in study_dir.glob("*.nii.gz")
+        if not f.name.startswith(patient_id)
+        and re.match(rf"^{re.escape(stem)}_\d", normalize_dcm2niix_name(f.name.removesuffix(".nii.gz")))
+    ]
+    return sorted(matches, key=lambda f: len(f.name))
+
+
+def mr_nifti_exists(study_dir: plb.Path, protocol_name: str | None, series_description: str | None = None) -> bool:
+    """Return True if an MR NIfTI for this series already exists in study_dir."""
+    return bool(find_mr_niftis(study_dir, protocol_name, series_description))
+
+
 def is_preselected(series) -> bool:
     """Check if the series is preselected based on its description and modality."""
     desc = series["SeriesDescription"]
