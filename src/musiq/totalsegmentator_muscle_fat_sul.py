@@ -53,6 +53,10 @@ class TotalSegmentatorMuscleFatSUL:
                 dirnames.clear()
                 patient_id, study_date = rel_parts
                 for filename in filenames:
+                    # Skip existing muscle/fat segmentations - we don't want to segment them again.
+                    if filename.endswith("_muscle_fat.nii.gz"):
+                        continue
+
                     # Determine if this is a CT or MR file and set parameters accordingly
                     is_ct = filename == "CT.nii.gz"
                     is_mr = (
@@ -107,7 +111,7 @@ class TotalSegmentatorMuscleFatSUL:
                             mr_series = patient_info["Studies"][study_date]["Modalities"][modality]
                             series_index = None
                             for idx, serie in enumerate(mr_series):
-                                for _serie_name, serie_data in serie.items():
+                                for serie_data in serie.values():
                                     if "MRPath" in serie_data and filename in os.path.basename(serie_data["MRPath"]):
                                         series_index = idx
                                         break
