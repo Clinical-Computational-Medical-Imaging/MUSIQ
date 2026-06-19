@@ -182,10 +182,19 @@ def run_dicom2nifti(input_folder: str | os.PathLike, output_folder: str | os.Pat
         logger.error(f"Error converting {input_folder}: {e}")
 
 
-def run_dcm2niix(input_folder: str | os.PathLike, output_folder: str | os.PathLike) -> None:
+def run_dcm2niix(input_folder: str | os.PathLike, output_folder: str | os.PathLike, merge: bool = False) -> None:
+    """Run dcm2niix.
+
+    merge=True adds ``-m y``, which tells dcm2niix to merge slices it would otherwise split
+    into separate files (e.g. the timepoints of a dynamic/DCE series), yielding a single 4D
+    NIfTI instead of one 3D file per timepoint. Used for MR; left off for CT/PET to preserve
+    their existing single-volume behavior.
+    """
     try:
-        # Construct the nnUNet predict command
-        command = ["dcm2niix", "-z", "y", "-f", "%p_%s", "-b", "y", "-ba", "n", "-o", output_folder, input_folder]
+        command = ["dcm2niix", "-z", "y", "-f", "%p_%s", "-b", "y", "-ba", "n"]
+        if merge:
+            command += ["-m", "y"]
+        command += ["-o", output_folder, input_folder]
 
         # Execute the command
         subprocess.run(command, check=True)

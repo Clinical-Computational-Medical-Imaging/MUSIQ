@@ -591,7 +591,9 @@ class SeriesSelection:
         with tempfile.TemporaryDirectory() as tmp:
             tmp = plb.Path(tmp)
 
-            run_dcm2niix(MR_dcm_dirpath, tmp)
+            # merge=True so a dynamic/DCE series split by dcm2niix into one file per timepoint
+            # is reassembled into a single 4D NIfTI instead of collapsing to a 3D fragment.
+            run_dcm2niix(MR_dcm_dirpath, tmp, merge=True)
 
             nii_files = list(tmp.glob("*.nii.gz"))
 
@@ -599,15 +601,30 @@ class SeriesSelection:
                 logger.warning("No NIfTI files found. MRI conversion may have failed.")
                 return "", {}
 
-            try:
-                nii = next(tmp.glob("*nii.gz"))
-            except StopIteration:
-                logger.info("MR conversion failed")
+            # dcm2niix may still emit several files (e.g. DIXON water/fat/in/opp contrasts).
+            # Pick deterministically — the volume with the most dimensions, then the most
+            # timepoints, then the largest — rather than an arbitrary glob order, and never
+            # silently drop the rest.
+            def _rank(f: plb.Path):
+                shape = nib.load(str(f)).shape
+                ndim = len(shape)
+                n_time = shape[3] if ndim >= 4 else 1
+                return (ndim, n_time, f.stat().st_size)
 
-            # copy niftis to output folder with consistent naming
+            nii = max(nii_files, key=_rank)
+            if len(nii_files) > 1:
+                discarded = sorted(f.name for f in nii_files if f != nii)
+                logger.warning(
+                    f"dcm2niix produced {len(nii_files)} NIfTIs for MR series in {MR_dcm_dirpath}; "
+                    f"kept {nii.name} (shape {nib.load(str(nii)).shape}), discarded: {discarded}"
+                )
+
+            # copy chosen nifti out and read its matching sidecar (same stem)
             nii_path = os.path.join(output_dirpath, nii.name)
             shutil.copy(nii, nii_path)
-            jsn = next(tmp.glob("*.json"))
+            jsn = nii.with_suffix("").with_suffix(".json")
+            if not jsn.is_file():
+                jsn = next(tmp.glob("*.json"))
             with open(jsn) as json_file:
                 dicom_tags = json.load(json_file)
         return nii_path, dicom_tags
