@@ -8,6 +8,6 @@ SERIES_KEYWORDS:
     SECONDARY: []
     EXCLUSION: ["nac motion free", "pet exam report", "mip", "nac"]
   MR:
-    PRIMARY: ["dyn_t1", "t1 tse", "t2 tse", "t2w_mvxd_sag", "t2w_tse_sag", "dyn", "dce mi fov", "dwi", "1400", "adc", "tracew", "t1w_tse","t1w tse", "t2_tse", "t2_tse_tra", "t1_tse", "t1_qtse", "t1_tse_tra"]
+    PRIMARY: ["dDWI_3B", "dSSh_DWI", "DCE mi Fov neu", "dyn_t1", "t1 tse", "t2 tse", "t2w_mvxd_sag", "t2w_tse_sag", "dyn", "dce mi fov", "dwi", "1400", "adc", "tracew", "t1w_tse","t1w tse", "t2_tse", "t2_tse_tra", "t1_tse", "t1_qtse", "t1_tse_tra"]
     SECONDARY: []
-    EXCLUSION: ["carebolus", "localizer", "survey", "ds", "haste", "t2-space-coronar"]
+    EXCLUSION: ["carebolus", "localizer", "survey", "haste", "t2-space-coronar"]
