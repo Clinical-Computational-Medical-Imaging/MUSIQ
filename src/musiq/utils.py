@@ -16,7 +16,7 @@ import SimpleITK as sitk
 import yaml
 from pydicom.multival import MultiValue
 from pydicom.uid import UID
-from pydicom.valuerep import IS, DSfloat, PersonName
+from pydicom.valuerep import IS, DSdecimal, DSfloat, PersonName
 from skimage.measure import label
 
 from . import metrics
@@ -437,11 +437,18 @@ def convert_pet(pet, suv_factor) -> nib.Nifti1Image:
 
 def make_json_safe(obj: Any) -> Any:
     """Convert a DICOM or NumPy object to a JSON-safe format."""
-    non_serializable_types = MultiValue | PersonName | DSfloat | IS | UID
+    string_types = PersonName | UID
 
     if isinstance(obj, MultiValue):
         return [make_json_safe(item) for item in obj]
-    elif isinstance(obj, non_serializable_types):
+    # DICOM DS (Decimal String) and IS (Integer String) are numeric subclasses (float/int).
+    # Keep them numeric instead of stringifying, so downstream arithmetic (e.g. PatientWeight
+    # used to compute LBM) doesn't break on values like "80.0".
+    elif isinstance(obj, IS):
+        return int(obj)
+    elif isinstance(obj, DSfloat | DSdecimal):
+        return float(obj)
+    elif isinstance(obj, string_types):
         return str(obj)
     elif isinstance(obj, dict):
         return {k: make_json_safe(v) for k, v in obj.items()}
