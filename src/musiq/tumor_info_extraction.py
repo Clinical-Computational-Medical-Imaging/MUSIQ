@@ -37,7 +37,8 @@ class TumorInfoExtraction:
         for metric in self.pet_metrics:
             study_dirs = []
 
-            petseg_fname = "PETseg.nii.gz" if metric == "SUV" else "PETsegSUL.nii.gz"
+            # TEMP: run off the physician-corrected mask (single SUV-space mask used for both metrics).
+            petseg_fname = "PETseg_revised.nii"
             required_files = [petseg_fname, "CTseg.nii.gz", f"{metric}.nii.gz"]
 
             for dirpath, dirnames, _filenames in os.walk(self.input_dirpath):
@@ -67,8 +68,9 @@ class TumorInfoExtraction:
     def process_study(study_dirpath, pet_metric: str = "SUV") -> None:
         """Process a single study directory."""
         logger.info(f"Extracting tumor metrics for {study_dirpath}")
-        petseg_fname = "PETseg.nii.gz" if pet_metric == "SUV" else "PETsegSUL.nii.gz"
-        tumor_stats_key = "TumorStats" if pet_metric == "SUV" else "TumorStatsSUL"
+        # TEMP: read the physician-corrected mask, write per-lesion results to a separate key.
+        petseg_fname = "PETseg_revised.nii"
+        tumor_stats_key = "TumorStatsRevised" if pet_metric == "SUV" else "TumorStatsRevisedSUL"
 
         petseg_fpath = os.path.join(study_dirpath, petseg_fname)
         ctsegres_fpath = os.path.join(study_dirpath, "CTsegres.nii.gz")

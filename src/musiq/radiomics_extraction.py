@@ -35,7 +35,9 @@ class RadiomicsExtractor:
 
     def run(self) -> None:
         for metric in self.pet_metrics:
-            petseg_fname = "PETseg.nii.gz" if metric == "SUV" else "PETsegSUL.nii.gz"
+            # TEMP: run radiomics off the physician-corrected mask. Same revised mask is used for
+            # both SUV and SUL (single SUV-space mask, identical grid). Revert to restore pipeline.
+            petseg_fname = "PETseg_revised.nii"
             necessary_files = [petseg_fname, f"{metric}.nii.gz", "CTseg.nii.gz", "CT.nii.gz"]
             sub_dirs = [
                 dirpath
@@ -70,8 +72,10 @@ class RadiomicsExtractor:
             SUV.nii.gz or SUL.nii.gz, PETseg.nii.gz or PETsegSUL.nii.gz, and patient_info.json.
             pet_metric (str): PET metric to use ("SUV" or "SUL").
         """
-        petseg_fname = "PETseg.nii.gz" if pet_metric == "SUV" else "PETsegSUL.nii.gz"
-        tumor_stats_key = "TumorStats" if pet_metric == "SUV" else "TumorStatsSUL"
+        # TEMP: read the physician-corrected mask, write to a separate key so the automated
+        # TumorStats/TumorStatsSUL are left untouched.
+        petseg_fname = "PETseg_revised.nii"
+        tumor_stats_key = "TumorStatsRevised" if pet_metric == "SUV" else "TumorStatsRevisedSUL"
 
         ct_fpath = os.path.join(dirpath, "CT.nii.gz")
         ctseg_fpath = os.path.join(dirpath, "CTseg.nii.gz")
