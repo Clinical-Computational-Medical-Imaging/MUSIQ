@@ -246,7 +246,21 @@ class TotalSegmentatorMuscleFatSUL:
 
                     series_name = next(iter(data["Studies"][study_date]["Modalities"][modality][series_index]))
                     series_data = data["Studies"][study_date]["Modalities"][modality][series_index][series_name]
-                    weight = series_data["DICOM"]["PatientWeight"]
+                    # PatientWeight is sometimes stored as a string (e.g. "80", "83.0") in patient_info.json,
+                    # which would make `weight * (...)` raise "can't multiply sequence by non-int".
+                    try:
+                        weight = float(series_data["DICOM"]["PatientWeight"])
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            f"Invalid PatientWeight {series_data['DICOM'].get('PatientWeight')!r} for "
+                            f"{patient_id}, skipping LBM/SUL computation."
+                        )
+                        continue
+                    if weight <= 0:
+                        logger.warning(
+                            f"Non-positive PatientWeight ({weight}) for {patient_id}, skipping LBM/SUL computation."
+                        )
+                        continue
                     fat_in_percent = (
                         series_data.get("body_composition_analysis", {}).get("glut_to_c6", {}).get("total_fat_in_%")
                     )
