@@ -298,30 +298,42 @@ def workflow_entrypoint():
         "all 551 552 553 554 555 556 557 558 559",
         default=None,
     )
+    # nargs="*" so a flag passed without values yields an empty list (distinct from absent=None).
+    # Passing any keyword flag empty disables keyword filtering and selects every series — useful
+    # for anonymized cohorts whose Series/Study Description tags are empty.
     parser.add_argument(
-        "--ct-primary-keywords", help="List of keywords to look for in CT study descriptions for default selection."
+        "--ct-primary-keywords",
+        nargs="*",
+        help="Keywords to look for in CT series descriptions for default selection. Pass empty to select all series.",
     )
     parser.add_argument(
         "--ct-secondary-keywords",
-        help="List of keywords to look for in CT study descriptions for alternative selection.",
+        nargs="*",
+        help="Keywords to look for in CT series descriptions for alternative selection.",
     )
-    parser.add_argument("--ct-exclusion-keywords", help="List of keywords to exclude CT studies from selection.")
+    parser.add_argument("--ct-exclusion-keywords", nargs="*", help="Keywords to exclude CT series from selection.")
     parser.add_argument(
-        "--pt-primary-keywords", help="List of keywords to look for in PT study descriptions for default selection."
+        "--pt-primary-keywords",
+        nargs="*",
+        help="Keywords to look for in PT series descriptions for default selection.",
     )
     parser.add_argument(
         "--pt-secondary-keywords",
-        help="List of keywords to look for in PT study descriptions for alternative selection.",
+        nargs="*",
+        help="Keywords to look for in PT series descriptions for alternative selection.",
     )
-    parser.add_argument("--pt-exclusion-keywords", help="List of keywords to exclude PT studies from selection.")
+    parser.add_argument("--pt-exclusion-keywords", nargs="*", help="Keywords to exclude PT series from selection.")
     parser.add_argument(
-        "--mr-primary-keywords", help="List of keywords to look for in MR study descriptions for default selection."
+        "--mr-primary-keywords",
+        nargs="*",
+        help="Keywords to look for in MR series descriptions for default selection.",
     )
     parser.add_argument(
         "--mr-secondary-keywords",
-        help="List of keywords to look for in MR study descriptions for alternative selection.",
+        nargs="*",
+        help="Keywords to look for in MR series descriptions for alternative selection.",
     )
-    parser.add_argument("--mr-exclusion-keywords", help="List of keywords to exclude MR studies from selection.")
+    parser.add_argument("--mr-exclusion-keywords", nargs="*", help="Keywords to exclude MR series from selection.")
     parser.add_argument(
         "--pet-metric",
         type=str,
