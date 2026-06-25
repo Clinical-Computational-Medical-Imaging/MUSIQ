@@ -309,9 +309,9 @@ class TotalSegmentatorMuscleFatSUL:
 
             if hum_z_min < t4_z_max - 100:
                 logger.warning("Arms are beside the body, remvoing arms")
-                fat_img = self.remove_arms(fat_img, path)
+                fat_img = self.remove_arms(fat_img, seg_data, name_to_label, affine, z_axis, path)
 
-                result_fpath = os.path.join(os.path.dirname(self.input_dirpath), "CTbody_masked.nii.gz")
+                result_fpath = os.path.join(os.path.dirname(path), "CTbody_masked.nii.gz")
                 nib.save(fat_img, result_fpath)
 
         fat_data = np.asanyarray(fat_img.dataobj).copy()
@@ -362,8 +362,8 @@ class TotalSegmentatorMuscleFatSUL:
         result_dict["muscle_fat_ratio"] = total_muscle / total_fat if total_fat > 0 else None
         return result_dict
 
-    def remove_arms(self, img: nib.Nifti1Image, input_fpath: os.PathLike) -> nib.Nifti1Image:
-        output_fpath = os.path.join(os.path.dirname(self.input_dirpath), "CTbody.nii.gz")
+    def remove_arms(self, img: nib.Nifti1Image, organ_img:nib.Nifti1Image, labels, affine, z_axis, input_fpath: os.PathLike) -> nib.Nifti1Image:
+        output_fpath = os.path.join(os.path.dirname(input_fpath), "CTbody.nii.gz")
         if not os.path.isfile(output_fpath):
             try:
                 totalsegmentator(
@@ -385,14 +385,25 @@ class TotalSegmentatorMuscleFatSUL:
         torso = (body_img.get_fdata() == name_to_label["body_trunc"]).astype(np.uint8)
         z_slices = np.where(torso.any(axis=(0, 1)))[0]
 
-        best_z_top = z_slices[-10]  # 10ter vor dem letzten oben
-        best_z_bot = z_slices[9]  # 10ter vom ersten unten
+        hip = np.isin(organ_img, [labels["hip_left"]])
+        coords = np.argwhere(hip)
+        if coords.size == 0:
+            logger.error("No hip_left found")
+            best_z_bot = z_slices[0] 
+        else:
+            best_z_bot = int(np.percentile(coords[:, z_axis], 10))  
+
+        shoulder = np.isin(organ_img, [labels["scapula_left"]])
+        coords = np.argwhere(shoulder)
+        if coords.size == 0:
+            logger.error("No scapula_left found")
+            best_z_top = z_slices[-1] 
+        else:
+            best_z_top = int(np.percentile(coords[:, z_axis], 95))     
 
         torso_extended = torso.copy()
-        for z in range(best_z_top + 1, torso.shape[2]):
-            torso_extended[:, :, z] = torso[:, :, best_z_top]
-        for z in range(0, best_z_bot):
-            torso_extended[:, :, z] = torso[:, :, best_z_bot]
+        torso_extended[:, :, best_z_top:] = 1
+        torso_extended[:, :, :best_z_bot] = 1
 
         data = np.asanyarray(img.dataobj).copy()
         for z in range(data.shape[2]):
