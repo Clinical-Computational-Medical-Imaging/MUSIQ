@@ -39,7 +39,7 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
 5. **CT Body Composition Analysis with TotalSegmentator for SUL computation**
    - Performs muscle and fat segmentation using TotalSegmentator and compute a SUL image.
    - Outputs:
-      - `SUL.nii.gz` - SUV image corrected by using the lean body mass
+      - `SUL.nii.gz` - SUL image corrected by using the lean body mass
       - Expands `patient_info.json` with muscle, fat, and SUL information
 
 6. **CT Segmentation with Moose**
@@ -59,7 +59,7 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
          - 0.3, 0.4, 0.41, 0.5, 2.5, 3.0, 3.5, 4.0
       - Total Lesion Glycolysis (TLG)
       - Tumor Dissemination (Dmax)
-      - Tumor Dissemination standardized by patient's height and weight(SDmax)
+      - Tumor Dissemination standardized by patient's height and weight (SDmax)
       - Surface Area
 
 8. **Tumor Size Analysis**
@@ -157,7 +157,7 @@ pip install TPTBox==0.3.0 fastremap fill_voids --no-deps
 ```bash
 totalseg_set_license -l aca_...
 ```
-- In order to use the pipeline with the moose extension we need a second virtual enviroment:
+- In order to use the pipeline with the moose extension we need a second virtual environment:
 
 ```bash
 deactivate
@@ -217,8 +217,8 @@ If you are using Windows, it is recommended to add the following flags to reduce
 - **TotalSegmentator**
    - Wasserthal, J., Breit, H. C., Meyer, M. T., Pradella, M., Hinck, D., Sauter, A. W., ... & Segeroth, M. (2023). TotalSegmentator: robust segmentation of 104 anatomic structures in CT images. Radiology: Artificial Intelligence, 5(5), e230024.
 - **Moose 3.0**
-   - Ferrara D, Pires M, Gutschmayer S, Yu J, Abdelhafez YG, Abenavoli E et al. Sharing a whole-/total-body [18F]FDG-PET/CT dataset with CT-derived segmentations: an ENHANCE.PETinitiative. 2025.
-   - Sundar LKS, Yu J, Muzik O, Kulterer OC, Fueger B, Kifjak D et al. Fully Automated,Semantic Segmentation of Whole-Body18 F-FDG PET/CT Images Based on Data-CentricArtificial Intelligence. J Nucl Med. 2022;63(12):1941–8.
+   - Ferrara D, Pires M, Gutschmayer S, Yu J, Abdelhafez YG, Abenavoli E et al. Sharing a whole-/total-body [18F]FDG-PET/CT dataset with CT-derived segmentations: an ENHANCE.PET initiative. 2025.
+   - Sundar LKS, Yu J, Muzik O, Kulterer OC, Fueger B, Kifjak D et al. Fully Automated, Semantic Segmentation of Whole-Body 18 F-FDG PET/CT Images Based on Data-CentricArtificial Intelligence. J Nucl Med. 2022;63(12):1941–8.
 - **CADS**
    - Xu, M., Amiranashvili, T., Navarro, F., Fritsak, M., Hamamci, I.E., Shit, S., Wittmann, B., Er, S., Christ, S.M., de la Rosa, E. and Deseoe, J., 2025. CADS: A Comprehensive Anatomical Dataset and Segmentation for Whole-Body Anatomy in Computed Tomography. arXiv preprint arXiv:2507.22953.
 ---

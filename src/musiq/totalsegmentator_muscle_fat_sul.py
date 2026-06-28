@@ -19,19 +19,19 @@ class TotalSegmentatorMuscleFatSUL:
     def __init__(self, input_dirpath_processed: os.PathLike | str) -> None:
         """Class to handle TotalSegmentator muscle fat analysis on CT.nii.gz and MRI files in a specified folder.
         It processes each file, runs segmentation, extracts label mapping and computes a SUL image.
-        Creates CT_muscle_fat.nii and SUL.nii.gz.
+        Creates CT_muscle_fat.nii.gz and SUL.nii.gz.
 
         Args:
-            input_dirpath_processed (str | os.PathLike): Directory containing the CT.nii.gz files. Can be nested.
+            input_dirpath_processed (str | os.PathLike): Directory containing the CT/MRI NIfTI files. Can be nested.
         """
         self.input_dirpath = input_dirpath_processed
 
     def run(self) -> None:
         """
-        Recursively search the folder for CT.nii.gz files.
-        For each found file, run the tissue_4_types for CT or tissue_types_mr for MRI segmentation,
-        extract the label mapping from the segmentation output, and save a metadata JSON file.
-        It also calculates the lean body mass and starts the SUL image creation.
+        Recursively search the folder for CT.nii.gz and MRI NIfTI files.
+        For each found file, run tissue_4_types (CT) or tissue_types_mr (MRI) segmentation,
+        extract the label mapping from the segmentation output, and save results to patient_info.json.
+        It also calculates the lean body mass and creates the SUL image.
         """
         if not os.path.isdir(self.input_dirpath):
             logger.error(f"Error: {self.input_dirpath} is not a valid directory.")
@@ -252,18 +252,23 @@ class TotalSegmentatorMuscleFatSUL:
         self, path: os.PathLike, fat_img: nib.Nifti1Image, labels: dict[int, str], layer: str
     ) -> dict[float, float, float]:
         """
-        Calculate the volume (in ml) of each label in a segmentation and
-        compute total fat and muscle percentages relative to the whole scan.
+        Calculate the volume (in ml) of each tissue label in the segmentation and
+        compute total fat and muscle percentages relative to the scan volume.
+
+        Optionally restricts the analysis to an anatomical sub-region (L3 slice or
+        gluteus maximus to C6 vertebra). If arms are detected beside the body they
+        are masked out before the calculation.
 
         Args:
             path (os.PathLike): Path to the original CT/MR NIfTI image.
-            img (nib.Nifti1Image): Segmentation NIfTI image.
-            labels (dict[int, str]): Mapping of label numbers to label names.
+            fat_img (nib.Nifti1Image): Multi-label tissue-type segmentation image.
+            labels (dict[int, str]): Mapping of label integers to label names.
+            layer (str): Analysis region — "full_picture", "l3", or "glut_to_c6".
 
         Returns:
-            dict[str, float]: Dictionary with volume per label (ml) and
-                    total fat/muscle percentages to the body volume (%)
-                    muscle/fat ratio.
+            dict[str, float]: Per-label volumes in ml plus "total_fat_in_%",
+                "total_muscle_in_%", and "muscle_fat_ratio". All values are None
+                if the required total segmentation file is missing.
         """
         fallback_dict = {"total_fat_in_%": None, "total_muscle_in_%": None, "muscle_fat_ratio": None}
         total_seg_path = str(path).replace(".nii.gz", "seg.nii.gz")
@@ -362,7 +367,29 @@ class TotalSegmentatorMuscleFatSUL:
         result_dict["muscle_fat_ratio"] = total_muscle / total_fat if total_fat > 0 else None
         return result_dict
 
-    def remove_arms(self, img: nib.Nifti1Image, organ_img:nib.Nifti1Image, labels, affine, z_axis, input_fpath: os.PathLike) -> nib.Nifti1Image:
+    def remove_arms(
+        self, tissue_img: nib.Nifti1Image, organ_img: nib.Nifti1Image, labels, affine, z_axis, input_fpath: os.PathLike
+    ) -> nib.Nifti1Image:
+        """
+        Run TotalSegmentator body task to obtain a trunk mask and zero out all
+        voxels outside the trunk in the tissue-type segmentation image.
+
+        The trunk mask is extended superiorly from the scapula and inferiorly
+        from the hip, so only arm voxels lateral to the trunk are removed.
+
+        Args:
+            tissue_img (nib.Nifti1Image): Tissue-type segmentation image to be masked.
+            organ_img (np.ndarray): Integer label array from the total segmentation.
+            labels (dict[str, int]): Body task mapping of label names to label integers.
+            affine (np.ndarray): Affine matrix of the tissue segmentation image.
+            z_axis (int): Index of the head-to-toe axis (0, 1, or 2).
+            input_fpath (os.PathLike): Path to the original CT NIfTI file; used to
+                derive the CTbody.nii.gz output path.
+
+        Returns:
+            nib.Nifti1Image: Tissue-type segmentation with arm voxels zeroed out.
+                Returns the unmodified image if the body segmentation fails.
+        """
         output_fpath = os.path.join(os.path.dirname(input_fpath), "CTbody.nii.gz")
         if not os.path.isfile(output_fpath):
             try:
@@ -378,7 +405,7 @@ class TotalSegmentatorMuscleFatSUL:
                 logger.info("Segmentation successfully completed.")
             except Exception as e:
                 logger.error(f"Error during segmentation for {input_fpath}:\n  {e}")
-                return img
+                return tissue_img
         body_img, label_map = load_multilabel_nifti(output_fpath)
 
         name_to_label = {v: k for k, v in label_map.items()}
@@ -389,40 +416,44 @@ class TotalSegmentatorMuscleFatSUL:
         coords = np.argwhere(hip)
         if coords.size == 0:
             logger.error("No hip_left found")
-            best_z_bot = z_slices[0] 
+            best_z_bot = z_slices[0]
         else:
-            best_z_bot = int(np.percentile(coords[:, z_axis], 10))  
+            best_z_bot = int(np.percentile(coords[:, z_axis], 10))
 
         shoulder = np.isin(organ_img, [labels["scapula_left"]])
         coords = np.argwhere(shoulder)
         if coords.size == 0:
             logger.error("No scapula_left found")
-            best_z_top = z_slices[-1] 
+            best_z_top = z_slices[-1]
         else:
-            best_z_top = int(np.percentile(coords[:, z_axis], 95))     
+            best_z_top = int(np.percentile(coords[:, z_axis], 95))
 
         torso_extended = torso.copy()
         torso_extended[:, :, best_z_top:] = 1
         torso_extended[:, :, :best_z_bot] = 1
 
-        data = np.asanyarray(img.dataobj).copy()
+        data = np.asanyarray(tissue_img.dataobj).copy()
         for z in range(data.shape[2]):
             if torso_extended[:, :, z].any():
                 data[:, :, z] *= torso_extended[:, :, z].astype(data.dtype)
 
-        return nib.Nifti1Image(data, img.affine, img.header)
+        return nib.Nifti1Image(data, tissue_img.affine, tissue_img.header)
 
     def convert_pet2sul(self, output_dirpath: str | os.PathLike, lean_body_mass: float, study_date: str) -> os.PathLike:
         """
-        Coordinates the conversion of PET to SUL image.
+        Coordinate the conversion of PET.nii.gz to a SUL-normalised NIfTI image.
+
+        Missing DICOM fields (injected dose, half-life, timing) are recovered
+        directly from the raw DICOM files when possible.
 
         Args:
-            path (os.PathLike): Path to the NIfTI images.
-            lean_body_mass (float): Body weight without the weight of the fat.
-            study_date (str): Date of the study for json access.
+            output_dirpath (str | os.PathLike): Directory containing PET.nii.gz;
+                patient_info.json is expected one level up.
+            lean_body_mass (float): Body weight minus fat mass in kg.
+            study_date (str): Study date string used as key in patient_info.json.
 
         Returns:
-            path (os.PathLike): Path to the SUL NIfTI image.
+            os.PathLike: Path to the created SUL.nii.gz file, or None on failure.
         """
         out_pet_fpath = os.path.join(output_dirpath, "PET.nii.gz")
         out_sul_fpath = os.path.join(output_dirpath, "SUL.nii.gz")
