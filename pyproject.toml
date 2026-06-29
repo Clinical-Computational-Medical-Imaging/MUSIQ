@@ -129,6 +129,7 @@ musiq_series_selection = "musiq.series_selection:series_selection_entrypoint"
 musiq_totalsegmentator_inference = "musiq.totalsegmentator_inference:totalsegmentator_inference_entrypoint"
 musiq_totalsegmentator_muscle_fat = "musiq.totalsegmentator_muscle_fat_sul:totalsegmentator_muscle_fat_entrypoint"
 musiq_tumor_info_extraction = "musiq.tumor_info_extraction:tumor_info_extraction_entrypoint"
+musiq_cohort_info = "musiq.workflow:cohort_info_entrypoint"
 musiq = "musiq.workflow:workflow_entrypoint"
 
 [tool.setuptools]

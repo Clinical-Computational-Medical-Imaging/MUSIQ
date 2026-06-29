@@ -10,6 +10,27 @@ from .utils import create_logger, setup_series_keywords
 _REPO_ROOT = plb.Path(__file__).parent.parent.parent
 
 
+def build_cohort_info(output_dirpath: str) -> dict:
+    """Rebuild ``cohort_info.json`` fresh from every ``patient_info.json`` under ``output_dirpath``.
+
+    Walks the processed tree, merges each patient's ``patient_info.json`` keyed by ``PatientID``,
+    and overwrites ``cohort_info.json`` at the root. Does not pre-load the existing file, so patients
+    no longer on disk are dropped (a clean rebuild).
+    """
+    cohort_info = {}
+    for dirpath, _, filenames in os.walk(output_dirpath):
+        if "patient_info.json" in filenames:
+            with open(os.path.join(dirpath, "patient_info.json")) as json_file:
+                patient_info = json.load(json_file)
+                patient_id = patient_info.get("PatientID", "Unknown")
+                cohort_info.update({patient_id: patient_info})
+
+    with open(os.path.join(output_dirpath, "cohort_info.json"), "w") as f:
+        json.dump(cohort_info, f)
+
+    return cohort_info
+
+
 class Workflow:
     def __init__(
         self,
@@ -252,19 +273,7 @@ class Workflow:
             ).run()
 
         logger.info("\n" + "#" * 50 + "\nStarting Cohort Info Creation\n" + "#" * 50)
-        cohort_info = {}
-        if os.path.exists(os.path.join(self.output_dirpath, "cohort_info.json")):
-            with open(os.path.join(self.output_dirpath, "cohort_info.json")) as f:
-                cohort_info = json.load(f)
-        for dirpath, _, filenames in os.walk(self.output_dirpath):
-            if "patient_info.json" in filenames:
-                with open(os.path.join(dirpath, "patient_info.json")) as json_file:
-                    patient_info = json.load(json_file)
-                    patient_id = patient_info.get("PatientID", "Unknown")
-                    cohort_info.update({patient_id: patient_info})
-
-        with open(os.path.join(self.output_dirpath, "cohort_info.json"), "w") as f:
-            json.dump(cohort_info, f)
+        build_cohort_info(self.output_dirpath)
 
         if self.plot:
             from .plot_summary import PlotSummary
@@ -379,6 +388,25 @@ def workflow_entrypoint():
         mr_exclusion_keywords=args.mr_exclusion_keywords,
         pet_metric=args.pet_metric,
     ).run()
+
+
+def cohort_info_entrypoint():
+    """Entrypoint to rebuild cohort_info.json from the processed tree without running any stage."""
+    logger = create_logger("musiq.cohort_info")
+
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Rebuild cohort_info.json fresh from all patient_info.json files.")
+    parser.add_argument(
+        "--input-dirpath-processed",
+        required=True,
+        help="Path to the processed output directory (root containing the per-patient folders).",
+    )
+    args = parser.parse_args()
+
+    logger.info(f"Rebuilding cohort_info.json under {args.input_dirpath_processed}")
+    cohort_info = build_cohort_info(args.input_dirpath_processed)
+    logger.info(f"Wrote cohort_info.json with {len(cohort_info)} patient(s).")
 
 
 if __name__ == "__main__":
