@@ -41,6 +41,7 @@ class Workflow:
                 - "moose": Run Moose on CT images.
                 - "radiomics": Extract radiomics features from selected series.
                 - "tumor": Compute tumor level statistics.
+                - "response": Longitudinal PET response assessment (PERCIST) across two timepoints.
                 - "plot": Create visualisations.
                 - "cads": Run CADS on CT images.
             ct_primary_keywords (list[str] | None): Keywords for primary selection of CT series.
@@ -67,6 +68,7 @@ class Workflow:
                 "autopet",
                 "totalsegmentator",
                 "tumor",
+                "response",
                 "plot",
                 "moose",
                 "muscle_fat",
@@ -82,6 +84,7 @@ class Workflow:
                         "autopet",
                         "totalsegmentator",
                         "tumor",
+                        "response",
                         "plot",
                         "moose",
                         "muscle_fat",
@@ -94,7 +97,7 @@ class Workflow:
                 raise ValueError(
                     "Invalid tasks specified. Possible values are: "
                     "'series_selection', 'radiomics', 'autopet', "
-                    "'totalsegmentator', 'tumor', 'plot', 'moose', "
+                    "'totalsegmentator', 'tumor', 'response', 'plot', 'moose', "
                     "'muscle_fat', 'cads'."
                 )
 
@@ -106,6 +109,7 @@ class Workflow:
         self.moose = "moose" in (tasks or [])
         self.radiomics = "radiomics" in (tasks or [])
         self.tumor = "tumor" in (tasks or [])
+        self.response = "response" in (tasks or [])
         self.plot = "plot" in (tasks or [])
 
         cads_tasks_error = bool(
@@ -245,6 +249,17 @@ class Workflow:
                 pet_metric=self.pet_metric,
             ).run()
 
+        if self.response:
+            from .response_extraction import ResponseExtractor
+
+            logger.info("\n" + "#" * 50 + "\nStarting Longitudinal Response Assessment\n" + "#" * 50)
+            # PERCIST is SUL-based; prefer SUL for the descriptive columns when available.
+            response_metric = "SUL" if "SUL" in self.pet_metric else "SUV"
+            ResponseExtractor(
+                input_dirpath_processed=self.output_dirpath,
+                pet_metric=response_metric,
+            ).run()
+
         logger.info("\n" + "#" * 50 + "\nStarting Cohort Info Creation\n" + "#" * 50)
         cohort_info = {}
         if os.path.exists(os.path.join(self.output_dirpath, "cohort_info.json")):
@@ -288,7 +303,7 @@ def workflow_entrypoint():
         "--tasks",
         nargs="+",
         help="List of tasks to run. Possible values: series_selection, "
-        "radiomics, autopet, totalsegmentator, tumor, plot, moose, muscle_fat, cads.",
+        "radiomics, autopet, totalsegmentator, tumor, response, plot, moose, muscle_fat, cads.",
         default=None,
     )
     parser.add_argument(

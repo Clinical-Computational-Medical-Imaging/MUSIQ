@@ -11,3 +11,46 @@ SERIES_KEYWORDS:
     PRIMARY: ["dDWI_3B", "dSSh_DWI", "DCE mi Fov neu", "dyn_t1", "t1 tse", "t2 tse", "t2w_mvxd_sag", "t2w_tse_sag", "dyn", "dce mi fov", "dwi", "1400", "adc", "tracew", "t1w_tse","t1w tse", "t2_tse", "t2_tse_tra", "t1_tse", "t1_qtse", "t1_tse_tra"]
     SECONDARY: []
     EXCLUSION: ["carebolus", "localizer", "survey", "haste", "t2-space-coronar"]
+
+# Settings for the longitudinal `response` task (baseline vs. follow-up PET/CT).
+RESPONSE_ASSESSMENT:
+  # Metabolic T/N/M classification of individual lesions, from which CADS structures each
+  # lesion overlaps (computed by the `response` task from CTcads.nii.gz — CADS is required).
+  # Rule (see classify_overlap_tnm): T if it overlaps a primary-site structure; otherwise M
+  # if it overlaps any solid organ or bone; otherwise N. "Solid organ or bone" means any CADS
+  # structure NOT listed under NODAL_PASSTHROUGH, so nodal disease is everything that overlaps
+  # only vessels/muscle/cavities/soft tissue, or nothing segmented. The lists are
+  # case-insensitive substrings matched against CADS structure names (see CADS_LABELS).
+  TNM_CLASSIFICATION:
+    # Primary-site structure(s). ENTITY SPECIFIC, so left empty: set e.g. ["prostate"] for
+    # prostate or ["mammary_gland"] for breast. A T match overrides N and M.
+    T: []
+    # Structures whose overlap does NOT count as organ/bone involvement. A lesion overlapping
+    # only these (or nothing) is classified nodal (N); any other overlap makes it distant (M).
+    NODAL_PASSTHROUGH:
+      # great vessels
+      - aorta
+      - vena                 # inferior_vena_cava, iliac_vena_*
+      - vein                 # portal_vein_and_splenic_vein
+      - artery               # pulmonary_artery, iliac_artery_*
+      - blood
+      # skeletal muscle
+      - gluteus
+      - autochthon
+      - iliopsoas
+      - psoas
+      - rectus abdominis
+      - muscle               # "muscle", "head muscles"
+      # body cavities / spaces where nodes and serosal disease sit
+      - bowel_bag
+      - abdominal_cavity
+      - thoracic_cavity
+      - mediastinum
+      - spinal_canal
+      # unspecific soft tissue
+      - subcutaneous_tissue
+  # PERCIST 1.0 thresholds driving the recip category (1=CR, 2=PR, 3=SD, 4=PD).
+  PERCIST:
+    percent_threshold: 30.0     # % change in SULpeak: <=-30% -> PMR, >=+30% -> PMD
+    absolute_threshold: 0.8     # minimum absolute SULpeak change required alongside the % change
+    tlg_progression_pct: 75.0   # a TLG increase >= this % is also counted as PMD (extent progression)

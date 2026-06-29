@@ -115,6 +115,15 @@ def load_mr_keywords() -> dict[str, list[str]]:
         return yaml.safe_load(f)["SERIES_KEYWORDS"]["MR"]
 
 
+def load_response_config() -> dict:
+    """Load the RESPONSE_ASSESSMENT block (TNM classification + PERCIST thresholds) from config.yaml."""
+    config_path = plb.Path(__file__).parent / "config.yaml"
+    if not config_path.exists():
+        raise FileNotFoundError(f"Configuration file {config_path} does not exist.")
+    with open(config_path) as f:
+        return yaml.safe_load(f).get("RESPONSE_ASSESSMENT", {})
+
+
 def is_mr_filename(filename: str, mr_keywords: dict[str, list[str]]) -> bool:
     """Return True if filename matches MR inclusion keywords and no exclusion keywords."""
     fname_lower = filename.lower()
