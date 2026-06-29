@@ -50,6 +50,12 @@ class Workflow:
         mr_primary_keywords: list[str] | None = None,
         mr_secondary_keywords: list[str] | None = None,
         mr_exclusion_keywords: list[str] | None = None,
+        boa_weights_path: str | None = None,
+        boa_image: str = "shipai/boa-cli",
+        boa_fast: bool = False,
+        boa_no_pdf: bool = False,
+        boa_device: str = "gpu",
+        boa_reuse_total: bool = True,
     ) -> None:
         """
         Run the MUSIQ workflow with the specified parameters.
@@ -66,6 +72,7 @@ class Workflow:
                 - "tumor": Compute tumor level statistics.
                 - "plot": Create visualisations.
                 - "cads": Run CADS on CT images.
+                - "boa": Run UMEssen BOA Body Composition Analysis (BCA) on CT images via Docker.
             ct_primary_keywords (list[str] | None): Keywords for primary selection of CT series.
             ct_secondary_keywords (list[str] | None): Keywords for secondary selection of CT series.
             ct_exclusion_keywords (list[str] | None): Keywords to exclude CT series.
@@ -94,6 +101,7 @@ class Workflow:
                 "moose",
                 "muscle_fat",
                 "cads",
+                "boa",
             ]
         else:
             tasks_error = bool(
@@ -109,6 +117,7 @@ class Workflow:
                         "moose",
                         "muscle_fat",
                         "cads",
+                        "boa",
                     ]
                     for t in tasks or []
                 )
@@ -118,7 +127,7 @@ class Workflow:
                     "Invalid tasks specified. Possible values are: "
                     "'series_selection', 'radiomics', 'autopet', "
                     "'totalsegmentator', 'tumor', 'plot', 'moose', "
-                    "'muscle_fat', 'cads'."
+                    "'muscle_fat', 'cads', 'boa'."
                 )
 
         self.series_selection = "series_selection" in (tasks or [])
@@ -130,6 +139,14 @@ class Workflow:
         self.radiomics = "radiomics" in (tasks or [])
         self.tumor = "tumor" in (tasks or [])
         self.plot = "plot" in (tasks or [])
+        self.boa = "boa" in (tasks or [])
+
+        self.boa_weights_path = boa_weights_path
+        self.boa_image = boa_image
+        self.boa_fast = boa_fast
+        self.boa_no_pdf = boa_no_pdf
+        self.boa_device = boa_device
+        self.boa_reuse_total = boa_reuse_total
 
         cads_tasks_error = bool(
             any(
@@ -204,6 +221,20 @@ class Workflow:
             logger.info("\n" + "#" * 50 + "\nStarting TotalSegmentator Muscle Fat and SUL computation\n" + "#" * 50)
             TotalSegmentatorMuscleFatSUL(
                 input_dirpath_processed=self.output_dirpath,
+            ).run()
+
+        if self.boa:
+            from .boa_inference import BoaInference
+
+            logger.info("\n" + "#" * 50 + "\nStarting BOA Body Composition Analysis\n" + "#" * 50)
+            BoaInference(
+                input_dirpath_processed=self.output_dirpath,
+                weights_dirpath=self.boa_weights_path,
+                image=self.boa_image,
+                fast_bca=self.boa_fast,
+                no_pdf=self.boa_no_pdf,
+                device=self.boa_device,
+                reuse_total=self.boa_reuse_total,
             ).run()
 
         if self.autopet:
@@ -303,7 +334,7 @@ def workflow_entrypoint():
         "--tasks",
         nargs="+",
         help="List of tasks to run. Possible values: series_selection, "
-        "radiomics, autopet, totalsegmentator, tumor, plot, moose, muscle_fat, cads.",
+        "radiomics, autopet, totalsegmentator, tumor, plot, moose, muscle_fat, cads, boa.",
         default=None,
     )
     parser.add_argument(
@@ -364,6 +395,21 @@ def workflow_entrypoint():
         default=["SUV", "SUL"],
         help="PET metric(s) to use. Pass one or both: --pet-metric SUV SUL (default: SUV SUL)",
     )
+    parser.add_argument(
+        "--boa-weights-path",
+        type=str,
+        default=None,
+        help="Local BOA weights directory, mounted into the BOA container at /app/weights.",
+    )
+    parser.add_argument("--boa-image", type=str, default="shipai/boa-cli", help="BOA Docker image tag.")
+    parser.add_argument("--boa-fast", action="store_true", help="Use the fast single-fold BCA variant.")
+    parser.add_argument("--boa-no-pdf", action="store_true", help="Skip the BCA PDF report (keep JSON measurements).")
+    parser.add_argument("--boa-device", type=str, default="gpu", help="BOA device: gpu, cuda or cpu.")
+    parser.add_argument(
+        "--boa-no-reuse-total",
+        action="store_true",
+        help="Let BOA compute its own total segmentation instead of reusing CTseg.nii.gz.",
+    )
     args = parser.parse_args()
 
     if not args.input_dirpath or not args.output_dirpath:
@@ -387,6 +433,12 @@ def workflow_entrypoint():
         mr_secondary_keywords=args.mr_secondary_keywords,
         mr_exclusion_keywords=args.mr_exclusion_keywords,
         pet_metric=args.pet_metric,
+        boa_weights_path=args.boa_weights_path,
+        boa_image=args.boa_image,
+        boa_fast=args.boa_fast,
+        boa_no_pdf=args.boa_no_pdf,
+        boa_device=args.boa_device,
+        boa_reuse_total=not args.boa_no_reuse_total,
     ).run()
 
 

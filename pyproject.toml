@@ -120,6 +120,7 @@ dependencies= [
 [project.scripts]
 musiq_autopet_inference = "musiq.autopet_inference:autopet_inference_entrypoint"
 musiq_cads_preprocess = "musiq.cads_inference:cads_preprocess_entrypoint"
+musiq_boa_inference = "musiq.boa_inference:boa_inference_entrypoint"
 musiq_cads_inference = "musiq.cads_inference:cads_inference_entrypoint"
 musiq_cads_restore = "musiq.cads_inference:cads_restore_entrypoint"
 musiq_moose_inference = "musiq.moose_inference:moose_inference_entrypoint"
