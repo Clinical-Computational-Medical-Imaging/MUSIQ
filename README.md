@@ -53,7 +53,16 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
      - `CTmoose_organs.nii.gz` – Segmentation mask
      - Expands `patient_info.json` with Moose information
 
-7. **Radiomics Extraction**
+7. **Body Composition Analysis with BOA (BCA)**
+   - Runs the UMEssen [Body-and-Organ-Analysis](https://github.com/UMEssen/Body-and-Organ-Analysis) BCA component on each `CT.nii.gz` via the `shipai/boa-cli` Docker image (no Python dependency added — BOA runs in its own container).
+   - Reuses MUSIQ's existing `CTseg.nii.gz` as BOA's `total` segmentation when present, so the 104-organ TotalSegmentator step is not recomputed. Run `totalsegmentator` before `boa`. (MUSIQ pins TotalSegmentator 2.9.0 while BOA targets 2.12.0, but the `total` task's 117-class label map is identical across those versions, so the reused segmentation is labeled correctly. Disable reuse with `--boa-no-reuse-total` if you ever align both to a version where the map differs.)
+   - Outputs (next to the other NIfTIs):
+     - `CTbca_tissues.nii.gz` – tissue (SAT/VAT/muscle/bone) segmentation
+     - `CTbca_body_regions.nii.gz` – body-region segmentation
+     - `boa/` subfolder with BOA's `output.xlsx`, optional `report.pdf`, JSON measurements and logs
+     - Expands `patient_info.json` with a `BCA` block and the segmentation paths
+
+8. **Radiomics Extraction**
    - Computes key radiomics metrics from SUV or SUL and CT scans.
    - Output: Extension of `patient_info.json`
       - SUV or SUL (mean, max, peak median, std)
@@ -66,7 +75,7 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
       - Tumor Dissemination standardized by patient's height and weight(SDmax)
       - Surface Area
 
-8. **Tumor Size Analysis**
+9. **Tumor Size Analysis**
    - Quantifies tumor volume per organ based on segmentations.
    - Output:
       - `CTsegres.nii.gz` – Resampled segmentation mask to PT
@@ -76,7 +85,7 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
          - SUV or SUL (mean, max, peak median, std)
          - Surface area
 
-9. **Optional Plotting**
+10. **Optional Plotting**
    - Generates visualizations
 
 ---
@@ -122,6 +131,9 @@ musiq/
 │   │   │   ├── plots/
 │   │   │   ├── study_date_1/
 │   │   │   │   ├── CT.nii.gz                      # CT converted to nifti
+│   │   │   │   ├── CTbca_tissues.nii.gz           # CT tissue segmentation by BOA (BCA)
+│   │   │   │   ├── CTbca_body_regions.nii.gz      # CT body-region segmentation by BOA (BCA)
+│   │   │   │   ├── boa/                           # BOA outputs (xlsx, optional pdf, json, logs)
 │   │   │   │   ├── CTcads.nii.gz                  # CT segmentation by CADS
 │   │   │   │   ├── CTmoose_organs.nii.gz          # CT segmentation by Moose
 │   │   │   │   ├── CTmuscle_fat.nii.gz            # CT muscle and fat segmentation by TotalSegmentator
@@ -178,9 +190,15 @@ pip install -r requirements_moose.txt
 pip install moosez --no-deps
 ```
 
+- The `boa` task runs in Docker, so it needs no virtual environment — just pull the image once (an NVIDIA GPU + Container Toolkit are required):
+```bash
+docker pull shipai/boa-cli
+```
+  Optionally download the BOA/TotalSegmentator weights to a local directory and pass it via `--boa-weights-path` (otherwise BOA downloads them on first run). Run `totalsegmentator` before `boa` so the existing `CTseg.nii.gz` is reused as BOA's `total` segmentation (disable with `--boa-no-reuse-total`).
+
 - To start the whole workflow run:
 ```bash
-musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet totalsegmentator tumor moose cads --cads-tasks 556 558
+musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet totalsegmentator tumor moose cads boa --cads-tasks 556 558
 ```
 - To run CADS you can run the different tasks given on their repository or just run 'all'
 - See `pyproject.toml` to see commands for running only parts of the pipeline in a modular way.
@@ -232,6 +250,8 @@ If you are using Windows, it is recommended to add the following flags to reduce
    - Sundar LKS, Yu J, Muzik O, Kulterer OC, Fueger B, Kifjak D et al. Fully Automated,Semantic Segmentation of Whole-Body18 F-FDG PET/CT Images Based on Data-CentricArtificial Intelligence. J Nucl Med. 2022;63(12):1941–8.
 - **CADS**
    - Xu, M., Amiranashvili, T., Navarro, F., Fritsak, M., Hamamci, I.E., Shit, S., Wittmann, B., Er, S., Christ, S.M., de la Rosa, E. and Deseoe, J., 2025. CADS: A Comprehensive Anatomical Dataset and Segmentation for Whole-Body Anatomy in Computed Tomography. arXiv preprint arXiv:2507.22953.
+- **BOA (Body and Organ Analysis)**
+   - Haubold, J., Baldini, G., Parmar, V., Schaarschmidt, B.M., Koitka, S., Kroll, L., van Landeghem, N., Umutlu, L., Forsting, M., Nensa, F. and Hosch, R., 2024. BOA: A CT-Based Body and Organ Analysis for Radiologists at the Point of Care. Investigative Radiology, 59(6), pp.433-441. https://github.com/UMEssen/Body-and-Organ-Analysis
 ---
 
 ## Reference
