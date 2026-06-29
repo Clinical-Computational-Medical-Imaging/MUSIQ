@@ -17,6 +17,8 @@ class Workflow:
         output_dirpath: str,
         tasks: list[str] | None = None,
         cads_tasks: list[str] | None = None,
+        cads_work_dir: str | None = None,
+        cads_cpu: bool = False,
         pet_metric: str | list[str] | None = None,
         ct_primary_keywords: list[str] | None = None,
         ct_secondary_keywords: list[str] | None = None,
@@ -138,6 +140,8 @@ class Workflow:
             self.cads = False
 
         self.cads_tasks = cads_tasks
+        self.cads_work_dir = cads_work_dir
+        self.cads_cpu = cads_cpu
 
         self.series_keywords = setup_series_keywords(
             ct_primary_keywords,
@@ -200,6 +204,8 @@ class Workflow:
             CadsInference(
                 input_dirpath_processed=self.output_dirpath,
                 tasks=self.cads_tasks,
+                work_dir=self.cads_work_dir,
+                use_cpu=self.cads_cpu,
             ).run()
 
         if self.moose:
@@ -298,6 +304,13 @@ def workflow_entrypoint():
         "all 551 552 553 554 555 556 557 558 559",
         default=None,
     )
+    parser.add_argument(
+        "--cads-work-dir",
+        type=str,
+        default=None,
+        help="Staging dir for CADS intermediates. Default: <output-dirpath>/cads_staging.",
+    )
+    parser.add_argument("--cads-cpu", action="store_true", help="Run CADS inference on CPU instead of GPU.")
     # nargs="*" so a flag passed without values yields an empty list (distinct from absent=None).
     # Passing any keyword flag empty disables keyword filtering and selects every series — useful
     # for anonymized cohorts whose Series/Study Description tags are empty.
@@ -353,6 +366,8 @@ def workflow_entrypoint():
         output_dirpath=args.output_dirpath,
         tasks=args.tasks,
         cads_tasks=args.cads_tasks,
+        cads_work_dir=args.cads_work_dir,
+        cads_cpu=args.cads_cpu,
         ct_primary_keywords=args.ct_primary_keywords,
         ct_secondary_keywords=args.ct_secondary_keywords,
         ct_exclusion_keywords=args.ct_exclusion_keywords,

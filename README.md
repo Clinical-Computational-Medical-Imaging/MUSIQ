@@ -41,6 +41,7 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
 
 5. **CT Segmentation with CADS v1.0.0**
    - Performs organ segmentation on CT images using the CADS model using the specified tasks and saves everything to a single file. The labels are set as the labelmap_all_structure  as shown here https://github.com/murong-xu/CADS/tree/main/cads/dataset_utils.
+   - Runs as a **staged pipeline** (CADS "Option 2"): preprocess (CPU) → inference (GPU) → restore+combine (CPU). The `cads` workflow task runs all three in sequence; for large cohorts the stages can be run as separate CPU/GPU jobs (see *Large-scale staged CADS* below). Intermediates live in a staging dir (default `<output>/cads_staging`) and are auto-removed once each `CTcads.nii.gz` is written.
    - Output:
       - `CTcads.nii.gz`
       - Expands `patient_info.json` with CADS information
@@ -161,6 +162,10 @@ curl -L -o autoPET-3-LesionTracer.zip "https://zenodo.org/records/14007247/files
 unzip autoPET-3-LesionTracer.zip -d ./autopet-3-model/
 rm autoPET-3-LesionTracer.zip
 git clone https://github.com/murong-xu/CADS.git
+# Install torch/torchvision from the CUDA 12.8 (cu128) index first.
+# These are not pinned in pyproject.toml because the cu128 wheels are not on PyPI.
+# Requires an NVIDIA driver that supports CUDA 12.8 (driver >= ~570).
+pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements.txt
 pip install TPTBox==0.3.0 fastremap fill_voids --no-deps
 ```
@@ -184,6 +189,18 @@ musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_
 ```
 - To run CADS you can run the different tasks given on their repository or just run 'all'
 - See `pyproject.toml` to see commands for running only parts of the pipeline in a modular way.
+
+### Large-scale staged CADS
+For large cohorts (~100–1000+ scans) the three CADS stages can be run as **separate jobs** so CPU and GPU resources are used efficiently (e.g. CPU vs GPU SLURM partitions). All three must point at the same processed tree (the staging dir defaults to `<processed>/cads_staging`, so they agree automatically):
+```bash
+# 1. Preprocess (CPU only)
+musiq_cads_preprocess --input-dirpath-processed /data/processed --cads-tasks all
+# 2. Inference (GPU; add --cpu to force CPU)
+musiq_cads_inference  --input-dirpath-processed /data/processed --cads-tasks all
+# 3. Restore to original geometry + combine into CTcads.nii.gz (CPU only)
+musiq_cads_restore    --input-dirpath-processed /data/processed --cads-tasks all
+```
+Each stage is idempotent: a study is skipped once its `CTcads.nii.gz` exists. (Note: `musiq_cads_inference` now runs **only** the GPU inference stage — the full run-everything path is `musiq --tasks cads` or the three scripts in order.)
 
 
 - For development also install pre-commit hooks via
