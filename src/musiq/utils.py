@@ -16,7 +16,7 @@ import SimpleITK as sitk
 import yaml
 from pydicom.multival import MultiValue
 from pydicom.uid import UID
-from pydicom.valuerep import IS, DSfloat, PersonName
+from pydicom.valuerep import IS, DSdecimal, DSfloat, PersonName
 from skimage.measure import label
 
 from . import metrics
@@ -57,28 +57,37 @@ def setup_series_keywords(
         dict[str, dict[str, list[str]]]: A dictionary containing the series keywords for CT, PT, and MR modalities.
     """
 
-    if not any(
-        [
-            ct_primary_keywords,
-            ct_secondary_keywords,
-            ct_exclusion_keywords,
-            pt_primary_keywords,
-            pt_secondary_keywords,
-            pt_exclusion_keywords,
-            mr_primary_keywords,
-            mr_secondary_keywords,
-            mr_exclusion_keywords,
-        ]
-    ):
+    provided = [
+        ct_primary_keywords,
+        ct_secondary_keywords,
+        ct_exclusion_keywords,
+        pt_primary_keywords,
+        pt_secondary_keywords,
+        pt_exclusion_keywords,
+        mr_primary_keywords,
+        mr_secondary_keywords,
+        mr_exclusion_keywords,
+    ]
+
+    # An explicitly empty keyword list (argparse nargs="*" yields [] when a keyword flag is
+    # passed without values — distinct from None = flag absent) means "disable keyword
+    # filtering and select every series". Returning all-empty lists makes find_default_indices
+    # take its "use all series" branch. Useful for anonymized cohorts whose Series/Study
+    # Description tags are empty, so keyword matching can never select anything.
+    if any(isinstance(k, list) and len(k) == 0 for k in provided):
+        logger.warning("Empty keyword(s) provided — disabling keyword filtering; all series will be selected.")
+        return {m: {"PRIMARY": [], "SECONDARY": [], "EXCLUSION": []} for m in ("CT", "PT", "MR")}
+
+    # Always load config defaults so partially-specified keywords can be backfilled
+    # (referencing default_keywords below would otherwise be undefined when only some are given).
+    config_path = plb.Path(__file__).parent / "config.yaml"
+    if not config_path.exists():
+        raise FileNotFoundError(f"Configuration file {config_path} does not exist.")
+    with open(config_path) as file:
+        default_keywords = yaml.safe_load(file)["SERIES_KEYWORDS"]
+
+    if not any(provided):
         logger.warning("No series keywords provided. Using default keywords from config.yaml.")
-        config_path = plb.Path(__file__).parent / "config.yaml"
-        if not config_path.exists():
-            raise FileNotFoundError(f"Configuration file {config_path} does not exist.")
-
-        with open(config_path) as file:
-            default_keywords = yaml.safe_load(file)
-
-        default_keywords = default_keywords["SERIES_KEYWORDS"]
 
     return {
         "CT": {
@@ -182,10 +191,108 @@ def run_dicom2nifti(input_folder: str | os.PathLike, output_folder: str | os.Pat
         logger.error(f"Error converting {input_folder}: {e}")
 
 
-def run_dcm2niix(input_folder: str | os.PathLike, output_folder: str | os.PathLike) -> None:
+def repair_ct_affine_from_dicom(
+    nifti_path: str | os.PathLike,
+    dicom_dirpath: str | os.PathLike,
+    rel_tol: float = 0.01,
+) -> bool:
+    """Fix a CT NIfTI whose through-plane (slice) geometry was mis-derived by dcm2niix.
+
+    Some CT series omit ``SpacingBetweenSlices`` (0018,0088) — observed on Siemens NAEOTOM
+    Alpha photon-counting VMI reconstructions. dcm2niix then falls back to ``SliceThickness``
+    (0018,0050) for the slice spacing and can also pick the wrong superior-inferior sign,
+    producing a volume that is both stretched and flipped head-for-feet ("upside down").
+
+    The DICOM ``ImagePositionPatient`` values are reliable, so this recomputes the slice-axis
+    column of the affine directly from them, leaves the (correct) in-plane axes and the voxel
+    data untouched, and rewrites the file only when the existing affine actually disagrees —
+    wrong sign or spacing off by more than ``rel_tol``. Oblique / gantry-tilted series (where
+    dcm2niix's slice vector is legitimately not along the pure slice normal) are left alone.
+
+    Returns True if the file was repaired, False if it was already consistent or unverifiable.
+    """
+    nifti_path = str(nifti_path)
+    img = nib.load(nifti_path)
+    if img.ndim < 3 or img.shape[2] < 2:
+        return False  # nothing to verify for a single slice
+
+    # Collect each slice's position projected onto the slice normal (in DICOM LPS space).
+    normal_lps = None
+    projections = []
+    for entry in os.scandir(dicom_dirpath):
+        if not entry.is_file():
+            continue
+        try:
+            ds = pydicom.dcmread(entry.path, stop_before_pixels=True)
+            ipp = np.asarray(ds.ImagePositionPatient, dtype=float)
+            iop = np.asarray(ds.ImageOrientationPatient, dtype=float)
+        except Exception:
+            continue
+        if normal_lps is None:
+            normal_lps = np.cross(iop[:3], iop[3:6])
+            norm = np.linalg.norm(normal_lps)
+            if norm == 0:
+                return False
+            normal_lps = normal_lps / norm
+        projections.append(float(ipp @ normal_lps))
+
+    if normal_lps is None or len(projections) < 2:
+        return False
+
+    proj_min, proj_max = min(projections), max(projections)
+    spacing_geom = (proj_max - proj_min) / (len(projections) - 1)
+    if spacing_geom <= 0:
+        return False
+
+    # dcm2niix stores LPS as RAS by negating x and y; the slice normal transforms the same way.
+    normal_ras = np.array([-normal_lps[0], -normal_lps[1], normal_lps[2]])
+    current_col = np.asarray(img.affine[:3, 2], dtype=float)
+    current_norm = np.linalg.norm(current_col)
+    if current_norm == 0:
+        return False
+    # Only touch plain axial-along-normal series; skip oblique/sheared geometry.
+    if abs(float(current_col @ normal_ras) / current_norm) < 0.999:
+        return False
+
+    # The affine origin is voxel (0,0,0) = the slice at array index 0. Whichever geometric
+    # end it sits at tells us which way the slice axis runs.
+    origin_ras = np.asarray(img.affine[:3, 3], dtype=float)
+    proj0 = float(np.array([-origin_ras[0], -origin_ras[1], origin_ras[2]]) @ normal_lps)
+    direction = 1.0 if abs(proj0 - proj_min) <= abs(proj0 - proj_max) else -1.0
+
+    slice_vec_lps = direction * spacing_geom * normal_lps
+    slice_vec_ras = np.array([-slice_vec_lps[0], -slice_vec_lps[1], slice_vec_lps[2]])
+
+    if np.allclose(current_col, slice_vec_ras, rtol=rel_tol, atol=1e-3):
+        return False  # geometry already correct
+
+    new_affine = np.array(img.affine, dtype=float)
+    new_affine[:3, 2] = slice_vec_ras
+    logger.warning(
+        f"Repairing CT affine for {nifti_path}: slice axis {current_col.round(3).tolist()} "
+        f"-> {slice_vec_ras.round(3).tolist()} (dcm2niix used SliceThickness/wrong sign; "
+        f"true slice spacing {spacing_geom:.3f} mm derived from ImagePositionPatient)."
+    )
+    repaired = nib.Nifti1Image(np.asanyarray(img.dataobj), new_affine, img.header)
+    repaired.set_sform(new_affine, code=1)
+    repaired.set_qform(new_affine, code=1)
+    nib.save(repaired, nifti_path)
+    return True
+
+
+def run_dcm2niix(input_folder: str | os.PathLike, output_folder: str | os.PathLike, merge: bool = False) -> None:
+    """Run dcm2niix.
+
+    merge=True adds ``-m y``, which tells dcm2niix to merge slices it would otherwise split
+    into separate files (e.g. the timepoints of a dynamic/DCE series), yielding a single 4D
+    NIfTI instead of one 3D file per timepoint. Used for MR; left off for CT/PET to preserve
+    their existing single-volume behavior.
+    """
     try:
-        # Construct the nnUNet predict command
-        command = ["dcm2niix", "-z", "y", "-f", "%p_%s", "-b", "y", "-ba", "n", "-o", output_folder, input_folder]
+        command = ["dcm2niix", "-z", "y", "-f", "%p_%s", "-b", "y", "-ba", "n"]
+        if merge:
+            command += ["-m", "y"]
+        command += ["-o", output_folder, input_folder]
 
         # Execute the command
         subprocess.run(command, check=True)
@@ -194,6 +301,54 @@ def run_dcm2niix(input_folder: str | os.PathLike, output_folder: str | os.PathLi
         logger.error(f"Error during dcm2niix: {e}")
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
+
+
+def normalize_dcm2niix_name(name: str | None) -> str:
+    """Normalize a string the way dcm2niix sanitizes filenames.
+
+    dcm2niix builds output filenames from the `%p` token by replacing characters that are
+    not filename-safe with underscores. Its exact rules vary across versions, so we
+    normalize defensively: lowercase and collapse every run of non-alphanumeric characters
+    into a single underscore. Applying this to both the source tag and to candidate
+    filenames makes matching robust to spaces, parentheses, slashes, dots, etc.
+    """
+    return re.sub(r"[^a-z0-9]+", "_", (name or "").lower()).strip("_")
+
+
+def find_mr_niftis(
+    study_dir: plb.Path, protocol_name: str | None, series_description: str | None = None
+) -> list[plb.Path]:
+    """Find NIfTIs already produced from an MR series by dcm2niix.
+
+    dcm2niix is run with `-f %p_%s` (see run_dcm2niix), so an MR series is written as
+    ``{%p}_{SeriesNumber}.nii.gz``. The `%p` token is ProtocolName, but dcm2niix falls back
+    to SeriesDescription when ProtocolName is absent/empty — which is the case for our MR
+    DICOMs (the 0018,1030 tag is not present, yet filenames clearly track SeriesDescription).
+    So the source stem is ``ProtocolName if non-empty else SeriesDescription``. We match that
+    normalized stem followed by the series-number token (``_<digits>``).
+
+    Side-project artifacts that share these study dirs (NIfTIs whose name starts with the
+    patient_id, e.g. ``mp_0008_ttp.nii.gz``) are excluded — real dcm2niix MR outputs are
+    named from the series tag and never start with the patient_id. Returns matches
+    shortest-name-first so the source NIfTI is preferred over derived files that share its
+    prefix.
+    """
+    stem = normalize_dcm2niix_name(protocol_name) or normalize_dcm2niix_name(series_description)
+    if not stem:
+        return []
+    patient_id = study_dir.parent.name
+    matches = [
+        f
+        for f in study_dir.glob("*.nii.gz")
+        if not f.name.startswith(patient_id)
+        and re.match(rf"^{re.escape(stem)}_\d", normalize_dcm2niix_name(f.name.removesuffix(".nii.gz")))
+    ]
+    return sorted(matches, key=lambda f: len(f.name))
+
+
+def mr_nifti_exists(study_dir: plb.Path, protocol_name: str | None, series_description: str | None = None) -> bool:
+    """Return True if an MR NIfTI for this series already exists in study_dir."""
+    return bool(find_mr_niftis(study_dir, protocol_name, series_description))
 
 
 def is_preselected(series) -> bool:
@@ -380,11 +535,18 @@ def convert_pet(pet, suv_factor) -> nib.Nifti1Image:
 
 def make_json_safe(obj: Any) -> Any:
     """Convert a DICOM or NumPy object to a JSON-safe format."""
-    non_serializable_types = MultiValue | PersonName | DSfloat | IS | UID
+    string_types = PersonName | UID
 
     if isinstance(obj, MultiValue):
         return [make_json_safe(item) for item in obj]
-    elif isinstance(obj, non_serializable_types):
+    # DICOM DS (Decimal String) and IS (Integer String) are numeric subclasses (float/int).
+    # Keep them numeric instead of stringifying, so downstream arithmetic (e.g. PatientWeight
+    # used to compute LBM) doesn't break on values like "80.0".
+    elif isinstance(obj, IS):
+        return int(obj)
+    elif isinstance(obj, DSfloat | DSdecimal):
+        return float(obj)
+    elif isinstance(obj, string_types):
         return str(obj)
     elif isinstance(obj, dict):
         return {k: make_json_safe(v) for k, v in obj.items()}

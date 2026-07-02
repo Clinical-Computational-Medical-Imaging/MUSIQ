@@ -49,6 +49,10 @@ class TotalSegmentatorInference:
                 patient_dirpath = os.path.join(self.input_dirpath, patient_id)
 
                 for filename in filenames:
+                    # Skip muscle/fat segmentations - we don't want an organ segmentation on top of them.
+                    if filename.endswith("_muscle_fat.nii.gz"):
+                        continue
+
                     # Determine if this is a CT or MR file and set parameters accordingly
                     is_ct = filename == "CT.nii.gz"
                     is_mr = (
@@ -129,7 +133,7 @@ class TotalSegmentatorInference:
                             # Find the index where the filename matches the MRPath value
                             series_index = None
                             for idx, serie in enumerate(mr_series):
-                                for _serie_name, serie_data in serie.items():
+                                for serie_data in serie.values():
                                     if "MRPath" in serie_data and filename in os.path.basename(serie_data["MRPath"]):
                                         series_index = idx
                                         break

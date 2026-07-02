@@ -11,20 +11,35 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
 1. **Interactive Series Selection & Conversion**
    - Allows interactive selection of PET and CT series per patient.
    - Converts DICOM series to NIfTI:
-     - `CT.nii` – Original CT scan as NIfTI
-     - `PET.nii` – Original PET scan as NIfTI
-     - `SUV.nii` – Standardized Uptake Value image as NIfTI
+     - `CT.nii.gz` – Original CT scan as NIfTI
+     - `PET.nii.gz` – Original PET scan as NIfTI
+     - `SUV.nii.gz` – Standardized Uptake Value image as NIfTI
      - `patient_info.json` - Dictionary with patient, study and serie information
      - `validation_results.csv` - List of studies flagged by user
 
-2. **PET Segmentation with AutoPET3**
+2. **CT Segmentation with TotalSegmentator**
+   - Performs organ segmentation on CT images using TotalSegmentator.
+   - Outputs:
+     - `CTseg.nii.gz` – Segmentation mask
+     - Expands `patient_info.json` with TS information
+
+3. **CT Body Composition Analysis with TotalSegmentator for SUL computation**
+   - Performs muscle and fat segmentation using TotalSegmentator and compute a SUL image.
+   - Outputs:
+      - `CT_muscle_fat.nii.gz` - Muscle and fat CT segmentation
+      - `MRI_muscle_fat.nii.gz` - Muscle and fat MRI segmentation
+      - `SUL.nii.gz` - SUV image corrected by using the lean body mass
+      - Expands `patient_info.json` with muscle, fat, and SUL information
+
+4. **PET Segmentation with AutoPET3**
    - Segments PET scans using AutoPET3.
    - Output:
-      - `CTres.nii`
-      - `PETseg.nii`
+      - `CTres.nii.gz`
+      - `PETseg.nii.gz` - SUV segmentations by AutoPET3
+      - `PETsegSUL.nii.gz` - SUL segmentations by AutoPET3
       - Expands `patient_info.json` with series information
 
-3. **CT Segmentation with CADS v1.0.0**
+5. **CT Segmentation with CADS v1.0.0**
    - Performs organ segmentation on CT images using the CADS model using the specified tasks and saves everything to a single file. The labels are set as the labelmap_all_structure  as shown here https://github.com/murong-xu/CADS/tree/main/cads/dataset_utils.
    - Output:
       - `CTcads.nii.gz`
@@ -46,13 +61,13 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
    - Performs organ segmentation on CT images using Moose.
    - Moose can only take one CT per series.
    - Outputs:
-     - `CTmoose_organs.nii` – Segmentation mask
+     - `CTmoose_organs.nii.gz` – Segmentation mask
      - Expands `patient_info.json` with Moose information
 
 7. **Radiomics Extraction**
-   - Computes key radiomics metrics from PET and CT scans.
+   - Computes key radiomics metrics from SUV or SUL and CT scans.
    - Output: Extension of `patient_info.json`
-      - SUV (mean, max, peak median, std)
+      - SUV or SUL (mean, max, peak median, std)
       - Lesion count
       - Total Metabolic Tumor Volume (TMTV)
       - Total Metabolic Tumor Volume (TMTV) with thresholds
@@ -65,11 +80,11 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
 8. **Tumor Size Analysis**
    - Quantifies tumor volume per organ based on segmentations.
    - Output:
-      - `CTsegres.nii` – Resampled segmentation mask to PT
+      - `CTsegres.nii.gz` – Resampled segmentation mask to PT
       - extension of `patient_info.json`
          - Volume
          - Organ overlap
-         - SUV (mean, max, peak median, std)
+         - SUV or SUL (mean, max, peak median, std)
          - Surface area
 
 9. **Optional Plotting**
@@ -79,16 +94,18 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
 
 ## Output
 Each patient folder includes:
-- `CT.nii`
-- `PET.nii`
-- `SUV.nii`
-- `CTres.nii`
-- `PETseg.nii`
-- `CTseg.nii`
-- `CTsegres.nii`
+- `CT.nii.gz`
+- `CTcads.nii.gz`
+- `CTmoose_organs.nii.gz`
+- `CTres.nii.gz`
+- `CTseg.nii.gz`
+- `CTsegres.nii.gz`
+- `PET.nii.gz`
+- `SUV.nii.gz`
+- `SUL.nii.gz`
+- `PETseg.nii.gz`
+- `PETsegSUL.nii.gz`
 - `patient_info.json`
-- `CTmoose_organs.nii`
-- Plots
 
 Summary for the whole cohort:
 - `validation_results.csv`
@@ -102,8 +119,9 @@ Eventually, the project and its output are structured as follows:
 
 ```
 musiq/
-├── autopet-3-submission/          # Cloned AutoPET3 repository
 ├── autopet-3-model/               # Downloaded AutoPET3 checkpoints
+├── autopet-3-submission/          # Cloned AutoPET3 repository
+├── CADS/                          # Downloaded CADS checkpoints
 ├── data/                          # Can be anywhere in your file system
 │   ├── raw/                       # Raw DICOM files from PACS
 │   │   ├── patient_id/
@@ -113,18 +131,22 @@ musiq/
 │   ├── processed/
 │   │   ├── patient_id/
 │   │   │   ├── plots/
-│   │   │   ├──series_id-1/
-│   │   │   │   ├── CT.json                     # CT DICOM tags
-│   │   │   │   ├── CT.nii                      # CT converted to nifti
-│   │   │   │   ├── CTmoose_organs.nii          # CT segmentation by Moose
-│   │   │   │   ├── CTres.nii                   # CT resampled to PET resolution
-│   │   │   │   ├── CTseg.json                  # CT segmentation metadata from totalsegmentator
-│   │   │   │   ├── CTseg.nii                   # CT segmentations from totalsegmentator
-│   │   │   │   ├── PET.nii                     # PET converted to nifti
-│   │   │   │   ├── PETseg.nii                  # PET segmentations from AutoPET3
-│   │   │   │   ├── SUV.nii                     # SUV map from PET
-│   │   │   ├──series_id-2/
-│   │   │   │   ├── ...
+│   │   │   ├── study_date_1/
+│   │   │   │   ├── CT.nii.gz                      # CT converted to nifti
+│   │   │   │   ├── CTcads.nii.gz                  # CT segmentation by CADS
+│   │   │   │   ├── CTmoose_organs.nii.gz          # CT segmentation by Moose
+│   │   │   │   ├── CTmuscle_fat.nii.gz            # CT muscle and fat segmentation by TotalSegmentator
+│   │   │   │   ├── CTres.nii.gz                   # CT resampled to PET resolution
+│   │   │   │   ├── CTseg.nii.gz                   # CT segmentations by TotalSegmentator
+│   │   │   │   ├── PET.nii.gz                     # PET converted to nifti
+│   │   │   │   ├── PETseg.nii.gz                  # SUV segmentations by AutoPET3
+│   │   │   │   ├── PETsegSUL.nii.gz               # SUL segmentations by AutoPET3
+│   │   │   │   ├── SUV.nii.gz                     # SUV map from PET
+│   │   │   │   ├── SUL.nii.gz                     # SUL map from PET
+│   │   │   ├── study_date_1/
+│   │   │   │   ├── t1_cor.nii.gz                  # MRI converted to nifti (exemplary)
+│   │   │   │   ├── t1_cor_muscle_fat.nii.gz       # MRI muscle and fat segmented by TotalSegmentator
+│   │   │   │   ├── t1_cor_seg.nii.gz              # MRI segmented by TotalSegmentator
 │   │   │   ├── patient_info.json
 │   │   ├── cohort_info.json
 │   │   ├── validation_results.csv
