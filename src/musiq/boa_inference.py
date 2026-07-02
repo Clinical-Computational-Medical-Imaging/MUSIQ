@@ -29,9 +29,12 @@ class BoaInference:
         no_pdf: bool = True,
         device: str = "gpu",
         reuse_total: bool = True,
+        runtime: str = "docker",
+        sif_path: str | os.PathLike | None = None,
     ) -> None:
         """Run the UMEssen BOA Body Composition Analysis (BCA) on every ``CT.nii.gz``
-        in the processed tree by shelling out to the ``shipai/boa-cli`` Docker image.
+        in the processed tree by shelling out to the ``shipai/boa-cli`` container,
+        via either Docker (default) or Apptainer/Singularity (for HPC clusters).
 
         BOA's ``--input-image`` accepts a single NIfTI, so MUSIQ's existing
         ``CT.nii.gz`` is fed directly. BCA depends on TotalSegmentator's ``total``
@@ -41,15 +44,26 @@ class BoaInference:
 
         The BCA tissue/body-region models have no MUSIQ equivalent and always run.
 
+        The inner ``python -m body_organ_analysis ...`` command is identical across
+        runtimes; only the container wrapper differs. Under Apptainer the process
+        already runs as the invoking user (no ``DOCKER_USER`` chown dance), so
+        ``apptainer exec`` is used to bypass the image ENTRYPOINT and run the command
+        directly. Because the SIF filesystem is read-only, BOA cannot download weights
+        into the image at runtime — under Apptainer you must pass ``weights_dirpath``
+        to a pre-populated, writable dir bound at ``/app/weights``.
+
         Args:
             input_dirpath_processed: Processed output tree (processed/<patient>/<study_date>/).
             weights_dirpath: Local BOA/TotalSegmentator weights dir, mounted at /app/weights.
-                If None, BOA downloads weights on first inference.
-            image: BOA Docker image tag.
+                If None, BOA downloads weights on first inference (Docker only).
+            image: BOA Docker image tag (used when ``runtime="docker"``).
             fast_bca: Pass --fast-bca (single-fold instead of 5-fold ensemble).
             no_pdf: Pass --bca-no-pdf (skip the PDF report, keep JSON measurements).
             device: BOA --device value ("gpu", "cuda" or "cpu").
             reuse_total: Seed CTseg.nii.gz as total.nii.gz so BOA skips the total model.
+            runtime: Container runtime, "docker" or "apptainer".
+            sif_path: Path to the BOA Apptainer/Singularity image (.sif). Required when
+                ``runtime="apptainer"``.
         """
         self.input_dirpath = input_dirpath_processed
         self.weights_dirpath = weights_dirpath
@@ -58,6 +72,20 @@ class BoaInference:
         self.no_pdf = no_pdf
         self.device = device
         self.reuse_total = reuse_total
+        self.runtime = runtime
+        self.sif_path = sif_path
+
+        if self.runtime not in ("docker", "apptainer"):
+            raise ValueError(f"Invalid BOA runtime {self.runtime!r}; expected 'docker' or 'apptainer'.")
+        if self.runtime == "apptainer":
+            if not self.sif_path:
+                raise ValueError("runtime='apptainer' requires sif_path pointing at the BOA .sif image.")
+            if not self.weights_dirpath:
+                logger.warning(
+                    "runtime='apptainer' without weights_dirpath: the SIF filesystem is read-only, so BOA "
+                    "cannot download weights at runtime. Pass --boa-weights-path to a pre-populated dir if "
+                    "the image does not already bundle the weights."
+                )
 
     def run(self) -> None:
         if not os.path.isdir(self.input_dirpath):
@@ -103,7 +131,7 @@ class BoaInference:
                     "BOA will compute the total segmentation itself."
                 )
 
-        cmd = self._build_docker_cmd(dirpath)
+        cmd = self._build_cmd(dirpath)
         logger.info(f"Running BOA on {patient_id} {study_date}: {' '.join(cmd)}")
         try:
             result = subprocess.run(cmd, check=True, capture_output=True, text=True)
@@ -130,6 +158,34 @@ class BoaInference:
             shutil.copy2(ctseg_path, total_path)
         logger.info(f"Seeded {total_path} from CTseg.nii.gz so BOA reuses the total segmentation.")
 
+    def _build_cmd(self, study_dir: str) -> list[str]:
+        if self.runtime == "apptainer":
+            return self._build_apptainer_cmd(study_dir)
+        return self._build_docker_cmd(study_dir)
+
+    def _boa_args(self) -> list[str]:
+        """The inner BOA invocation, identical across runtimes. Paths are container-side
+        (``/workspace`` is the bind-mounted study dir)."""
+        args = [
+            "python",
+            "-m",
+            "body_organ_analysis",
+            "--input-image",
+            "/workspace/CT.nii.gz",
+            "--output-dir",
+            "/workspace/boa",
+            "--models",
+            "total+bca",
+            "--device",
+            self.device,
+            "--verbose",
+        ]
+        if self.fast_bca:
+            args.append("--fast-bca")
+        if self.no_pdf:
+            args.append("--bca-no-pdf")
+        return args
+
     def _build_docker_cmd(self, study_dir: str) -> list[str]:
         cmd = [
             "docker",
@@ -149,25 +205,23 @@ class BoaInference:
         ]
         if self.weights_dirpath:
             cmd += ["-v", f"{os.path.abspath(self.weights_dirpath)}:/app/weights"]
-        cmd += [
-            self.image,
-            "python",
-            "-m",
-            "body_organ_analysis",
-            "--input-image",
-            "/workspace/CT.nii.gz",
-            "--output-dir",
-            "/workspace/boa",
-            "--models",
-            "total+bca",
-            "--device",
-            self.device,
-            "--verbose",
-        ]
-        if self.fast_bca:
-            cmd.append("--fast-bca")
-        if self.no_pdf:
-            cmd.append("--bca-no-pdf")
+        cmd.append(self.image)
+        cmd += self._boa_args()
+        return cmd
+
+    def _build_apptainer_cmd(self, study_dir: str) -> list[str]:
+        """Apptainer equivalent of the Docker command. ``exec`` bypasses the image
+        ENTRYPOINT so the command runs directly as the invoking user (no DOCKER_USER
+        chown needed); ``--nv`` exposes the GPU; the host's /dev/shm and ulimits are
+        inherited, so --shm-size/--ulimit are unnecessary."""
+        cmd = ["apptainer", "exec"]
+        if self.device != "cpu":
+            cmd.append("--nv")
+        cmd += ["--bind", f"{os.path.abspath(study_dir)}:/workspace"]
+        if self.weights_dirpath:
+            cmd += ["--bind", f"{os.path.abspath(self.weights_dirpath)}:/app/weights"]
+        cmd.append(os.fspath(self.sif_path))
+        cmd += self._boa_args()
         return cmd
 
     def _collect_segmentations(self, work_dir: str, study_dir: str) -> dict[str, str]:
@@ -266,6 +320,19 @@ def boa_inference_entrypoint() -> None:
         action="store_true",
         help="Let BOA compute the total segmentation instead of reusing CTseg.nii.gz.",
     )
+    parser.add_argument(
+        "--boa-runtime",
+        type=str,
+        default="docker",
+        choices=["docker", "apptainer"],
+        help="Container runtime for BOA (default: docker). Use 'apptainer' on HPC clusters.",
+    )
+    parser.add_argument(
+        "--boa-sif",
+        type=str,
+        default=None,
+        help="Path to the BOA Apptainer/Singularity image (.sif). Required when --boa-runtime apptainer.",
+    )
     args = parser.parse_args()
 
     BoaInference(
@@ -276,6 +343,8 @@ def boa_inference_entrypoint() -> None:
         no_pdf=args.boa_no_pdf,
         device=args.boa_device,
         reuse_total=not args.boa_no_reuse_total,
+        runtime=args.boa_runtime,
+        sif_path=args.boa_sif,
     ).run()
 
 

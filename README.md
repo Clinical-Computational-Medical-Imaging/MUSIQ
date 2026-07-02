@@ -201,6 +201,8 @@ docker pull shipai/boa-cli
 ```
   Optionally download the BOA/TotalSegmentator weights to a local directory and pass it via `--boa-weights-path` (otherwise BOA downloads them on first run). Run `totalsegmentator` before `boa` so the existing `CTseg.nii.gz` is reused as BOA's `total` segmentation (disable with `--boa-no-reuse-total`).
 
+- **On an HPC cluster (Apptainer/Singularity):** pass `--boa-runtime apptainer --boa-sif /path/to/boa-cli.sif`. Build the SIF once on a node that has `apptainer` (not the scheduler) from the saved Docker image archive, e.g. `apptainer build boa-cli.sif docker-archive://boa-cli-all.tar` (or `docker://shipai/boa-cli` if the build node has internet). Two cluster-specific notes: (1) `apptainer exec` runs as your own user, so outputs come out owned by you and no `DOCKER_USER` chown is needed; (2) the SIF filesystem is **read-only**, so BOA cannot download weights at runtime — you **must** pass `--boa-weights-path` to a pre-populated, writable, shared directory (unless the image already bundles the weights). Request a GPU in your sbatch script (`--gres=gpu:1`); MUSIQ adds `--nv` automatically unless `--boa-device cpu`.
+
 - To start the whole workflow run:
 ```bash
 musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet totalsegmentator tumor moose cads boa --cads-tasks 556 558

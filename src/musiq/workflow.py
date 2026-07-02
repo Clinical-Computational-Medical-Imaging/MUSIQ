@@ -58,6 +58,8 @@ class Workflow:
         boa_no_pdf: bool = False,
         boa_device: str = "gpu",
         boa_reuse_total: bool = True,
+        boa_runtime: str = "docker",
+        boa_sif: str | None = None,
     ) -> None:
         """
         Run the MUSIQ workflow with the specified parameters.
@@ -149,6 +151,8 @@ class Workflow:
         self.boa_no_pdf = boa_no_pdf
         self.boa_device = boa_device
         self.boa_reuse_total = boa_reuse_total
+        self.boa_runtime = boa_runtime
+        self.boa_sif = boa_sif
 
         cads_tasks_error = bool(
             any(
@@ -237,6 +241,8 @@ class Workflow:
                 no_pdf=self.boa_no_pdf,
                 device=self.boa_device,
                 reuse_total=self.boa_reuse_total,
+                runtime=self.boa_runtime,
+                sif_path=self.boa_sif,
             ).run()
 
         if self.autopet:
@@ -412,6 +418,19 @@ def workflow_entrypoint():
         action="store_true",
         help="Let BOA compute its own total segmentation instead of reusing CTseg.nii.gz.",
     )
+    parser.add_argument(
+        "--boa-runtime",
+        type=str,
+        default="docker",
+        choices=["docker", "apptainer"],
+        help="Container runtime for BOA (default: docker). Use 'apptainer' on HPC clusters.",
+    )
+    parser.add_argument(
+        "--boa-sif",
+        type=str,
+        default=None,
+        help="Path to the BOA Apptainer/Singularity image (.sif). Required when --boa-runtime apptainer.",
+    )
     args = parser.parse_args()
 
     if not args.input_dirpath or not args.output_dirpath:
@@ -441,6 +460,8 @@ def workflow_entrypoint():
         boa_no_pdf=args.boa_no_pdf,
         boa_device=args.boa_device,
         boa_reuse_total=not args.boa_no_reuse_total,
+        boa_runtime=args.boa_runtime,
+        boa_sif=args.boa_sif,
     ).run()
 
 
