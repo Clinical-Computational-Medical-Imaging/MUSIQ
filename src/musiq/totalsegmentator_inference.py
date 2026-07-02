@@ -7,7 +7,7 @@ from totalsegmentator.config import get_version
 from totalsegmentator.nifti_ext_header import load_multilabel_nifti
 from totalsegmentator.python_api import totalsegmentator
 
-from .utils import is_mr_filename, load_mr_keywords, natural_key
+from .utils import is_mr_filename, list_patient_dirs, load_mr_keywords
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +34,7 @@ class TotalSegmentatorInference:
 
         logger.info(f"Starting TotalSegmentator inference in {self.input_dirpath}")
         mr_keywords = load_mr_keywords()
-        top_dirs = [d for d in os.listdir(self.input_dirpath) if os.path.isdir(os.path.join(self.input_dirpath, d))]
-        top_dirs.sort(key=natural_key)
+        top_dirs = list_patient_dirs(self.input_dirpath)
 
         for top_dir in top_dirs:
             top_dir_path = os.path.join(self.input_dirpath, top_dir)

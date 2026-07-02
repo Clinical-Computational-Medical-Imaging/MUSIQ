@@ -3,7 +3,7 @@ import os
 
 from moosez import moose
 
-from musiq.utils import create_logger, natural_key
+from musiq.utils import create_logger, list_patient_dirs
 
 logger = create_logger("musiq.moose_inference")
 
@@ -66,8 +66,7 @@ class MooseInference:
 
         logger.info(f"Starting Moose Segmentator inference in: {self.input_dirpath} using task: {self.model_name}")
 
-        top_dirs = [d for d in os.listdir(self.input_dirpath) if os.path.isdir(os.path.join(self.input_dirpath, d))]
-        top_dirs.sort(key=natural_key)
+        top_dirs = list_patient_dirs(self.input_dirpath)
 
         for top_dir in top_dirs[:3]:
             top_dir_path = os.path.join(self.input_dirpath, top_dir)

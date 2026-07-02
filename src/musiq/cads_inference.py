@@ -19,7 +19,7 @@ from cads.dataset_utils.preprocessing import preprocess_nifti_and_save_to_dir, r
 from cads.utils.inference import predict_preprocessed_images
 from cads.utils.libs import check_or_download_model_weights, get_model_weights_dir, setup_nnunet_env
 
-from .utils import natural_key
+from .utils import list_patient_dirs
 
 setup_nnunet_env()
 logger = logging.getLogger(__name__)
@@ -111,8 +111,7 @@ class CadsInference:
         if not os.path.isdir(self.input_dirpath):
             logger.error(f"Error: {self.input_dirpath} is not a valid directory.")
             return
-        top_dirs = [d for d in os.listdir(self.input_dirpath) if os.path.isdir(os.path.join(self.input_dirpath, d))]
-        top_dirs.sort(key=natural_key)
+        top_dirs = list_patient_dirs(self.input_dirpath)
         for top_dir in top_dirs:
             top_dir_path = os.path.join(self.input_dirpath, top_dir)
             for dirpath, dirnames, filenames in os.walk(top_dir_path):

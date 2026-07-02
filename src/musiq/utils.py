@@ -29,6 +29,32 @@ def natural_key(s: str):
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", s)]
 
 
+# Top-level directories in the processed tree that are NOT patients and must be skipped
+# by every stage's patient iteration (e.g. the CADS staging dir, plot output). Iterating
+# into these wastes an os.walk over large intermediate trees and, for stages that cap the
+# number of patients (Moose), silently drops real patients.
+RESERVED_PROCESSED_DIRS = frozenset({"cads_staging", "plots"})
+
+
+def list_patient_dirs(processed_dirpath: str | os.PathLike, extra_exclude: set[str] | None = None) -> list[str]:
+    """Return the sorted patient directory names under ``processed_dirpath``.
+
+    Filters out non-directories, dotfiles, and reserved non-patient directories
+    (see ``RESERVED_PROCESSED_DIRS``, plus any ``extra_exclude``). Names are sorted
+    with :func:`natural_key` so callers get a stable, human order.
+    """
+    exclude = set(RESERVED_PROCESSED_DIRS)
+    if extra_exclude:
+        exclude |= set(extra_exclude)
+    dirs = [
+        d
+        for d in os.listdir(processed_dirpath)
+        if os.path.isdir(os.path.join(processed_dirpath, d)) and not d.startswith(".") and d not in exclude
+    ]
+    dirs.sort(key=natural_key)
+    return dirs
+
+
 def setup_series_keywords(
     ct_primary_keywords: list[str] | None = None,
     ct_secondary_keywords: list[str] | None = None,

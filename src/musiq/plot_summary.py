@@ -4,6 +4,8 @@ import os
 import matplotlib.pyplot as plt
 import pandas as pd
 
+from .utils import list_patient_dirs
+
 logger = logging.getLogger(__name__)
 
 
@@ -24,10 +26,8 @@ class PlotSummary:
             raise FileNotFoundError(f"Root directory {self.input_dirpath_processed} does not exist.")
 
         # Iterate over all subfolders in the root directory
-        for folder in sorted(os.listdir(self.input_dirpath_processed)):
+        for folder in list_patient_dirs(self.input_dirpath_processed):
             folder_path = os.path.join(self.input_dirpath_processed, folder)
-            if not os.path.isdir(folder_path):
-                continue
             logger.info(f"Processing folder: {folder_path}")
             try:
                 self.process_folder(folder_path)

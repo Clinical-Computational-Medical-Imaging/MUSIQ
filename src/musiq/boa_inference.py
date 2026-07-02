@@ -5,7 +5,7 @@ import pathlib as plb
 import shutil
 import subprocess
 
-from .utils import natural_key
+from .utils import list_patient_dirs
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +65,7 @@ class BoaInference:
             return
 
         logger.info(f"Starting BOA BCA inference in {self.input_dirpath}")
-        top_dirs = [d for d in os.listdir(self.input_dirpath) if os.path.isdir(os.path.join(self.input_dirpath, d))]
-        top_dirs.sort(key=natural_key)
+        top_dirs = list_patient_dirs(self.input_dirpath)
 
         for top_dir in top_dirs:
             top_dir_path = os.path.join(self.input_dirpath, top_dir)

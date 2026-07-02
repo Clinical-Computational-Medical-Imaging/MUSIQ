@@ -5,7 +5,7 @@ import pathlib as plb
 import platform
 import subprocess
 
-from .utils import create_logger, setup_series_keywords
+from .utils import RESERVED_PROCESSED_DIRS, create_logger, setup_series_keywords
 
 _REPO_ROOT = plb.Path(__file__).parent.parent.parent
 
@@ -18,7 +18,9 @@ def build_cohort_info(output_dirpath: str) -> dict:
     no longer on disk are dropped (a clean rebuild).
     """
     cohort_info = {}
-    for dirpath, _, filenames in os.walk(output_dirpath):
+    for dirpath, dirnames, filenames in os.walk(output_dirpath):
+        # Don't descend into non-patient dirs (e.g. cads_staging intermediates).
+        dirnames[:] = [d for d in dirnames if d not in RESERVED_PROCESSED_DIRS]
         if "patient_info.json" in filenames:
             with open(os.path.join(dirpath, "patient_info.json")) as json_file:
                 patient_info = json.load(json_file)

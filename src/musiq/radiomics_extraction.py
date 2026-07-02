@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from . import metrics
-from .utils import get_spacing_from_niftipath, make_json_safe
+from .utils import RESERVED_PROCESSED_DIRS, get_spacing_from_niftipath, make_json_safe
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +37,12 @@ class RadiomicsExtractor:
         for metric in self.pet_metrics:
             petseg_fname = "PETseg.nii.gz" if metric == "SUV" else "PETsegSUL.nii.gz"
             necessary_files = [petseg_fname, f"{metric}.nii.gz", "CTseg.nii.gz", "CT.nii.gz"]
-            sub_dirs = [
-                dirpath
-                for dirpath, _, filenames in os.walk(self.input_dirpath)
-                if all(f in filenames for f in necessary_files)
-            ]
+            sub_dirs = []
+            for dirpath, dirnames, filenames in os.walk(self.input_dirpath):
+                # Don't descend into non-patient dirs (e.g. cads_staging intermediates).
+                dirnames[:] = [d for d in dirnames if d not in RESERVED_PROCESSED_DIRS]
+                if all(f in filenames for f in necessary_files):
+                    sub_dirs.append(dirpath)
             if not sub_dirs:
                 msg = f"No directories found with necessary files for {metric}: {necessary_files}."
                 if metric == "SUL":
