@@ -104,6 +104,7 @@ class Workflow:
                 "plot",
                 "moose",
                 "muscle_fat",
+                "sul",
                 "cads",
                 "boa",
             ]
@@ -120,6 +121,7 @@ class Workflow:
                         "plot",
                         "moose",
                         "muscle_fat",
+                        "sul",
                         "cads",
                         "boa",
                     ]
@@ -131,7 +133,7 @@ class Workflow:
                     "Invalid tasks specified. Possible values are: "
                     "'series_selection', 'radiomics', 'autopet', "
                     "'totalsegmentator', 'tumor', 'plot', 'moose', "
-                    "'muscle_fat', 'cads', 'boa'."
+                    "'muscle_fat', 'sul', 'cads', 'boa'."
                 )
 
         self.series_selection = "series_selection" in (tasks or [])
@@ -139,6 +141,7 @@ class Workflow:
         self.cads = "cads" in (tasks or [])
         self.totalsegmentator = "totalsegmentator" in (tasks or [])
         self.muscle_fat = "muscle_fat" in (tasks or [])
+        self.sul = "sul" in (tasks or [])
         self.moose = "moose" in (tasks or [])
         self.radiomics = "radiomics" in (tasks or [])
         self.tumor = "tumor" in (tasks or [])
@@ -222,10 +225,18 @@ class Workflow:
             ).run()
 
         if self.muscle_fat:
-            from .totalsegmentator_muscle_fat_sul import TotalSegmentatorMuscleFatSUL
+            from .totalsegmentator_muscle_fat import TotalSegmentatorMuscleFat
 
-            logger.info("\n" + "#" * 50 + "\nStarting TotalSegmentator Muscle Fat and SUL computation\n" + "#" * 50)
-            TotalSegmentatorMuscleFatSUL(
+            logger.info("\n" + "#" * 50 + "\nStarting TotalSegmentator Muscle Fat computation\n" + "#" * 50)
+            TotalSegmentatorMuscleFat(
+                input_dirpath_processed=self.output_dirpath,
+            ).run()
+
+        if self.sul:
+            from .sul_computation import SulInference
+
+            logger.info("\n" + "#" * 50 + "\nStarting SUL computation\n" + "#" * 50)
+            SulInference(
                 input_dirpath_processed=self.output_dirpath,
             ).run()
 
@@ -342,7 +353,7 @@ def workflow_entrypoint():
         "--tasks",
         nargs="+",
         help="List of tasks to run. Possible values: series_selection, "
-        "radiomics, autopet, totalsegmentator, tumor, plot, moose, muscle_fat, cads, boa.",
+        "radiomics, autopet, totalsegmentator, tumor, plot, moose, muscle_fat, sul, cads, boa.",
         default=None,
     )
     parser.add_argument(

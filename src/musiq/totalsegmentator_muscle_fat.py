@@ -5,10 +5,9 @@ import pathlib as plb
 
 import nibabel as nib
 import numpy as np
-import pydicom
 from totalsegmentator.nifti_ext_header import load_multilabel_nifti
 
-from .utils import calculate_suv_factor, convert_pet, is_mr_filename, list_patient_dirs, load_mr_keywords
+from .utils import is_mr_filename, list_patient_dirs, load_mr_keywords
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +27,12 @@ def total_seg_path(input_fpath: str | os.PathLike) -> str:
     return os.path.join(dirpath, f"{filename[:-7]}_seg.nii.gz")
 
 
-class TotalSegmentatorMuscleFatSUL:
+class TotalSegmentatorMuscleFat:
     def __init__(self, input_dirpath_processed: os.PathLike | str) -> None:
         """Class to handle TotalSegmentator muscle fat analysis on CT.nii.gz and MRI files in a specified folder.
-        It processes each file, runs segmentation, extracts label mapping and computes a SUL image.
-        Creates CT_muscle_fat.nii and SUL.nii.gz.
+        It processes each file, runs segmentation, extracts label mapping, computes body-composition
+        stats and the lean body mass (LBM). Creates CT_muscle_fat.nii.gz and stores stats/LBM in
+        patient_info.json. SUL is produced by the separate ``sul`` stage (see sul_computation.py).
 
         Args:
             input_dirpath_processed (str | os.PathLike): Directory containing the CT.nii.gz files. Can be nested.
@@ -44,8 +44,8 @@ class TotalSegmentatorMuscleFatSUL:
         Recursively search the folder for CT.nii.gz files.
         For each found file, run the tissue_4_types for CT or tissue_types_mr for MRI segmentation,
         extract the label mapping from the segmentation output, and save a metadata JSON file.
-        It also calculates the lean body mass (LBM) and starts the SUL image creation.
-        LBM is calculated from the fat percentage obtained from the segmentation and the patient weight.
+        It also calculates the lean body mass (LBM) from the fat percentage obtained from the
+        segmentation and the patient weight. The SUL image is produced by the separate ``sul`` stage.
         """
         if not os.path.isdir(self.input_dirpath):
             logger.error(f"Error: {self.input_dirpath} is not a valid directory.")
@@ -95,22 +95,14 @@ class TotalSegmentatorMuscleFatSUL:
                         metadata_key = f"{modality}muscle_fat_metadata"
                         seg_path_key = f"{modality}muscle_fatPath"
 
-                        sul_fpath = os.path.join(dirpath, "SUL.nii.gz")
-                        pet_fpath = os.path.join(dirpath, "PET.nii.gz")
                         patient_info_path = os.path.join(os.path.dirname(dirpath), "patient_info.json")
-                        # A study is fully processed once the segmentation exists AND either the SUL image is
-                        # present, or there is no PET to derive SUL from (CT-only study) and the body-composition
-                        # stats are already recorded. The "no PET" branch is essential: SUL.nii.gz can never be
-                        # created without a PET, so without it CT-only studies never satisfy the skip and get
-                        # fully reprocessed on every run. When PET exists but SUL is missing we deliberately fall
-                        # through so SUL is (re)computed below.
-                        if os.path.isfile(output_fpath) and (
-                            os.path.isfile(sul_fpath)
-                            or (
-                                is_ct
-                                and not os.path.isfile(pet_fpath)
-                                and self._bca_recorded(patient_info_path, study_date, modality)
-                            )
+                        # A CT study is fully processed once the segmentation exists AND its body-composition
+                        # stats are recorded. Recording the stats (not just the seg file) is what lets re-runs
+                        # skip instead of reloading the whole-body seg and recomputing. SUL is a separate stage.
+                        if (
+                            is_ct
+                            and os.path.isfile(output_fpath)
+                            and self._bca_recorded(patient_info_path, study_date, modality)
                         ):
                             logger.info(f"muscle/fat analysis already complete for {patient_id}, skipping.")
                             # Backfill the series-level muscle/fat path for patients processed before this
@@ -119,7 +111,7 @@ class TotalSegmentatorMuscleFatSUL:
                                 patient_info_path,
                                 study_date,
                                 modality,
-                                series_index=0 if modality == "CT" else None,
+                                series_index=0,
                                 filename=filename,
                                 seg_path_key=seg_path_key,
                                 output_fpath=output_fpath,
@@ -242,9 +234,10 @@ class TotalSegmentatorMuscleFatSUL:
 
                             layers = ["full_picture", "l3", "glut_to_c6"]
                             # calc_size loads the base image + whole-body seg once and measures every
-                            # layer in a single pass. A fallback (missing seg / arms beside body /
-                            # missing landmark) is recorded for the affected layers so the completeness
-                            # check above stays satisfied and re-runs don't reload and recompute (~10s).
+                            # layer in a single pass (arms-down studies have the arms masked out first).
+                            # A fallback (missing seg / missing landmark) is recorded for the affected
+                            # layers so the completeness check above stays satisfied and re-runs don't
+                            # reload and recompute (~10s).
                             layer_results = self.calc_size(input_fpath, segmentation_img, label_map_dict, layers)
 
                             if json_exists and patient_info is not None:
@@ -268,7 +261,7 @@ class TotalSegmentatorMuscleFatSUL:
                             logger.info(f"CT_muscle_fat.nii.gz already exists for {patient_id}, skipping segmentation.")
 
                         if not json_exists:
-                            logger.error(f"Cannot compute LBM/SUL for {patient_id}: patient_info.json is missing.")
+                            logger.error(f"Cannot compute LBM for {patient_id}: patient_info.json is missing.")
                             continue
 
                         with open(patient_info_path, encoding="utf-8") as f:
@@ -284,7 +277,7 @@ class TotalSegmentatorMuscleFatSUL:
                         series_data = data["Studies"][study_date]["Modalities"][modality][series_index][series_name]
                         # Record the muscle/fat segmentation path at the series level (consistent with how
                         # CTsegPath / CTcadsPath are stored), independent of whether body-composition stats
-                        # were computed. Persist immediately, since the LBM/SUL block below may `continue`
+                        # were computed. Persist immediately, since the LBM block below may `continue`
                         # out before the final json.dump.
                         if os.path.isfile(output_fpath) and series_data.get(seg_path_key) != output_fpath:
                             series_data[seg_path_key] = output_fpath
@@ -296,20 +289,19 @@ class TotalSegmentatorMuscleFatSUL:
                         patient_weight = series_data.get("DICOM", {}).get("PatientWeight")
                         if patient_weight is None:
                             logger.warning(
-                                f"No PatientWeight in patient_info.json for {patient_id}, skipping LBM/SUL computation."
+                                f"No PatientWeight in patient_info.json for {patient_id}, skipping LBM computation."
                             )
                             continue
                         try:
                             weight = float(patient_weight)
                         except (TypeError, ValueError):
                             logger.warning(
-                                f"Invalid PatientWeight {patient_weight!r} for {patient_id}, "
-                                "skipping LBM/SUL computation."
+                                f"Invalid PatientWeight {patient_weight!r} for {patient_id}, skipping LBM computation."
                             )
                             continue
                         if weight <= 0:
                             logger.warning(
-                                f"Non-positive PatientWeight ({weight}) for {patient_id}, skipping LBM/SUL computation."
+                                f"Non-positive PatientWeight ({weight}) for {patient_id}, skipping LBM computation."
                             )
                             continue
                         fat_in_percent = (
@@ -326,29 +318,13 @@ class TotalSegmentatorMuscleFatSUL:
                                     "arms detected beside the body (humerus below T4 threshold); "
                                     "LBM cannot be estimated reliably"
                                 )
-                            logger.warning(f"Skipping LBM/SUL computation for {patient_id}: {reason}.")
+                            logger.warning(f"Skipping LBM computation for {patient_id}: {reason}.")
                             continue
+                        # LBM is consumed by the separate `sul` stage (via PatientLBM) to build SUL.nii.gz.
                         lean_body_mass = weight * (1 - fat_in_percent / 100)
                         data["Studies"][study_date]["Modalities"][modality][series_index][series_name]["PatientLBM"] = (
                             lean_body_mass
                         )
-
-                        if os.path.isfile(pet_fpath):
-                            sul_path = self.convert_pet2sul(dirpath, lean_body_mass, study_date)
-                            # convert_pet2sul returns None when SUL can't be produced (missing/unrecoverable
-                            # DICOM timing fields) — don't record a null SULPath in that case.
-                            if sul_path is not None:
-                                pt_series = data["Studies"][study_date]["Modalities"].get("PT")
-                                if pt_series:
-                                    pt_series_name = next(iter(pt_series[0]))
-                                    pt_series[0][pt_series_name]["SULPath"] = sul_path
-                                else:
-                                    logger.warning(
-                                        f"SUL written for {patient_id} but no PT entry in patient_info.json; "
-                                        "SULPath not recorded."
-                                    )
-                        else:
-                            logger.info(f"No PET file found for {patient_id}, skipping SUL computation.")
 
                         with open(patient_info_path, "w") as f:
                             json.dump(data, f)
@@ -439,10 +415,11 @@ class TotalSegmentatorMuscleFatSUL:
             layers: Layers to measure, e.g. ``["full_picture", "l3", "glut_to_c6"]``.
 
         Returns:
-            ``{layer: result_dict}``. A condition that invalidates every layer (missing 'total'
-            segmentation, or arms beside the body) maps all layers to the fallback. A per-layer
-            landmark miss (e.g. no L3) fills that layer and the remaining ones with the fallback,
-            mirroring the original break-on-first-fallback behavior.
+            ``{layer: result_dict}``. A missing 'total' segmentation maps all layers to the fallback.
+            When arms are detected beside the body they are masked out (via a TotalSegmentator ``body``
+            segmentation) before measuring, rather than skipped. A per-layer landmark miss (e.g. no L3)
+            fills that layer and the remaining ones with the fallback, mirroring the original
+            break-on-first-fallback behavior.
         """
         fallback = {"total_fat_in_%": None, "total_muscle_in_%": None, "muscle_fat_ratio": None}
         all_fallback = {layer: dict(fallback) for layer in layers}
@@ -482,8 +459,9 @@ class TotalSegmentatorMuscleFatSUL:
             t4_z_max = np.percentile((coords_h_t4 @ affine.T)[:, z_axis], 95)
 
             if hum_z_min < t4_z_max - 100:
-                logger.warning("Arms are beside the body")
-                return all_fallback
+                logger.warning("Arms are beside the body, removing arms before measuring.")
+                fat_img = self.remove_arms(fat_img, seg_data, name_to_label, affine, z_axis, path)
+                nib.save(fat_img, os.path.join(os.path.dirname(path), "CTbody_masked.nii.gz"))
 
         voxel_volume = np.prod(fat_img.header.get_zooms())
         fat_full = np.asanyarray(fat_img.dataobj)
@@ -544,90 +522,77 @@ class TotalSegmentatorMuscleFatSUL:
 
         return results
 
-    def convert_pet2sul(self, output_dirpath: str | os.PathLike, lean_body_mass: float, study_date: str) -> os.PathLike:
-        """
-        Coordinates the conversion of PET to SUL image.
+    def remove_arms(
+        self, tissue_img: nib.Nifti1Image, organ_img, labels, affine, z_axis, input_fpath: os.PathLike
+    ) -> nib.Nifti1Image:
+        """Zero out arm voxels in the tissue-type segmentation using a TotalSegmentator body mask.
+
+        Runs the TotalSegmentator ``body`` task to obtain a trunk mask, extends it superiorly from the
+        scapula and inferiorly from the hip, and removes voxels lateral to the trunk — so arms-down
+        studies can still be quantified for LBM instead of being skipped.
 
         Args:
-            output_dirpath (os.PathLike): Path to the output directory.
-            lean_body_mass (float): Body weight without the weight of the fat.
-            study_date (str): Date of the study for json access.
+            tissue_img: Tissue-type segmentation image to be masked.
+            organ_img: Integer label array from the 'total' segmentation.
+            labels: 'total' segmentation mapping of label names to integers.
+            affine: Affine matrix of the segmentation image.
+            z_axis: Index of the head-to-toe axis (0, 1, or 2).
+            input_fpath: Path to the original CT NIfTI; used to derive the CTbody.nii.gz output path.
 
         Returns:
-            path (os.PathLike): Path to the SUL NIfTI image.
+            The tissue-type segmentation with arm voxels zeroed out (unmodified on body-seg failure).
         """
-        out_pet_fpath = os.path.join(output_dirpath, "PET.nii.gz")
-        out_sul_fpath = os.path.join(output_dirpath, "SUL.nii.gz")
+        output_fpath = os.path.join(os.path.dirname(input_fpath), "CTbody.nii.gz")
+        if not os.path.isfile(output_fpath):
+            # Lazy import: pulls in torch/nnU-Net; only needed for arms-down studies.
+            from totalsegmentator.python_api import totalsegmentator
 
-        if os.path.isfile(out_sul_fpath):
-            logger.info(f"SUL NIfTI already exist at {out_sul_fpath}")
-            return out_sul_fpath
+            try:
+                totalsegmentator(
+                    input_fpath,
+                    output_fpath,
+                    ml=True,
+                    task="body",
+                    device="gpu:0",
+                    statistics=False,
+                    radiomics=False,
+                )
+                logger.info("Body segmentation successfully completed.")
+            except Exception as e:
+                logger.error(f"Error during body segmentation for {input_fpath}:\n  {e}")
+                return tissue_img
+        body_img, label_map = load_multilabel_nifti(output_fpath)
+
+        name_to_label = {v: k for k, v in label_map.items()}
+        torso = (body_img.get_fdata() == name_to_label["body_trunc"]).astype(np.uint8)
+        z_slices = np.where(torso.any(axis=(0, 1)))[0]
+
+        hip = np.isin(organ_img, [labels["hip_left"]])
+        coords = np.argwhere(hip)
+        if coords.size == 0:
+            logger.error("No hip_left found")
+            best_z_bot = z_slices[0]
         else:
-            patient_info_path = os.path.join(os.path.dirname(output_dirpath), "patient_info.json")
-            with open(patient_info_path) as f:
-                data = json.load(f)
+            best_z_bot = int(np.percentile(coords[:, z_axis], 10))
 
-            series_name = next(iter(data["Studies"][study_date]["Modalities"]["PT"][0]))
-            pt_series = data["Studies"][study_date]["Modalities"]["PT"][0][series_name]
-            dicom_data = pt_series["DICOM"]
-            required = [
-                "InjectedRadioactivity",
-                "RadionuclideHalfLife",
-                "AcquisitionTime",
-                "RadiopharmaceuticalStartTime",
-            ]
-            missing = [k for k in required if k not in dicom_data]
-            if missing:
-                input_dir = pt_series.get("InputDirPath")
-                if input_dir and os.path.isdir(input_dir):
-                    logger.info(f"Missing DICOM fields {missing}, recovering from {input_dir}.")
-                    try:
-                        first_dcm = os.listdir(input_dir)[0]
-                        ds = pydicom.dcmread(os.path.join(input_dir, first_dcm))
-                        seq = ds.RadiopharmaceuticalInformationSequence[0]
-                        recoverable = {
-                            "RadiopharmaceuticalStartTime": str(seq.RadiopharmaceuticalStartTime),
-                            "InjectedRadioactivity": float(seq.RadionuclideTotalDose),
-                            "RadionuclideHalfLife": float(seq.RadionuclideHalfLife),
-                        }
-                        for k in missing:
-                            if k in recoverable:
-                                dicom_data[k] = recoverable[k]
-                        with open(patient_info_path, "w") as f:
-                            json.dump(data, f)
-                    except Exception as e:
-                        logger.error(f"Failed to recover DICOM fields from {input_dir}: {e}")
-                        return None
-                else:
-                    logger.error(
-                        f"Cannot compute SUL for {output_dirpath}: missing DICOM fields {missing} "
-                        "and InputDirPath is not accessible. Re-run series_selection to repopulate."
-                    )
-                    return None
-                still_missing = [k for k in required if k not in dicom_data]
-                if still_missing:
-                    logger.error(f"Could not recover fields {still_missing} from DICOM. Skipping SUL.")
-                    return None
-            total_dose = dicom_data["InjectedRadioactivity"]
-            half_life = dicom_data["RadionuclideHalfLife"]
-            acq_time = dicom_data["AcquisitionTime"]
-            start_time = dicom_data["RadiopharmaceuticalStartTime"]
+        shoulder = np.isin(organ_img, [labels["scapula_left"]])
+        coords = np.argwhere(shoulder)
+        if coords.size == 0:
+            logger.error("No scapula_left found")
+            best_z_top = z_slices[-1]
+        else:
+            best_z_top = int(np.percentile(coords[:, z_axis], 95))
 
-            sul_corr_factor = calculate_suv_factor(
-                total_dose=total_dose,
-                start_time=start_time,
-                half_life=half_life,
-                acq_time=acq_time,
-                weight=lean_body_mass,
-            )
+        torso_extended = torso.copy()
+        torso_extended[:, :, best_z_top:] = 1
+        torso_extended[:, :, :best_z_bot] = 1
 
-            sul_pet_nii = convert_pet(
-                nib.load(out_pet_fpath),
-                suv_factor=sul_corr_factor,  # type: ignore
-            )
-            nib.save(img=sul_pet_nii, filename=out_sul_fpath)  # type: ignore
+        data = np.asanyarray(tissue_img.dataobj).copy()
+        for z in range(data.shape[2]):
+            if torso_extended[:, :, z].any():
+                data[:, :, z] *= torso_extended[:, :, z].astype(data.dtype)
 
-            return out_sul_fpath
+        return nib.Nifti1Image(data, tissue_img.affine, tissue_img.header)
 
 
 def totalsegmentator_muscle_fat_entrypoint() -> None:
@@ -642,7 +607,8 @@ def totalsegmentator_muscle_fat_entrypoint() -> None:
     parser = argparse.ArgumentParser(
         description="Recursively run TotalSegmentator for muscle and fat (ml option) on all CT.nii.gz or "
         "MRI files in a folder. It processes each file, runs segmentation, extracts label mapping and "
-        "computes a SUL image. Creates CT_muscle_fat.nii, SUL.nii.gz images and extens patient_info.json"
+        "computes body-composition stats and the lean body mass (LBM). Creates CT_muscle_fat.nii.gz and "
+        "extends patient_info.json. Run the `sul` stage afterwards to produce SUL.nii.gz."
     )
     parser.add_argument(
         "--input-dirpath-processed",
@@ -652,7 +618,7 @@ def totalsegmentator_muscle_fat_entrypoint() -> None:
     )
     args = parser.parse_args()
 
-    TotalSegmentatorMuscleFatSUL(
+    TotalSegmentatorMuscleFat(
         input_dirpath_processed=args.input_dirpath_processed,
     ).run()
 

@@ -23,15 +23,23 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
      - `CTseg.nii.gz` – Segmentation mask
      - Expands `patient_info.json` with TS information
 
-3. **CT Body Composition Analysis with TotalSegmentator for SUL computation**
-   - Performs muscle and fat segmentation using TotalSegmentator and compute a SUL image.
+3. **CT Body Composition Analysis with TotalSegmentator** (`muscle_fat`, GPU)
+   - Performs muscle and fat segmentation using TotalSegmentator and computes body-composition
+     stats and the lean body mass (LBM).
    - Outputs:
       - `CT_muscle_fat.nii.gz` - Muscle and fat CT segmentation
       - `MRI_muscle_fat.nii.gz` - Muscle and fat MRI segmentation
-      - `SUL.nii.gz` - SUV image corrected by using the lean body mass
-      - Expands `patient_info.json` with muscle, fat, and SUL information
+      - Expands `patient_info.json` with muscle/fat stats and `PatientLBM`
 
-4. **PET Segmentation with AutoPET3**
+4. **SUL computation** (`sul`, CPU)
+   - Builds the lean-body-mass-corrected PET image from `PET.nii.gz` and the `PatientLBM` produced
+     by `muscle_fat`. CPU-only (no TotalSegmentator/torch), so it can run on a separate CPU node.
+     Must run after `muscle_fat` and before `autopet`/`radiomics` when SUL metrics are used.
+   - Outputs:
+      - `SUL.nii.gz` - SUV image corrected by the lean body mass
+      - Expands `patient_info.json` with `SULPath`
+
+5. **PET Segmentation with AutoPET3**
    - Segments PET scans using AutoPET3.
    - Output:
       - `CTres.nii.gz`
@@ -39,7 +47,7 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
       - `PETsegSUL.nii.gz` - SUL segmentations by AutoPET3
       - Expands `patient_info.json` with series information
 
-5. **CT Segmentation with CADS v1.0.0**
+6. **CT Segmentation with CADS v1.0.0**
    - Performs organ segmentation on CT images using the CADS model using the specified tasks and saves everything to a single file. The labels are set as the labelmap_all_structure  as shown here https://github.com/murong-xu/CADS/tree/main/cads/dataset_utils.
    - Runs as a **staged pipeline** (CADS "Option 2"): preprocess (CPU) → inference (GPU) → restore+combine (CPU). The `cads` workflow task runs all three in sequence; for large cohorts the stages can be run as separate CPU/GPU jobs (see *Large-scale staged CADS* below). Intermediates live in a staging dir (default `<output>/cads_staging`) and are auto-removed once each `CTcads.nii.gz` is written.
    - Output:
@@ -47,14 +55,14 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
       - Expands `patient_info.json` with CADS information
 
 
-6. **CT Segmentation with Moose**
+7. **CT Segmentation with Moose**
    - Performs organ segmentation on CT images using Moose.
    - Moose can only take one CT per series.
    - Outputs:
      - `CTmoose_organs.nii.gz` – Segmentation mask
      - Expands `patient_info.json` with Moose information
 
-7. **Body Composition Analysis with BOA (BCA)**
+8. **Body Composition Analysis with BOA (BCA)**
    - Runs the UMEssen [Body-and-Organ-Analysis](https://github.com/UMEssen/Body-and-Organ-Analysis) BCA component on each `CT.nii.gz` via the `shipai/boa-cli` Docker image (no Python dependency added — BOA runs in its own container).
    - Reuses MUSIQ's existing `CTseg.nii.gz` as BOA's `total` segmentation when present, so the 104-organ TotalSegmentator step is not recomputed. Run `totalsegmentator` before `boa`. (MUSIQ pins TotalSegmentator 2.9.0 while BOA targets 2.12.0, but the `total` task's 117-class label map is identical across those versions, so the reused segmentation is labeled correctly. Disable reuse with `--boa-no-reuse-total` if you ever align both to a version where the map differs.)
    - Outputs (next to the other NIfTIs):
@@ -63,7 +71,7 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
      - `boa/` subfolder with BOA's `output.xlsx`, optional `report.pdf`, JSON measurements and logs
      - Expands `patient_info.json` with a `BCA` block and the segmentation paths
 
-8. **Radiomics Extraction**
+9. **Radiomics Extraction**
    - Computes key radiomics metrics from SUV or SUL and CT scans.
    - Output: Extension of `patient_info.json`
       - SUV or SUL (mean, max, peak median, std)
@@ -76,7 +84,7 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
       - Tumor Dissemination standardized by patient's height and weight(SDmax)
       - Surface Area
 
-9. **Tumor Size Analysis**
+10. **Tumor Size Analysis**
    - Quantifies tumor volume per organ based on segmentations.
    - Output:
       - `CTsegres.nii.gz` – Resampled segmentation mask to PT
@@ -86,7 +94,7 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
          - SUV or SUL (mean, max, peak median, std)
          - Surface area
 
-10. **Optional Plotting**
+11. **Optional Plotting**
    - Generates visualizations
 
 ---
@@ -205,7 +213,7 @@ docker pull shipai/boa-cli
 
 - To start the whole workflow run:
 ```bash
-musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet totalsegmentator tumor moose cads boa --cads-tasks 556 558
+musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet totalsegmentator muscle_fat sul tumor moose cads boa --cads-tasks 556 558
 ```
 - To run CADS you can run the different tasks given on their repository or just run 'all'
 - See `pyproject.toml` to see commands for running only parts of the pipeline in a modular way.
@@ -251,7 +259,7 @@ docker run -it --rm --gpus all --name musiq_container \
   musiq_image musiq \
   --input-dirpath /data/input \
   --output-dirpath /data/output \
-  --tasks series_selection radiomics autopet totalsegmentator tumor moose
+  --tasks series_selection radiomics autopet totalsegmentator muscle_fat sul tumor moose
 ```
 If you are using Windows, it is recommended to add the following flags to reduce resource usage:
 ```bash
