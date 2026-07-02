@@ -6,11 +6,9 @@ import pathlib as plb
 import nibabel as nib
 import numpy as np
 import pydicom
-from totalsegmentator.config import get_version
 from totalsegmentator.nifti_ext_header import load_multilabel_nifti
-from totalsegmentator.python_api import totalsegmentator
 
-from .utils import calculate_suv_factor, convert_pet, is_mr_filename, load_mr_keywords, natural_key
+from .utils import calculate_suv_factor, convert_pet, is_mr_filename, list_patient_dirs, load_mr_keywords
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +53,7 @@ class TotalSegmentatorMuscleFatSUL:
 
         logger.info(f"Starting TotalSegmentator inference in {self.input_dirpath}")
         mr_keywords = load_mr_keywords()
-        top_dirs = [d for d in os.listdir(self.input_dirpath) if os.path.isdir(os.path.join(self.input_dirpath, d))]
-        top_dirs.sort(key=natural_key)
+        top_dirs = list_patient_dirs(self.input_dirpath)
 
         for top_dir in top_dirs:
             top_dir_path = os.path.join(self.input_dirpath, top_dir)
@@ -98,8 +95,34 @@ class TotalSegmentatorMuscleFatSUL:
                     seg_path_key = f"{modality}muscle_fatPath"
 
                     sul_fpath = os.path.join(dirpath, "SUL.nii.gz")
-                    if os.path.isfile(output_fpath) and os.path.isfile(sul_fpath):
-                        logger.info(f"CT_muscle_fat.nii.gz and SUL.nii.gz already exist for {patient_id}, skipping.")
+                    pet_fpath = os.path.join(dirpath, "PET.nii.gz")
+                    patient_info_path = os.path.join(os.path.dirname(dirpath), "patient_info.json")
+                    # A study is fully processed once the segmentation exists AND either the SUL image is
+                    # present, or there is no PET to derive SUL from (CT-only study) and the body-composition
+                    # stats are already recorded. The "no PET" branch is essential: SUL.nii.gz can never be
+                    # created without a PET, so without it CT-only studies never satisfy the skip and get
+                    # fully reprocessed on every run. When PET exists but SUL is missing we deliberately fall
+                    # through so SUL is (re)computed below.
+                    if os.path.isfile(output_fpath) and (
+                        os.path.isfile(sul_fpath)
+                        or (
+                            is_ct
+                            and not os.path.isfile(pet_fpath)
+                            and self._bca_recorded(patient_info_path, study_date, modality)
+                        )
+                    ):
+                        logger.info(f"muscle/fat analysis already complete for {patient_id}, skipping.")
+                        # Backfill the series-level muscle/fat path for patients processed before this
+                        # path was recorded (consistent with CTsegPath / CTcadsPath).
+                        self._record_muscle_fat_path(
+                            patient_info_path,
+                            study_date,
+                            modality,
+                            series_index=0 if modality == "CT" else None,
+                            filename=filename,
+                            seg_path_key=seg_path_key,
+                            output_fpath=output_fpath,
+                        )
                         continue
 
                     segmentation_exists = os.path.isfile(output_fpath)
@@ -170,7 +193,11 @@ class TotalSegmentatorMuscleFatSUL:
                         logger.info(f"Processing file {filename} for patient {patient_id}.")
 
                         # Run TotalSegmentator using the Python API with ml option and appropriate task.
+                        # Imported lazily: pulls in torch/nnU-Net (slow CUDA init), so a run where every
+                        # study is skipped never pays that startup cost.
                         if not os.path.isfile(output_fpath):
+                            from totalsegmentator.python_api import totalsegmentator
+
                             try:
                                 totalsegmentator(
                                     input_fpath,
@@ -199,35 +226,49 @@ class TotalSegmentatorMuscleFatSUL:
                         if not is_ct:
                             continue
 
+                        # Imported lazily: totalsegmentator.config pulls in torch, so keep it off the
+                        # module-import path where every study may be skipped.
+                        from totalsegmentator.config import get_version
+
+                        seg_metadata = {
+                            "settings": {"input_fpath": input_fpath, "task": task, "ml": True},
+                            "model": "total",
+                            "ts_version": get_version(),
+                        }
+
                         layers = ["full_picture", "l3", "glut_to_c6"]
-                        for layer in layers:
+                        layer_results: dict[str, dict] = {}
+                        for i, layer in enumerate(layers):
                             calculation = self.calc_size(input_fpath, segmentation_img, label_map_dict, layer)
+                            layer_results[layer] = calculation
                             if all(v is None for v in calculation.values()):
-                                break  # seg missing or arms beside body — same result for all layers
+                                # seg missing / arms beside body / missing landmarks — the fallback is the
+                                # same for every layer, so record it for the remaining layers too and stop.
+                                # Persisting the (empty) glut_to_c6 result is essential: the completeness
+                                # check above keys on glut_to_c6, so without it the study is treated as
+                                # "stats missing" and the whole-body seg is reloaded (~10s) on every re-run,
+                                # never converging.
+                                for remaining in layers[i:]:
+                                    layer_results[remaining] = calculation
+                                break
 
-                            seg_metadata = {
-                                "settings": {"input_fpath": input_fpath, "task": task, "ml": True},
-                                "model": "total",
-                                "ts_version": get_version(),
-                            }
-                            if json_exists and patient_info is not None:
-                                series_name = next(
-                                    iter(patient_info["Studies"][study_date]["Modalities"][modality][series_index])
-                                )
-                                analysis_dict = patient_info["Studies"][study_date]["Modalities"][modality][
-                                    series_index
-                                ][series_name].setdefault("body_composition_analysis", {})
-                                analysis_dict.update({seg_path_key: output_fpath})
-                                analysis_dict.update({metadata_key: seg_metadata})
-                                analysis_dict.setdefault(layer, {})
-                                for label, value in calculation.items():
-                                    analysis_dict[layer][label] = value
-
-                                with open(patient_info_path, "w") as f:
-                                    json.dump(patient_info, f)
-                            else:
-                                with open(f"{filename[:-7]}_muscle_fat.json", "w") as f:
-                                    json.dump(seg_metadata, f)
+                        if json_exists and patient_info is not None:
+                            series_name = next(
+                                iter(patient_info["Studies"][study_date]["Modalities"][modality][series_index])
+                            )
+                            analysis_dict = patient_info["Studies"][study_date]["Modalities"][modality][series_index][
+                                series_name
+                            ].setdefault("body_composition_analysis", {})
+                            analysis_dict[seg_path_key] = output_fpath
+                            analysis_dict[metadata_key] = seg_metadata
+                            for layer, calculation in layer_results.items():
+                                analysis_dict.setdefault(layer, {}).update(calculation)
+                            # Persist once, after all layers — each dump rewrites the whole patient_info.
+                            with open(patient_info_path, "w") as f:
+                                json.dump(patient_info, f)
+                        else:
+                            with open(os.path.join(dirpath, f"{filename[:-7]}_muscle_fat.json"), "w") as f:
+                                json.dump(seg_metadata, f)
                     else:
                         logger.info(f"CT_muscle_fat.nii.gz already exists for {patient_id}, skipping segmentation.")
 
@@ -246,6 +287,14 @@ class TotalSegmentatorMuscleFatSUL:
 
                     series_name = next(iter(data["Studies"][study_date]["Modalities"][modality][series_index]))
                     series_data = data["Studies"][study_date]["Modalities"][modality][series_index][series_name]
+                    # Record the muscle/fat segmentation path at the series level (consistent with how
+                    # CTsegPath / CTcadsPath are stored), independent of whether body-composition stats
+                    # were computed. Persist immediately, since the LBM/SUL block below may `continue`
+                    # out before the final json.dump.
+                    if os.path.isfile(output_fpath) and series_data.get(seg_path_key) != output_fpath:
+                        series_data[seg_path_key] = output_fpath
+                        with open(patient_info_path, "w") as f:
+                            json.dump(data, f)
                     # PatientWeight may be missing entirely, or stored as a string (e.g. "80", "83.0") in
                     # patient_info.json, which would make `weight * (...)` raise "can't multiply sequence by non-int".
                     patient_weight = series_data.get("DICOM", {}).get("PatientWeight")
@@ -295,6 +344,74 @@ class TotalSegmentatorMuscleFatSUL:
 
                     with open(patient_info_path, "w") as f:
                         json.dump(data, f)
+
+    def _bca_recorded(self, patient_info_path: str | os.PathLike, study_date: str, modality: str) -> bool:
+        """True if body-composition stats (``glut_to_c6``) are already stored for this study's series.
+
+        Mirrors the completeness check further down (see the ``body_composition_analysis`` /
+        ``glut_to_c6`` guard): used by the skip gate so CT-only studies are only skipped once their
+        stats have actually been computed, not merely because the segmentation file exists.
+        """
+        if not os.path.isfile(patient_info_path):
+            return False
+        try:
+            with open(patient_info_path) as f:
+                data = json.load(f)
+            # CT is always series 0 (see below); this helper is only consulted for CT-only studies.
+            series_data = next(iter(data["Studies"][study_date]["Modalities"][modality][0].values()))
+        except (KeyError, IndexError, TypeError, StopIteration, json.JSONDecodeError):
+            return False
+        return "glut_to_c6" in series_data.get("body_composition_analysis", {})
+
+    def _record_muscle_fat_path(
+        self,
+        patient_info_path: str | os.PathLike,
+        study_date: str,
+        modality: str,
+        series_index: int | None,
+        filename: str,
+        seg_path_key: str,
+        output_fpath: str | os.PathLike,
+    ) -> None:
+        """Store the muscle/fat segmentation path at the series level in patient_info.json.
+
+        Mirrors how CTsegPath / CTcadsPath are recorded. Idempotent: only writes when the key is
+        missing or stale, so it can safely backfill already-processed patients on a re-run.
+        """
+        if not os.path.isfile(output_fpath) or not os.path.isfile(patient_info_path):
+            return
+        with open(patient_info_path) as f:
+            data = json.load(f)
+
+        try:
+            series_list = data["Studies"][study_date]["Modalities"][modality]
+        except (KeyError, TypeError):
+            logger.warning(f"Cannot record {seg_path_key}: {modality} {study_date} not in {patient_info_path}.")
+            return
+
+        if series_index is None:
+            # MR: resolve the series by matching the source filename against MRPath.
+            series_index = next(
+                (
+                    idx
+                    for idx, serie in enumerate(series_list)
+                    for serie_data in serie.values()
+                    if "MRPath" in serie_data and filename in os.path.basename(serie_data["MRPath"])
+                ),
+                None,
+            )
+        if series_index is None:
+            logger.warning(f"Cannot record {seg_path_key}: no series matching {filename} in {patient_info_path}.")
+            return
+
+        series_name = next(iter(series_list[series_index]))
+        series_data = series_list[series_index][series_name]
+        if series_data.get(seg_path_key) == output_fpath:
+            return
+        series_data[seg_path_key] = output_fpath
+        with open(patient_info_path, "w") as f:
+            json.dump(data, f)
+        logger.info(f"Recorded {seg_path_key} for {study_date} in patient_info.json.")
 
     def calc_size(
         self, path: os.PathLike, fat_img: nib.Nifti1Image, labels: dict[int, str], layer: str
@@ -362,17 +479,29 @@ class TotalSegmentatorMuscleFatSUL:
         fat_data = np.asanyarray(fat_img.dataobj).copy()
 
         if layer == "l3":
-            l3 = seg_data == name_to_label["vertebrae_L3"]
-            l_min, l_max = np.argwhere(l3)[:, 0].min(), np.argwhere(l3)[:, 0].max()
+            l3_coords = np.argwhere(seg_data == name_to_label["vertebrae_L3"])
+            if l3_coords.size == 0:
+                logger.warning("vertebrae_L3 not found in segmentation; cannot define L3 layer")
+                return fallback_dict
+            l_min, l_max = l3_coords[:, 0].min(), l3_coords[:, 0].max()
             slice_mask = np.zeros_like(fat_data, dtype=bool)
             slice_mask[l_min : l_max + 1, :, :] = True
             fat_data[~slice_mask] = 0
 
         elif layer == "glut_to_c6":
             glut = np.isin(seg_data, [name_to_label["gluteus_maximus_left"], name_to_label["gluteus_maximus_right"]])
-            g_min = np.argwhere(glut)[:, 0].min()
-            c6 = seg_data == name_to_label["vertebrae_C6"]
-            c_max = np.argwhere(c6)[:, 0].max()
+            glut_coords = np.argwhere(glut)
+            c6_coords = np.argwhere(seg_data == name_to_label["vertebrae_C6"])
+            if glut_coords.size == 0 or c6_coords.size == 0:
+                missing = []
+                if glut_coords.size == 0:
+                    missing.append("gluteus_maximus")
+                if c6_coords.size == 0:
+                    missing.append("vertebrae_C6")
+                logger.warning(f"{' and '.join(missing)} not found in segmentation; cannot define glut_to_c6 layer")
+                return fallback_dict
+            g_min = glut_coords[:, 0].min()
+            c_max = c6_coords[:, 0].max()
             slice_mask = np.zeros_like(fat_data, dtype=bool)
             slice_mask[g_min : c_max + 1, :, :] = True
             fat_data[~slice_mask] = 0
