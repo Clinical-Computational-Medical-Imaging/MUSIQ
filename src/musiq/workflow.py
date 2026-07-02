@@ -1,10 +1,13 @@
 import json
 import multiprocessing as mp
 import os
+import pathlib as plb
 import platform
 import subprocess
 
 from .utils import create_logger, setup_series_keywords
+
+_REPO_ROOT = plb.Path(__file__).parent.parent.parent
 
 
 class Workflow:
@@ -13,6 +16,8 @@ class Workflow:
         input_dirpath: str,
         output_dirpath: str,
         tasks: list[str] | None = None,
+        cads_tasks: list[str] | None = None,
+        pet_metric: str | list[str] | None = None,
         ct_primary_keywords: list[str] | None = None,
         ct_secondary_keywords: list[str] | None = None,
         ct_exclusion_keywords: list[str] | None = None,
@@ -37,6 +42,7 @@ class Workflow:
                 - "radiomics": Extract radiomics features from selected series.
                 - "tumor": Compute tumor level statistics.
                 - "plot": Create visualisations.
+                - "cads": Run CADS on CT images.
             ct_primary_keywords (list[str] | None): Keywords for primary selection of CT series.
             ct_secondary_keywords (list[str] | None): Keywords for secondary selection of CT series.
             ct_exclusion_keywords (list[str] | None): Keywords to exclude CT series.
@@ -46,9 +52,14 @@ class Workflow:
             mr_primary_keywords (list[str] | None): Keywords for primary selection of MR series.
             mr_secondary_keywords (list[str] | None): Keywords for secondary selection of MR series.
             mr_exclusion_keywords (list[str] | None): Keywords to exclude MR series.
+            pet_metric (str | list[str] | None): PET metric(s) to use for radiomics and tumor computations.
+            Possible values are "SUV" and "SUL". Can pass one or both. Defaults to ["SUV", "SUL"].
         """
         self.input_dirpath = input_dirpath
         self.output_dirpath = output_dirpath
+        if pet_metric is None:
+            pet_metric = ["SUV", "SUL"]
+        self.pet_metric = pet_metric
         if tasks is None:
             tasks = [
                 "series_selection",
@@ -58,7 +69,8 @@ class Workflow:
                 "tumor",
                 "plot",
                 "moose",
-                "moose_task",
+                "muscle_fat",
+                "cads",
             ]
         else:
             tasks_error = bool(
@@ -72,7 +84,8 @@ class Workflow:
                         "tumor",
                         "plot",
                         "moose",
-                        "moose_task",
+                        "muscle_fat",
+                        "cads",
                     ]
                     for t in tasks or []
                 )
@@ -81,16 +94,50 @@ class Workflow:
                 raise ValueError(
                     "Invalid tasks specified. Possible values are: "
                     "'series_selection', 'radiomics', 'autopet', "
-                    "'totalsegmentator', 'tumor', 'plot', 'moose', 'moose_task'."
+                    "'totalsegmentator', 'tumor', 'plot', 'moose', "
+                    "'muscle_fat', 'cads'."
                 )
 
         self.series_selection = "series_selection" in (tasks or [])
         self.autopet = "autopet" in (tasks or [])
+        self.cads = "cads" in (tasks or [])
         self.totalsegmentator = "totalsegmentator" in (tasks or [])
+        self.muscle_fat = "muscle_fat" in (tasks or [])
         self.moose = "moose" in (tasks or [])
         self.radiomics = "radiomics" in (tasks or [])
         self.tumor = "tumor" in (tasks or [])
         self.plot = "plot" in (tasks or [])
+
+        cads_tasks_error = bool(
+            any(
+                t
+                not in [
+                    "551",
+                    "552",
+                    "553",
+                    "554",
+                    "555",
+                    "556",
+                    "557",
+                    "558",
+                    "559",
+                    "all",
+                    "",
+                    None,
+                ]
+                for t in cads_tasks or []
+            )
+        )
+
+        if cads_tasks_error:
+            logger.warning(
+                "Wrong input tasks for CADS model."
+                "Please use one of the following: "
+                "all, 551, 552, 553, 554, 555, 556, 557, 558, 559"
+            )
+            self.cads = False
+
+        self.cads_tasks = cads_tasks
 
         self.series_keywords = setup_series_keywords(
             ct_primary_keywords,
@@ -118,23 +165,41 @@ class Workflow:
                 series_keywords=self.series_keywords,
             ).run()
 
-        if self.autopet:
-            from .autopet_inference import AutopetInference
-
-            logger.info("\n" + "#" * 50 + "\nStarting Autopet Inference\n" + "#" * 50)
-            AutopetInference(
-                input_dirpath_processed=self.output_dirpath,
-                autopet_checkpoint_dirpath=os.path.join(
-                    "./autopet-3-model/Dataset222_AutoPETIII_2024/autoPET3_Trainer__nnUNetResEncUNetLPlansMultiTalent__3d_fullres_bs3"
-                ),
-            ).run()
-
         if self.totalsegmentator:
             from .totalsegmentator_inference import TotalSegmentatorInference
 
             logger.info("\n" + "#" * 50 + "\nStarting Total Segmentator Inference\n" + "#" * 50)
             TotalSegmentatorInference(
                 input_dirpath_processed=self.output_dirpath,
+            ).run()
+
+        if self.muscle_fat:
+            from .totalsegmentator_muscle_fat_sul import TotalSegmentatorMuscleFatSUL
+
+            logger.info("\n" + "#" * 50 + "\nStarting TotalSegmentator Muscle Fat and SUL computation\n" + "#" * 50)
+            TotalSegmentatorMuscleFatSUL(
+                input_dirpath_processed=self.output_dirpath,
+            ).run()
+
+        if self.autopet:
+            from .autopet_inference import AutopetInference
+
+            logger.info("\n" + "#" * 50 + "\nStarting Autopet Inference\n" + "#" * 50)
+            AutopetInference(
+                input_dirpath_processed=self.output_dirpath,
+                autopet_checkpoint_dirpath=_REPO_ROOT
+                / "autopet-3-model/Dataset222_AutoPETIII_2024/"
+                / "autoPET3_Trainer__nnUNetResEncUNetLPlansMultiTalent__3d_fullres_bs3",
+                pet_metric=self.pet_metric,
+            ).run()
+
+        if self.cads:
+            from .cads_inference import CadsInference
+
+            logger.info("\n" + "#" * 50 + "\nStarting CADS Inference\n" + "#" * 50)
+            CadsInference(
+                input_dirpath_processed=self.output_dirpath,
+                tasks=self.cads_tasks,
             ).run()
 
         if self.moose:
@@ -168,6 +233,7 @@ class Workflow:
             logger.info("\n" + "#" * 50 + "\nStarting Radiomics Computation\n" + "#" * 50)
             RadiomicsExtractor(
                 input_dirpath_processed=self.output_dirpath,
+                pet_metric=self.pet_metric,
             ).run()
 
         if self.tumor:
@@ -176,6 +242,7 @@ class Workflow:
             logger.info("\n" + "#" * 50 + "\nStarting Tumor Info Extraction\n" + "#" * 50)
             TumorInfoExtraction(
                 input_dirpath_processed=self.output_dirpath,
+                pet_metric=self.pet_metric,
             ).run()
 
         logger.info("\n" + "#" * 50 + "\nStarting Cohort Info Creation\n" + "#" * 50)
@@ -221,33 +288,60 @@ def workflow_entrypoint():
         "--tasks",
         nargs="+",
         help="List of tasks to run. Possible values: series_selection, "
-        "radiomics, autopet, totalsegmentator, tumor, plot, moose, moose_task.",
+        "radiomics, autopet, totalsegmentator, tumor, plot, moose, muscle_fat, cads.",
         default=None,
     )
     parser.add_argument(
-        "--ct-primary-keywords", help="List of keywords to look for in CT study descriptions for default selection."
+        "--cads-tasks",
+        nargs="+",
+        help="List of tasks to run in the CADS model. Possible tasks (different tasks can be separated by spaces): "
+        "all 551 552 553 554 555 556 557 558 559",
+        default=None,
+    )
+    # nargs="*" so a flag passed without values yields an empty list (distinct from absent=None).
+    # Passing any keyword flag empty disables keyword filtering and selects every series — useful
+    # for anonymized cohorts whose Series/Study Description tags are empty.
+    parser.add_argument(
+        "--ct-primary-keywords",
+        nargs="*",
+        help="Keywords to look for in CT series descriptions for default selection. Pass empty to select all series.",
     )
     parser.add_argument(
         "--ct-secondary-keywords",
-        help="List of keywords to look for in CT study descriptions for alternative selection.",
+        nargs="*",
+        help="Keywords to look for in CT series descriptions for alternative selection.",
     )
-    parser.add_argument("--ct-exclusion-keywords", help="List of keywords to exclude CT studies from selection.")
+    parser.add_argument("--ct-exclusion-keywords", nargs="*", help="Keywords to exclude CT series from selection.")
     parser.add_argument(
-        "--pt-primary-keywords", help="List of keywords to look for in PT study descriptions for default selection."
+        "--pt-primary-keywords",
+        nargs="*",
+        help="Keywords to look for in PT series descriptions for default selection.",
     )
     parser.add_argument(
         "--pt-secondary-keywords",
-        help="List of keywords to look for in PT study descriptions for alternative selection.",
+        nargs="*",
+        help="Keywords to look for in PT series descriptions for alternative selection.",
     )
-    parser.add_argument("--pt-exclusion-keywords", help="List of keywords to exclude PT studies from selection.")
+    parser.add_argument("--pt-exclusion-keywords", nargs="*", help="Keywords to exclude PT series from selection.")
     parser.add_argument(
-        "--mr-primary-keywords", help="List of keywords to look for in MR study descriptions for default selection."
+        "--mr-primary-keywords",
+        nargs="*",
+        help="Keywords to look for in MR series descriptions for default selection.",
     )
     parser.add_argument(
         "--mr-secondary-keywords",
-        help="List of keywords to look for in MR study descriptions for alternative selection.",
+        nargs="*",
+        help="Keywords to look for in MR series descriptions for alternative selection.",
     )
-    parser.add_argument("--mr-exclusion-keywords", help="List of keywords to exclude MR studies from selection.")
+    parser.add_argument("--mr-exclusion-keywords", nargs="*", help="Keywords to exclude MR series from selection.")
+    parser.add_argument(
+        "--pet-metric",
+        type=str,
+        nargs="+",
+        choices=["SUV", "SUL"],
+        default=["SUV", "SUL"],
+        help="PET metric(s) to use. Pass one or both: --pet-metric SUV SUL (default: SUV SUL)",
+    )
     args = parser.parse_args()
 
     if not args.input_dirpath or not args.output_dirpath:
@@ -258,6 +352,7 @@ def workflow_entrypoint():
         input_dirpath=args.input_dirpath,
         output_dirpath=args.output_dirpath,
         tasks=args.tasks,
+        cads_tasks=args.cads_tasks,
         ct_primary_keywords=args.ct_primary_keywords,
         ct_secondary_keywords=args.ct_secondary_keywords,
         ct_exclusion_keywords=args.ct_exclusion_keywords,
@@ -267,6 +362,7 @@ def workflow_entrypoint():
         mr_primary_keywords=args.mr_primary_keywords,
         mr_secondary_keywords=args.mr_secondary_keywords,
         mr_exclusion_keywords=args.mr_exclusion_keywords,
+        pet_metric=args.pet_metric,
     ).run()
 
 

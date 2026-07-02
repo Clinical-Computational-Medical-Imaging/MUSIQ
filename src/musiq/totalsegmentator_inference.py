@@ -1,12 +1,13 @@
 import json
 import logging
 import os
+import pathlib as plb
 
 from totalsegmentator.config import get_version
 from totalsegmentator.nifti_ext_header import load_multilabel_nifti
 from totalsegmentator.python_api import totalsegmentator
 
-from .utils import natural_key
+from .utils import is_mr_filename, load_mr_keywords, natural_key
 
 logger = logging.getLogger(__name__)
 
@@ -32,25 +33,37 @@ class TotalSegmentatorInference:
             return
 
         logger.info(f"Starting TotalSegmentator inference in {self.input_dirpath}")
+        mr_keywords = load_mr_keywords()
         top_dirs = [d for d in os.listdir(self.input_dirpath) if os.path.isdir(os.path.join(self.input_dirpath, d))]
         top_dirs.sort(key=natural_key)
 
         for top_dir in top_dirs:
             top_dir_path = os.path.join(self.input_dirpath, top_dir)
 
-            for dirpath, _, filenames in os.walk(top_dir_path):
+            for dirpath, dirnames, filenames in os.walk(top_dir_path):
+                rel_parts = plb.Path(os.path.relpath(dirpath, self.input_dirpath)).parts
+                if len(rel_parts) != 2:
+                    continue
+                dirnames.clear()
+                patient_id, study_date = rel_parts
+                patient_dirpath = os.path.join(self.input_dirpath, patient_id)
+
                 for filename in filenames:
+                    # Skip muscle/fat segmentations - we don't want an organ segmentation on top of them.
+                    if filename.endswith("_muscle_fat.nii.gz"):
+                        continue
+
                     # Determine if this is a CT or MR file and set parameters accordingly
                     is_ct = filename == "CT.nii.gz"
                     is_mr = (
                         filename.endswith("nii.gz")
                         and not filename.startswith(("CT", "SUV", "PET"))
                         and not filename.endswith("seg.nii.gz")
+                        and is_mr_filename(filename, mr_keywords)
                     )
 
                     if not (is_ct or is_mr):
                         continue
-                    patient_id = os.path.basename(os.path.dirname(dirpath))
                     input_fpath = os.path.join(dirpath, filename)
                     if is_ct:
                         output_fpath = os.path.join(dirpath, "CTseg.nii.gz")
@@ -69,7 +82,6 @@ class TotalSegmentatorInference:
                         logger.info(f"Output file {output_fpath} already exists.")
                         continue
 
-                    patient_dirpath = os.path.dirname(dirpath)
                     patient_info = None
                     patient_info_path = os.path.join(patient_dirpath, "patient_info.json")
                     if os.path.isfile(patient_info_path):
@@ -114,7 +126,6 @@ class TotalSegmentatorInference:
                         "labels": label_map_dict,
                     }
                     if json_exists and patient_info is not None:
-                        study_date = dirpath.split(os.sep)[-1]
                         if modality == "CT":
                             series_index = 0
                         else:
@@ -122,7 +133,7 @@ class TotalSegmentatorInference:
                             # Find the index where the filename matches the MRPath value
                             series_index = None
                             for idx, serie in enumerate(mr_series):
-                                for _serie_name, serie_data in serie.items():
+                                for serie_data in serie.values():
                                     if "MRPath" in serie_data and filename in os.path.basename(serie_data["MRPath"]):
                                         series_index = idx
                                         break
