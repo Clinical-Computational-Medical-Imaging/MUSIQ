@@ -241,20 +241,11 @@ class TotalSegmentatorMuscleFatSUL:
                             }
 
                             layers = ["full_picture", "l3", "glut_to_c6"]
-                            layer_results: dict[str, dict] = {}
-                            for i, layer in enumerate(layers):
-                                calculation = self.calc_size(input_fpath, segmentation_img, label_map_dict, layer)
-                                layer_results[layer] = calculation
-                                if all(v is None for v in calculation.values()):
-                                    # seg missing / arms beside body / missing landmarks — the fallback is the
-                                    # same for every layer, so record it for the remaining layers too and stop.
-                                    # Persisting the (empty) glut_to_c6 result is essential: the completeness
-                                    # check above keys on glut_to_c6, so without it the study is treated as
-                                    # "stats missing" and the whole-body seg is reloaded (~10s) on every re-run,
-                                    # never converging.
-                                    for remaining in layers[i:]:
-                                        layer_results[remaining] = calculation
-                                    break
+                            # calc_size loads the base image + whole-body seg once and measures every
+                            # layer in a single pass. A fallback (missing seg / arms beside body /
+                            # missing landmark) is recorded for the affected layers so the completeness
+                            # check above stays satisfied and re-runs don't reload and recompute (~10s).
+                            layer_results = self.calc_size(input_fpath, segmentation_img, label_map_dict, layers)
 
                             if json_exists and patient_info is not None:
                                 series_name = next(
@@ -433,36 +424,40 @@ class TotalSegmentatorMuscleFatSUL:
         logger.info(f"Recorded {seg_path_key} for {study_date} in patient_info.json.")
 
     def calc_size(
-        self, path: os.PathLike, fat_img: nib.Nifti1Image, labels: dict[int, str], layer: str
-    ) -> dict[float, float, float]:
-        """
-        Calculate the volume (in ml) of each label in a segmentation and
-        compute total fat and muscle percentages relative to the whole scan.
+        self, path: os.PathLike, fat_img: nib.Nifti1Image, labels: dict[int, str], layers: list[str]
+    ) -> dict[str, dict]:
+        """Compute body-composition stats (label volumes + fat/muscle %) for each requested layer.
+
+        The base image and the whole-body 'total' segmentation are layer-independent, so they are
+        loaded — and the arms-beside-body check run — once here, then reused for every layer. (The
+        previous implementation took a single ``layer`` and reloaded both from disk on every call.)
 
         Args:
-            path (os.PathLike): Path to the original CT/MR NIfTI image.
-            img (nib.Nifti1Image): Segmentation NIfTI image.
-            labels (dict[int, str]): Mapping of label numbers to label names.
+            path: Path to the original CT/MR NIfTI image.
+            fat_img: The muscle/fat segmentation image (already loaded).
+            labels: Mapping of label numbers to names for ``fat_img``.
+            layers: Layers to measure, e.g. ``["full_picture", "l3", "glut_to_c6"]``.
 
         Returns:
-            dict[str, float]: Dictionary with volume per label (ml) and
-                    total fat/muscle percentages to the body volume (%)
-                    muscle/fat ratio.
+            ``{layer: result_dict}``. A condition that invalidates every layer (missing 'total'
+            segmentation, or arms beside the body) maps all layers to the fallback. A per-layer
+            landmark miss (e.g. no L3) fills that layer and the remaining ones with the fallback,
+            mirroring the original break-on-first-fallback behavior.
         """
-        fallback_dict = {"total_fat_in_%": None, "total_muscle_in_%": None, "muscle_fat_ratio": None}
+        fallback = {"total_fat_in_%": None, "total_muscle_in_%": None, "muscle_fat_ratio": None}
+        all_fallback = {layer: dict(fallback) for layer in layers}
+
         seg_path = total_seg_path(path)
         if not os.path.isfile(seg_path):
             logger.error(f"{seg_path} is missing. Please run TotalSegmentator task='total' first.")
-            return fallback_dict
+            return all_fallback
 
         base_img = nib.load(path)
         total_seg_img, label_map_dict = load_multilabel_nifti(seg_path)
-
         seg_data = total_seg_img.get_fdata().astype(int)
 
         if base_img.shape != total_seg_img.shape:
             logger.error("Shape mismatch!")
-
         if not np.allclose(base_img.affine, total_seg_img.affine):
             logger.warning("Affine mismatch!")
 
@@ -480,80 +475,74 @@ class TotalSegmentatorMuscleFatSUL:
             logger.error("No humerus found")
         else:
             coords_h = np.c_[coords, np.ones(len(coords))]
-            hum_coords = coords_h @ affine.T
-            hum_coords = hum_coords[:, :3]
-            hum_z_min = np.percentile(hum_coords[:, z_axis], 5)
+            hum_z_min = np.percentile((coords_h @ affine.T)[:, z_axis], 5)
 
-            t4 = seg_data == name_to_label["vertebrae_T4"]
-            t4_coords = np.argwhere(t4)
+            t4_coords = np.argwhere(seg_data == name_to_label["vertebrae_T4"])
             coords_h_t4 = np.c_[t4_coords, np.ones(len(t4_coords))]
-            t4_world = coords_h_t4 @ affine.T
-            t4_world = t4_world[:, :3]
-            t4_z_max = np.percentile(t4_world[:, z_axis], 95)
+            t4_z_max = np.percentile((coords_h_t4 @ affine.T)[:, z_axis], 95)
 
             if hum_z_min < t4_z_max - 100:
                 logger.warning("Arms are beside the body")
-                return fallback_dict
+                return all_fallback
 
-        fat_data = np.asanyarray(fat_img.dataobj).copy()
+        voxel_volume = np.prod(fat_img.header.get_zooms())
+        fat_full = np.asanyarray(fat_img.dataobj)
+        total_vol = np.sum(np.asanyarray(base_img.dataobj) > -1000) * voxel_volume / 1000
 
-        if layer == "l3":
-            l3_coords = np.argwhere(seg_data == name_to_label["vertebrae_L3"])
-            if l3_coords.size == 0:
-                logger.warning("vertebrae_L3 not found in segmentation; cannot define L3 layer")
-                return fallback_dict
-            l_min, l_max = l3_coords[:, 0].min(), l3_coords[:, 0].max()
-            slice_mask = np.zeros_like(fat_data, dtype=bool)
-            slice_mask[l_min : l_max + 1, :, :] = True
-            fat_data[~slice_mask] = 0
+        results: dict[str, dict] = {}
+        for i, layer in enumerate(layers):
+            fat_data = fat_full.copy()
 
-        elif layer == "glut_to_c6":
-            glut = np.isin(seg_data, [name_to_label["gluteus_maximus_left"], name_to_label["gluteus_maximus_right"]])
-            glut_coords = np.argwhere(glut)
-            c6_coords = np.argwhere(seg_data == name_to_label["vertebrae_C6"])
-            if glut_coords.size == 0 or c6_coords.size == 0:
-                missing = []
-                if glut_coords.size == 0:
-                    missing.append("gluteus_maximus")
-                if c6_coords.size == 0:
-                    missing.append("vertebrae_C6")
-                logger.warning(f"{' and '.join(missing)} not found in segmentation; cannot define glut_to_c6 layer")
-                return fallback_dict
-            g_min = glut_coords[:, 0].min()
-            c_max = c6_coords[:, 0].max()
-            slice_mask = np.zeros_like(fat_data, dtype=bool)
-            slice_mask[g_min : c_max + 1, :, :] = True
-            fat_data[~slice_mask] = 0
+            if layer == "l3":
+                l3_coords = np.argwhere(seg_data == name_to_label["vertebrae_L3"])
+                if l3_coords.size == 0:
+                    logger.warning("vertebrae_L3 not found in segmentation; cannot define L3 layer")
+                    results.update({rem: dict(fallback) for rem in layers[i:]})
+                    break
+                l_min, l_max = l3_coords[:, 0].min(), l3_coords[:, 0].max()
+                fat_data[:l_min] = 0
+                fat_data[l_max + 1 :] = 0
 
-        voxel_spacing = fat_img.header.get_zooms()
-        voxel_volume = np.prod(voxel_spacing)
+            elif layer == "glut_to_c6":
+                glut = np.isin(
+                    seg_data, [name_to_label["gluteus_maximus_left"], name_to_label["gluteus_maximus_right"]]
+                )
+                glut_coords = np.argwhere(glut)
+                c6_coords = np.argwhere(seg_data == name_to_label["vertebrae_C6"])
+                if glut_coords.size == 0 or c6_coords.size == 0:
+                    missing = []
+                    if glut_coords.size == 0:
+                        missing.append("gluteus_maximus")
+                    if c6_coords.size == 0:
+                        missing.append("vertebrae_C6")
+                    logger.warning(f"{' and '.join(missing)} not found in segmentation; cannot define glut_to_c6 layer")
+                    results.update({rem: dict(fallback) for rem in layers[i:]})
+                    break
+                g_min = glut_coords[:, 0].min()
+                c_max = c6_coords[:, 0].max()
+                fat_data[:g_min] = 0
+                fat_data[c_max + 1 :] = 0
 
-        base_data = np.asanyarray(base_img.dataobj)
-        labeled_data = fat_data
+            unique, counts = np.unique(fat_data, return_counts=True)
+            label_counts = dict(zip(unique, counts, strict=False))
 
-        base_mask = base_data > -1000
-        total_vol = np.sum(base_mask) * voxel_volume / 1000
-        unique, counts = np.unique(labeled_data, return_counts=True)
-        label_counts = dict(zip(unique, counts, strict=False))
+            result_dict = {}
+            total_fat = 0
+            total_muscle = 0
+            for num, label in labels.items():
+                vols = label_counts.get(num, 0) * voxel_volume / 1000
+                result_dict[f"{label}_in_ml"] = vols
+                if label.endswith("fat"):
+                    total_fat += vols
+                elif label.endswith("muscle"):
+                    total_muscle += vols
 
-        vol = {}
-        for num, label in labels.items():
-            vol[label] = label_counts.get(num, 0) * voxel_volume / 1000
+            result_dict["total_fat_in_%"] = total_fat / total_vol * 100
+            result_dict["total_muscle_in_%"] = total_muscle / total_vol * 100
+            result_dict["muscle_fat_ratio"] = total_muscle / total_fat if total_fat > 0 else None
+            results[layer] = result_dict
 
-        result_dict = {}
-        total_fat = 0
-        total_muscle = 0
-        for label, vols in vol.items():
-            result_dict[f"{label}_in_ml"] = vols
-            if label.endswith("fat"):
-                total_fat += vols
-            elif label.endswith("muscle"):
-                total_muscle += vols
-
-        result_dict["total_fat_in_%"] = total_fat / total_vol * 100
-        result_dict["total_muscle_in_%"] = total_muscle / total_vol * 100
-        result_dict["muscle_fat_ratio"] = total_muscle / total_fat if total_fat > 0 else None
-        return result_dict
+        return results
 
     def convert_pet2sul(self, output_dirpath: str | os.PathLike, lean_body_mass: float, study_date: str) -> os.PathLike:
         """
