@@ -63,6 +63,9 @@ desktop.ini
 *.log
 *.sqlite3
 
+# Slurm Scripts
+*SLURM.sh
+
 # Optional: ignore data and generated folders
 data/
 output/
