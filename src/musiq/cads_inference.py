@@ -5,6 +5,7 @@ import pathlib as plb
 import pickle
 import shutil
 import sys
+from concurrent.futures import ProcessPoolExecutor
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "CADS"))
 
@@ -39,6 +40,89 @@ def _expand_task_deps(task_ids: list[int]) -> list[int]:
     return sorted(ids)
 
 
+# Combined-labelmap inverse (class name -> global label id), computed once at import so the
+# ProcessPool workers don't rebuild it per case.
+_LABELMAP_INV = {v: k for k, v in labelmap_all_structure.items()}
+
+
+def _restore_one_case(job: dict) -> dict:
+    """Restore + combine a single CADS case into its ``CTcads.nii.gz``.
+
+    Module-level (hence picklable) so it can run in a ProcessPoolExecutor worker — the per-case
+    work (9 label maps resampled back to original whole-body geometry) is the restore bottleneck
+    and is embarrassingly parallel across cases. Deliberately does NOT touch ``patient_info.json``:
+    studies of the same patient share one json, so concurrent writes would race — the parent
+    updates the json serially from the returned result instead. Cleanup only removes this case's
+    own staging files, so it is safe to do here.
+
+    Returns a result dict with a ``status`` in
+    {exists, no_seg, no_metadata, no_parts, error, wrote}.
+    """
+    case = job["case"]
+    dirpath = job["dirpath"]
+    seg_dir = job["seg_dir"]
+    metadata_dir = job["metadata_dir"]
+    preprocessed_dir = job["preprocessed_dir"]
+    expanded_tasks = job["expanded_tasks"]
+    num_threads = job["num_threads"]
+
+    output_fpath = os.path.join(dirpath, "CTcads.nii.gz")
+    result = {"case": case, "dirpath": dirpath, "study_date": job["study_date"], "output_fpath": output_fpath}
+    if os.path.isfile(output_fpath):
+        return {**result, "status": "exists"}
+
+    case_seg_dir = os.path.join(seg_dir, case)
+    metadata_path = os.path.join(metadata_dir, f"{case}_metadata.pkl")
+    if not os.path.isdir(case_seg_dir):
+        return {**result, "status": "no_seg"}
+    if not os.path.isfile(metadata_path):
+        return {**result, "status": "no_metadata"}
+
+    try:
+        with open(metadata_path, "rb") as f:
+            metadata_orig = pickle.load(f)
+
+        # Restore every part file to the original image geometry (in place).
+        for seg_file in os.listdir(case_seg_dir):
+            if not seg_file.endswith(".nii.gz"):
+                continue  # skip *_ERROR.log etc.
+            seg_path = os.path.join(case_seg_dir, seg_file)
+            restore_seg_in_orig_format(seg_path, seg_path, metadata_orig, num_threads_preprocessing=num_threads)
+
+        # Combine all task parts into one labelmap_all_structure segmentation. Read via dataobj
+        # (native integer dtype) rather than get_fdata() (float64) — labels are exact integers, so
+        # this cuts per-part memory ~8x, which matters when many workers run concurrently.
+        seg_combined = None
+        affine = None
+        for task_id in expanded_tasks:
+            part_path = os.path.join(case_seg_dir, f"{case}_part_{task_id}.nii.gz")
+            if not os.path.isfile(part_path):
+                continue
+            part_img = nib.load(part_path)
+            seg = np.asanyarray(part_img.dataobj)
+            if seg_combined is None:
+                seg_combined = np.zeros(seg.shape, dtype=np.uint8)
+                affine = part_img.affine
+            for class_index, class_name in map_taskid_to_labelmaps[task_id].items():
+                if class_name in except_labels_combine:
+                    continue
+                seg_combined[seg == class_index] = _LABELMAP_INV[class_name]
+
+        if seg_combined is None:
+            return {**result, "status": "no_parts"}
+
+        nib.save(nib.Nifti1Image(seg_combined, affine), output_fpath)
+    except Exception as e:  # keep one bad case from killing the whole pool
+        return {**result, "status": "error", "error": repr(e)}
+
+    # Clean up this case's intermediates (only its own files → safe under parallelism).
+    for path in (os.path.join(preprocessed_dir, f"{case}.nii.gz"), metadata_path):
+        if os.path.isfile(path):
+            os.remove(path)
+    shutil.rmtree(case_seg_dir, ignore_errors=True)
+    return {**result, "status": "wrote"}
+
+
 class CadsInference:
     """Staged CADS pipeline over the MUSIQ processed tree.
 
@@ -67,6 +151,7 @@ class CadsInference:
         use_cpu: bool = False,
         num_threads_preprocessing: int = 4,
         nr_threads_saving: int = 4,
+        restore_workers: int | None = None,
     ) -> None:
         """
         Args:
@@ -78,6 +163,9 @@ class CadsInference:
             use_cpu: Run inference on CPU instead of GPU.
             num_threads_preprocessing: Threads for (pre)processing/restoration.
             nr_threads_saving: Threads for saving segmentations.
+            restore_workers: Number of parallel worker processes for the restore stage. Defaults to
+                None → SLURM_CPUS_PER_TASK (or os.cpu_count()). The restore bottleneck is per-case
+                resampling, which parallelizes cleanly across cases.
         """
         self.input_dirpath = input_dirpath_processed
 
@@ -101,6 +189,7 @@ class CadsInference:
         self.use_cpu = use_cpu
         self.num_threads_preprocessing = num_threads_preprocessing
         self.nr_threads_saving = nr_threads_saving
+        self.restore_workers = restore_workers
 
     @staticmethod
     def _case_id(patient_id: str, study_date: str) -> str:
@@ -222,63 +311,68 @@ class CadsInference:
     # ------------------------------------------------------------------ stage 3: restore + combine (CPU)
     def restore(self) -> None:
         logger.info("[CADS restore] Restoring to original geometry and combining segmentations.")
-        labelmap_all_structure_inv = {v: k for k, v in labelmap_all_structure.items()}
         expanded_tasks = _expand_task_deps(self.task_ids)
+        cases = self._case_to_study()
 
-        for case, (dirpath, _patient_id, study_date) in self._case_to_study().items():
-            output_fpath = os.path.join(dirpath, "CTcads.nii.gz")
-            if os.path.isfile(output_fpath):
+        # Parallelize across cases: per-case resampling of 9 whole-body label maps is the
+        # bottleneck (~minutes/case) and is independent per case. Peak memory scales with the number
+        # of CONCURRENT cases (each holds full-res whole-body volumes), NOT with CPU count — running
+        # one worker per CPU OOMs on whole-body CT. So the pool size (concurrent cases) is set by
+        # restore_workers, and each worker gets cpus//workers threads so all allocated cores stay
+        # busy without inflating the concurrent-case count. Rule of thumb: budget ~8 GB per worker.
+        n_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK") or os.cpu_count() or 4)
+        n_workers = max(1, self.restore_workers or n_cpus)
+        per_worker_threads = max(1, n_cpus // n_workers)
+
+        jobs = [
+            {
+                "case": case,
+                "dirpath": dirpath,
+                "study_date": study_date,
+                "seg_dir": self.seg_dir,
+                "metadata_dir": self.metadata_dir,
+                "preprocessed_dir": self.preprocessed_dir,
+                "expanded_tasks": expanded_tasks,
+                "num_threads": per_worker_threads,
+            }
+            for case, (dirpath, _patient_id, study_date) in cases.items()
+        ]
+        logger.info(
+            f"[CADS restore] {len(jobs)} case(s) across {n_workers} worker(s) "
+            f"({per_worker_threads} thread(s) each, {n_cpus} CPUs)."
+        )
+
+        counts: dict[str, int] = {}
+
+        def _handle(res: dict) -> None:
+            counts[res["status"]] = counts.get(res["status"], 0) + 1
+            case = res["case"]
+            status = res["status"]
+            if status == "wrote":
+                logger.info(f"Wrote {res['output_fpath']}.")
+                # patient_info.json is updated here in the parent (serially): studies of one
+                # patient share a json, so parallel workers must not write it concurrently.
+                self._update_patient_info(res["dirpath"], res["study_date"], res["output_fpath"])
+            elif status == "exists":
                 logger.info(f"CTcads.nii.gz already exists for {case}, skipping restore.")
-                continue
-
-            case_seg_dir = os.path.join(self.seg_dir, case)
-            metadata_path = os.path.join(self.metadata_dir, f"{case}_metadata.pkl")
-            if not os.path.isdir(case_seg_dir):
+            elif status == "no_seg":
                 logger.warning(f"No segmentation dir for {case}; run inference first. Skipping.")
-                continue
-            if not os.path.isfile(metadata_path):
-                logger.warning(f"No metadata for {case} at {metadata_path}; cannot restore. Skipping.")
-                continue
-
-            with open(metadata_path, "rb") as f:
-                metadata_orig = pickle.load(f)
-
-            # Restore every part file to the original image geometry (in place).
-            for seg_file in os.listdir(case_seg_dir):
-                if not seg_file.endswith(".nii.gz"):
-                    continue  # skip *_ERROR.log etc.
-                seg_path = os.path.join(case_seg_dir, seg_file)
-                restore_seg_in_orig_format(
-                    seg_path, seg_path, metadata_orig, num_threads_preprocessing=self.num_threads_preprocessing
-                )
-
-            # Combine all task parts into one labelmap_all_structure segmentation.
-            seg_combined = None
-            affine = None
-            for task_id in expanded_tasks:
-                part_path = os.path.join(case_seg_dir, f"{case}_part_{task_id}.nii.gz")
-                if not os.path.isfile(part_path):
-                    logger.warning(f"Missing part file {part_path} for {case}; skipping that task in combine.")
-                    continue
-                part_img = nib.load(part_path)
-                seg = part_img.get_fdata()
-                if seg_combined is None:
-                    seg_combined = np.zeros(seg.shape, dtype=np.uint8)
-                    affine = part_img.affine
-                for class_index, class_name in map_taskid_to_labelmaps[task_id].items():
-                    if class_name in except_labels_combine:
-                        continue
-                    seg_combined[seg == class_index] = labelmap_all_structure_inv[class_name]
-
-            if seg_combined is None:
+            elif status == "no_metadata":
+                logger.warning(f"No metadata for {case}; cannot restore. Skipping.")
+            elif status == "no_parts":
                 logger.error(f"No part files could be combined for {case}; CTcads.nii.gz not written.")
-                continue
+            elif status == "error":
+                logger.error(f"Restore failed for {case}: {res.get('error')}")
 
-            nib.save(nib.Nifti1Image(seg_combined, affine), output_fpath)
-            logger.info(f"Wrote {output_fpath}.")
+        if n_workers == 1:
+            for job in jobs:
+                _handle(_restore_one_case(job))
+        else:
+            with ProcessPoolExecutor(max_workers=n_workers) as executor:
+                for res in executor.map(_restore_one_case, jobs):
+                    _handle(res)
 
-            self._update_patient_info(dirpath, study_date, output_fpath)
-            self._cleanup_case(case, case_seg_dir, metadata_path)
+        logger.info(f"[CADS restore] Done. Summary: {counts}")
 
     def _update_patient_info(self, dirpath: str, study_date: str, output_fpath: str) -> None:
         patient_dirpath = os.path.dirname(dirpath)
@@ -303,16 +397,6 @@ class CadsInference:
         ct_entry.update({"CTcadsPath": output_fpath, "CTcads_metadata": seg_metadata})
         with open(patient_info_path, "w") as f:
             json.dump(patient_info, f)
-
-    def _cleanup_case(self, case: str, case_seg_dir: str, metadata_path: str) -> None:
-        """Remove a case's intermediates once its CTcads.nii.gz exists (disk-saving auto-clean)."""
-        for path in (
-            os.path.join(self.preprocessed_dir, f"{case}.nii.gz"),
-            metadata_path,
-        ):
-            if os.path.isfile(path):
-                os.remove(path)
-        shutil.rmtree(case_seg_dir, ignore_errors=True)
 
     def run(self) -> None:
         """Run all three stages in sequence (single-node path used by the `cads` workflow task)."""
@@ -389,8 +473,19 @@ def cads_restore_entrypoint() -> None:
         "combine into CTcads.nii.gz (CPU). Run stages 1 and 2 first."
     )
     _add_common_args(parser)
+    parser.add_argument(
+        "--cads-restore-workers",
+        type=int,
+        default=None,
+        help="Parallel worker processes for restore. Default: SLURM_CPUS_PER_TASK (or CPU count).",
+    )
     args = parser.parse_args()
-    CadsInference(args.input_dirpath_processed, tasks=args.cads_tasks, work_dir=args.cads_work_dir).restore()
+    CadsInference(
+        args.input_dirpath_processed,
+        tasks=args.cads_tasks,
+        work_dir=args.cads_work_dir,
+        restore_workers=args.cads_restore_workers,
+    ).restore()
 
 
 if __name__ == "__main__":
