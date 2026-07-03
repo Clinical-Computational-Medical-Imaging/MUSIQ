@@ -29,6 +29,32 @@ def natural_key(s: str):
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", s)]
 
 
+# Top-level directories in the processed tree that are NOT patients and must be skipped
+# by every stage's patient iteration (e.g. the CADS staging dir, plot output). Iterating
+# into these wastes an os.walk over large intermediate trees and, for stages that cap the
+# number of patients (Moose), silently drops real patients.
+RESERVED_PROCESSED_DIRS = frozenset({"cads_staging", "plots"})
+
+
+def list_patient_dirs(processed_dirpath: str | os.PathLike, extra_exclude: set[str] | None = None) -> list[str]:
+    """Return the sorted patient directory names under ``processed_dirpath``.
+
+    Filters out non-directories, dotfiles, and reserved non-patient directories
+    (see ``RESERVED_PROCESSED_DIRS``, plus any ``extra_exclude``). Names are sorted
+    with :func:`natural_key` so callers get a stable, human order.
+    """
+    exclude = set(RESERVED_PROCESSED_DIRS)
+    if extra_exclude:
+        exclude |= set(extra_exclude)
+    dirs = [
+        d
+        for d in os.listdir(processed_dirpath)
+        if os.path.isdir(os.path.join(processed_dirpath, d)) and not d.startswith(".") and d not in exclude
+    ]
+    dirs.sort(key=natural_key)
+    return dirs
+
+
 def setup_series_keywords(
     ct_primary_keywords: list[str] | None = None,
     ct_secondary_keywords: list[str] | None = None,
@@ -151,13 +177,20 @@ def time_to_seconds(t: str | float | int) -> float:
 
 def create_logger(name=None) -> logging.Logger:
     """Instantiates a logger with two h andlers: one for file output and one for console output."""
-    os.makedirs("./logger", exist_ok=True)
+    # Anchor the log dir to the repo root (two levels up from this file: src/musiq/utils.py),
+    # not the cwd, so every stage/job logs to the same <repo>/logger/ regardless of where it
+    # was launched from. Suffix the filename with the SLURM job id (or PID) so concurrent jobs
+    # started in the same minute don't collide on one file.
+    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "logger")
+    os.makedirs(log_dir, exist_ok=True)
+    run_id = os.environ.get("SLURM_JOB_ID") or str(os.getpid())
+    log_path = os.path.join(log_dir, f"musiq_{datetime.now().strftime('%Y-%m-%d-%H-%M')}_{run_id}.log")
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(lineno)d - %(levelname)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         handlers=[
-            logging.FileHandler(f"./logger/musiq_{datetime.now().strftime('%Y-%m-%d-%H-%M')}.log"),
+            logging.FileHandler(log_path),
             logging.StreamHandler(sys.stdout),
         ],
     )

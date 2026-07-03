@@ -41,6 +41,8 @@ class TumorInfoExtraction:
             required_files = [petseg_fname, "CTseg.nii.gz", f"{metric}.nii.gz"]
 
             for dirpath, dirnames, _filenames in os.walk(self.input_dirpath):
+                # Don't descend into non-patient dirs (e.g. cads_staging intermediates).
+                dirnames[:] = [d for d in dirnames if d not in utils.RESERVED_PROCESSED_DIRS]
                 for subdirname in dirnames:
                     subdirpath = os.path.join(dirpath, subdirname)
                     if all(os.path.exists(os.path.join(subdirpath, f)) for f in required_files):
