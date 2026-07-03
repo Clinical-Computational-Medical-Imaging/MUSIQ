@@ -29,6 +29,32 @@ def natural_key(s: str):
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", s)]
 
 
+# Top-level directories in the processed tree that are NOT patients and must be skipped
+# by every stage's patient iteration (e.g. the CADS staging dir, plot output). Iterating
+# into these wastes an os.walk over large intermediate trees and, for stages that cap the
+# number of patients (Moose), silently drops real patients.
+RESERVED_PROCESSED_DIRS = frozenset({"cads_staging", "plots"})
+
+
+def list_patient_dirs(processed_dirpath: str | os.PathLike, extra_exclude: set[str] | None = None) -> list[str]:
+    """Return the sorted patient directory names under ``processed_dirpath``.
+
+    Filters out non-directories, dotfiles, and reserved non-patient directories
+    (see ``RESERVED_PROCESSED_DIRS``, plus any ``extra_exclude``). Names are sorted
+    with :func:`natural_key` so callers get a stable, human order.
+    """
+    exclude = set(RESERVED_PROCESSED_DIRS)
+    if extra_exclude:
+        exclude |= set(extra_exclude)
+    dirs = [
+        d
+        for d in os.listdir(processed_dirpath)
+        if os.path.isdir(os.path.join(processed_dirpath, d)) and not d.startswith(".") and d not in exclude
+    ]
+    dirs.sort(key=natural_key)
+    return dirs
+
+
 def setup_series_keywords(
     ct_primary_keywords: list[str] | None = None,
     ct_secondary_keywords: list[str] | None = None,
@@ -57,28 +83,37 @@ def setup_series_keywords(
         dict[str, dict[str, list[str]]]: A dictionary containing the series keywords for CT, PT, and MR modalities.
     """
 
-    if not any(
-        [
-            ct_primary_keywords,
-            ct_secondary_keywords,
-            ct_exclusion_keywords,
-            pt_primary_keywords,
-            pt_secondary_keywords,
-            pt_exclusion_keywords,
-            mr_primary_keywords,
-            mr_secondary_keywords,
-            mr_exclusion_keywords,
-        ]
-    ):
+    provided = [
+        ct_primary_keywords,
+        ct_secondary_keywords,
+        ct_exclusion_keywords,
+        pt_primary_keywords,
+        pt_secondary_keywords,
+        pt_exclusion_keywords,
+        mr_primary_keywords,
+        mr_secondary_keywords,
+        mr_exclusion_keywords,
+    ]
+
+    # An explicitly empty keyword list (argparse nargs="*" yields [] when a keyword flag is
+    # passed without values — distinct from None = flag absent) means "disable keyword
+    # filtering and select every series". Returning all-empty lists makes find_default_indices
+    # take its "use all series" branch. Useful for anonymized cohorts whose Series/Study
+    # Description tags are empty, so keyword matching can never select anything.
+    if any(isinstance(k, list) and len(k) == 0 for k in provided):
+        logger.warning("Empty keyword(s) provided — disabling keyword filtering; all series will be selected.")
+        return {m: {"PRIMARY": [], "SECONDARY": [], "EXCLUSION": []} for m in ("CT", "PT", "MR")}
+
+    # Always load config defaults so partially-specified keywords can be backfilled
+    # (referencing default_keywords below would otherwise be undefined when only some are given).
+    config_path = plb.Path(__file__).parent / "config.yaml"
+    if not config_path.exists():
+        raise FileNotFoundError(f"Configuration file {config_path} does not exist.")
+    with open(config_path) as file:
+        default_keywords = yaml.safe_load(file)["SERIES_KEYWORDS"]
+
+    if not any(provided):
         logger.warning("No series keywords provided. Using default keywords from config.yaml.")
-        config_path = plb.Path(__file__).parent / "config.yaml"
-        if not config_path.exists():
-            raise FileNotFoundError(f"Configuration file {config_path} does not exist.")
-
-        with open(config_path) as file:
-            default_keywords = yaml.safe_load(file)
-
-        default_keywords = default_keywords["SERIES_KEYWORDS"]
 
     return {
         "CT": {
@@ -142,13 +177,20 @@ def time_to_seconds(t: str | float | int) -> float:
 
 def create_logger(name=None) -> logging.Logger:
     """Instantiates a logger with two h andlers: one for file output and one for console output."""
-    os.makedirs("./logger", exist_ok=True)
+    # Anchor the log dir to the repo root (two levels up from this file: src/musiq/utils.py),
+    # not the cwd, so every stage/job logs to the same <repo>/logger/ regardless of where it
+    # was launched from. Suffix the filename with the SLURM job id (or PID) so concurrent jobs
+    # started in the same minute don't collide on one file.
+    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "logger")
+    os.makedirs(log_dir, exist_ok=True)
+    run_id = os.environ.get("SLURM_JOB_ID") or str(os.getpid())
+    log_path = os.path.join(log_dir, f"musiq_{datetime.now().strftime('%Y-%m-%d-%H-%M')}_{run_id}.log")
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(lineno)d - %(levelname)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         handlers=[
-            logging.FileHandler(f"./logger/musiq_{datetime.now().strftime('%Y-%m-%d-%H-%M')}.log"),
+            logging.FileHandler(log_path),
             logging.StreamHandler(sys.stdout),
         ],
     )
@@ -180,6 +222,95 @@ def run_dicom2nifti(input_folder: str | os.PathLike, output_folder: str | os.Pat
         logger.info(f"Converted {input_folder} to {output_folder}")
     except Exception as e:
         logger.error(f"Error converting {input_folder}: {e}")
+
+
+def repair_ct_affine_from_dicom(
+    nifti_path: str | os.PathLike,
+    dicom_dirpath: str | os.PathLike,
+    rel_tol: float = 0.01,
+) -> bool:
+    """Fix a CT NIfTI whose through-plane (slice) geometry was mis-derived by dcm2niix.
+
+    Some CT series omit ``SpacingBetweenSlices`` (0018,0088) — observed on Siemens NAEOTOM
+    Alpha photon-counting VMI reconstructions. dcm2niix then falls back to ``SliceThickness``
+    (0018,0050) for the slice spacing and can also pick the wrong superior-inferior sign,
+    producing a volume that is both stretched and flipped head-for-feet ("upside down").
+
+    The DICOM ``ImagePositionPatient`` values are reliable, so this recomputes the slice-axis
+    column of the affine directly from them, leaves the (correct) in-plane axes and the voxel
+    data untouched, and rewrites the file only when the existing affine actually disagrees —
+    wrong sign or spacing off by more than ``rel_tol``. Oblique / gantry-tilted series (where
+    dcm2niix's slice vector is legitimately not along the pure slice normal) are left alone.
+
+    Returns True if the file was repaired, False if it was already consistent or unverifiable.
+    """
+    nifti_path = str(nifti_path)
+    img = nib.load(nifti_path)
+    if img.ndim < 3 or img.shape[2] < 2:
+        return False  # nothing to verify for a single slice
+
+    # Collect each slice's position projected onto the slice normal (in DICOM LPS space).
+    normal_lps = None
+    projections = []
+    for entry in os.scandir(dicom_dirpath):
+        if not entry.is_file():
+            continue
+        try:
+            ds = pydicom.dcmread(entry.path, stop_before_pixels=True)
+            ipp = np.asarray(ds.ImagePositionPatient, dtype=float)
+            iop = np.asarray(ds.ImageOrientationPatient, dtype=float)
+        except Exception:
+            continue
+        if normal_lps is None:
+            normal_lps = np.cross(iop[:3], iop[3:6])
+            norm = np.linalg.norm(normal_lps)
+            if norm == 0:
+                return False
+            normal_lps = normal_lps / norm
+        projections.append(float(ipp @ normal_lps))
+
+    if normal_lps is None or len(projections) < 2:
+        return False
+
+    proj_min, proj_max = min(projections), max(projections)
+    spacing_geom = (proj_max - proj_min) / (len(projections) - 1)
+    if spacing_geom <= 0:
+        return False
+
+    # dcm2niix stores LPS as RAS by negating x and y; the slice normal transforms the same way.
+    normal_ras = np.array([-normal_lps[0], -normal_lps[1], normal_lps[2]])
+    current_col = np.asarray(img.affine[:3, 2], dtype=float)
+    current_norm = np.linalg.norm(current_col)
+    if current_norm == 0:
+        return False
+    # Only touch plain axial-along-normal series; skip oblique/sheared geometry.
+    if abs(float(current_col @ normal_ras) / current_norm) < 0.999:
+        return False
+
+    # The affine origin is voxel (0,0,0) = the slice at array index 0. Whichever geometric
+    # end it sits at tells us which way the slice axis runs.
+    origin_ras = np.asarray(img.affine[:3, 3], dtype=float)
+    proj0 = float(np.array([-origin_ras[0], -origin_ras[1], origin_ras[2]]) @ normal_lps)
+    direction = 1.0 if abs(proj0 - proj_min) <= abs(proj0 - proj_max) else -1.0
+
+    slice_vec_lps = direction * spacing_geom * normal_lps
+    slice_vec_ras = np.array([-slice_vec_lps[0], -slice_vec_lps[1], slice_vec_lps[2]])
+
+    if np.allclose(current_col, slice_vec_ras, rtol=rel_tol, atol=1e-3):
+        return False  # geometry already correct
+
+    new_affine = np.array(img.affine, dtype=float)
+    new_affine[:3, 2] = slice_vec_ras
+    logger.warning(
+        f"Repairing CT affine for {nifti_path}: slice axis {current_col.round(3).tolist()} "
+        f"-> {slice_vec_ras.round(3).tolist()} (dcm2niix used SliceThickness/wrong sign; "
+        f"true slice spacing {spacing_geom:.3f} mm derived from ImagePositionPatient)."
+    )
+    repaired = nib.Nifti1Image(np.asanyarray(img.dataobj), new_affine, img.header)
+    repaired.set_sform(new_affine, code=1)
+    repaired.set_qform(new_affine, code=1)
+    nib.save(repaired, nifti_path)
+    return True
 
 
 def run_dcm2niix(input_folder: str | os.PathLike, output_folder: str | os.PathLike, merge: bool = False) -> None:

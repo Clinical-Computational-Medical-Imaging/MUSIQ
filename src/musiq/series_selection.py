@@ -21,6 +21,7 @@ from .utils import (
     find_mr_niftis,
     make_json_safe,
     mr_nifti_exists,
+    repair_ct_affine_from_dicom,
     run_dcm2niix,
     setup_series_keywords,
 )
@@ -46,6 +47,9 @@ class SeriesSelection:
         self.input_dirpath = agnostic_path(os.path.abspath(input_dirpath))
         self.series_keywords = series_keywords
         self.patient_results = {}
+        # Cache of {patient_info.json path -> {raw series-dir basename -> recorded study key}}, used to
+        # reuse the study key a previous run already assigned when StudyDate is an anonymized placeholder.
+        self._recorded_key_cache: dict[str, dict[str, str]] = {}
         self.patient_tags = {
             "PatientName": ("0010", "0010"),
             "PatientID": ("0010", "0020"),
@@ -109,7 +113,21 @@ class SeriesSelection:
                 if f.is_file()
                 and f.name.lower() != "dicomdir"
                 and f.suffix.lower()
-                not in [".zip", ".inf", ".jar", ".icns", ".info", ".exe", ".pdf", ".txt", ".ini", ".xml", ".bmp", ".sh"]
+                not in [
+                    ".zip",
+                    ".inf",
+                    ".jar",
+                    ".icns",
+                    ".info",
+                    ".exe",
+                    ".pdf",
+                    ".txt",
+                    ".ini",
+                    ".xml",
+                    ".bmp",
+                    ".sh",
+                    ".json",
+                ]
                 and f.name != ".DS_Store"
                 and f.name != "DeepUnity Media Viewer Mac"
             ]
@@ -136,10 +154,13 @@ class SeriesSelection:
                     continue
 
                 out_path_patient_info = os.path.join(self.output_dirpath, patient_id, "patient_info.json")
-                out_path_CT = os.path.join(self.output_dirpath, patient_id, study_date, "CT.nii.gz")
-                out_path_PT = os.path.join(self.output_dirpath, patient_id, study_date, "PET.nii.gz")
-                out_path_SUV = os.path.join(self.output_dirpath, patient_id, study_date, "SUV.nii.gz")
-                mr_study_dir = plb.Path(self.output_dirpath) / patient_id / study_date
+                # Unique per-series study key; equals StudyDate unless it is an anonymized placeholder.
+                study_key = self._study_key(dir, study_date, out_path_patient_info)
+
+                out_path_CT = os.path.join(self.output_dirpath, patient_id, study_key, "CT.nii.gz")
+                out_path_PT = os.path.join(self.output_dirpath, patient_id, study_key, "PET.nii.gz")
+                out_path_SUV = os.path.join(self.output_dirpath, patient_id, study_key, "SUV.nii.gz")
+                mr_study_dir = plb.Path(self.output_dirpath) / patient_id / study_key
                 # dcm2niix names MR NIfTIs from `%p` (ProtocolName, falling back to
                 # SeriesDescription when absent), so match on that to detect an already-converted series.
                 mr_series_nii_exists = modality == "MR" and mr_nifti_exists(mr_study_dir, protocol_name, series_desc)
@@ -158,10 +179,10 @@ class SeriesSelection:
                         info = new_info
                     continue
 
-                grouped[(patient_id, study_date)].append(
+                grouped[(patient_id, study_key)].append(
                     {
                         "PatientID": patient_id,
-                        "StudyDate": study_date,
+                        "StudyDate": study_key,
                         "Modality": modality,
                         "SeriesDescription": series_desc,
                         "StudyDescription": study_desc,
@@ -176,6 +197,68 @@ class SeriesSelection:
                 logger.error(f"Failed to read DICOM: {first_file} — {e}")
                 continue
         return grouped
+
+    # DICOM "empty" date placeholders left behind by anonymizers. When StudyDate is one of these,
+    # every series of a patient would collapse onto the same study folder and overwrite each other
+    # (CT conversion writes a fixed CT.nii.gz), so we derive a unique key from the series dir name.
+    _PLACEHOLDER_DATES = {"", "00000000", "00010101", "19000101"}
+
+    def _study_key(self, series_dir: plb.Path, study_date: str | None, patient_info_path: str | os.PathLike) -> str:
+        """Return a study key unique per series.
+
+        Normally this is the DICOM StudyDate. For anonymized cohorts where StudyDate is a constant
+        placeholder, resolve the key in this order:
+
+        1. Reuse the study key a **previous run** already assigned to this series (matched by the raw
+           series directory recorded in ``patient_info.json``). This keeps re-runs idempotent even
+           when the study folders were later renamed to a recovered/real StudyDate that cannot be
+           re-derived from the anonymized data — a series already processed maps back to its existing
+           folder and is skipped rather than reprocessed into a differently-named one.
+        2. Otherwise fall back to the 14-digit YYYYMMDDhhmmss datetime embedded as the last
+           dot-separated token of the series directory name (e.g. ``...255564.20230406132841``),
+           which is distinct per series.
+        3. Falls back to StudyDate unchanged if no such token exists.
+        """
+        if study_date not in self._PLACEHOLDER_DATES:
+            return study_date  # type: ignore[return-value]
+        recorded = self._recorded_study_key(patient_info_path, series_dir)
+        if recorded is not None:
+            return recorded
+        token = series_dir.name.rsplit(".", 1)[-1]
+        if len(token) == 14 and token.isdigit():
+            return token
+        logger.warning(
+            f"StudyDate is a placeholder ({study_date!r}) and no datetime token found in "
+            f"'{series_dir.name}'; series may collide on the study folder."
+        )
+        return study_date  # type: ignore[return-value]
+
+    def _recorded_study_key(self, patient_info_path: str | os.PathLike, series_dir: plb.Path) -> str | None:
+        """Return the study key an existing patient_info.json already recorded for this series dir.
+
+        Matches on the raw series directory basename against each recorded series' ``InputDirPath``,
+        so a re-run reuses the exact (possibly renamed/recovered) study folder rather than
+        recomputing a fresh one. Returns None when there is no prior record (e.g. a new patient, or a
+        never-converted "dangling" study), so the caller falls through to the datetime-token key.
+        """
+        table = self._recorded_key_cache.get(str(patient_info_path))
+        if table is None:
+            table = {}
+            if os.path.isfile(patient_info_path):
+                try:
+                    with open(patient_info_path) as f:
+                        data = json.load(f)
+                    for study_key, study in data.get("Studies", {}).items():
+                        for series_list in study.get("Modalities", {}).values():
+                            for series_dict in series_list:
+                                for series_info in series_dict.values():
+                                    input_dirpath = series_info.get("InputDirPath")
+                                    if input_dirpath:
+                                        table[os.path.basename(str(input_dirpath).rstrip("/"))] = study_key
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.warning(f"Could not read {patient_info_path} for study-key reuse: {e}")
+            self._recorded_key_cache[str(patient_info_path)] = table
+        return table.get(series_dir.name)
 
     def get_number_of_slices(self, series_path: os.PathLike):
         number_of_slices = 0
@@ -211,11 +294,20 @@ class SeriesSelection:
             )
             user_wants_to_select = "n"
 
+        previous_patient_id = None
         for idx, ((patient_id, study_date), study_info) in enumerate(sorted(self.grouped_series.items())):
+            # Studies are sorted by (patient_id, study_date), so a patient's studies are contiguous.
+            # As soon as we move to a new patient, flush the previous one's patient_info.json so an
+            # interrupted run still leaves completed patients with valid, resumable metadata.
+            if previous_patient_id is not None and patient_id != previous_patient_id:
+                self._finalize_patient(previous_patient_id, user_flags, patient_conversion_flags)
+            previous_patient_id = patient_id
+
             if not study_info:
                 logger.warning(f"Skipping empty study: Patient ID: {patient_id} — Study Date: {study_date}")
                 continue
-            user_flags[patient_id] = []
+            if patient_id not in user_flags:
+                user_flags[patient_id] = []
             if patient_id not in patient_conversion_flags:
                 patient_conversion_flags[patient_id] = []
             logger.info(
@@ -290,26 +382,40 @@ class SeriesSelection:
                 for flag in series_conversion_flags:
                     patient_conversion_flags[patient_id].append(flag)
 
-        for patient_id in self.patient_results:
-            self.validate_output(
-                data_dict=self.patient_results[patient_id],
-                output_csv_path=os.path.join(self.output_dirpath, "validation_results.csv"),
-                user_flag=bool(any(user_flags[patient_id])),
-                conversion_flags=patient_conversion_flags.get(patient_id, []),
+        # Flush the final patient (the boundary-triggered flush above only fires on patient change).
+        if previous_patient_id is not None:
+            self._finalize_patient(previous_patient_id, user_flags, patient_conversion_flags)
+
+    def _finalize_patient(self, patient_id: str, user_flags: dict, patient_conversion_flags: dict) -> None:
+        """Validate and write one patient's patient_info.json as soon as its studies are all processed.
+
+        Writing per-patient (instead of once at the very end) means an interrupted run still leaves
+        completed patients with valid metadata, and a re-run resumes by skipping them. Merges into an
+        existing file via _merge_studies so re-runs accumulate rather than clobber.
+        """
+        if patient_id not in self.patient_results:
+            return
+
+        self.validate_output(
+            data_dict=self.patient_results[patient_id],
+            output_csv_path=os.path.join(self.output_dirpath, "validation_results.csv"),
+            user_flag=bool(any(user_flags.get(patient_id, []))),
+            conversion_flags=patient_conversion_flags.get(patient_id, []),
+        )
+
+        json_path = os.path.join(self.output_dirpath, patient_id, "patient_info.json")
+        if os.path.isfile(json_path):
+            with open(json_path) as existing_f:
+                existing_info = json.load(existing_f)
+            self.patient_results[patient_id]["Studies"] = self._merge_studies(
+                existing_info.get("Studies", {}),
+                self.patient_results[patient_id].get("Studies", {}),
             )
 
-            json_path = os.path.join(self.output_dirpath, patient_id, "patient_info.json")
-            if os.path.isfile(json_path):
-                with open(json_path) as existing_f:
-                    existing_info = json.load(existing_f)
-                self.patient_results[patient_id]["Studies"] = self._merge_studies(
-                    existing_info.get("Studies", {}),
-                    self.patient_results[patient_id].get("Studies", {}),
-                )
-
-            with open(json_path, "w") as f:
-                self.patient_results[patient_id] = make_json_safe(self.patient_results[patient_id])
-                json.dump(self.patient_results[patient_id], f)
+        os.makedirs(os.path.dirname(json_path), exist_ok=True)
+        with open(json_path, "w") as f:
+            self.patient_results[patient_id] = make_json_safe(self.patient_results[patient_id])
+            json.dump(self.patient_results[patient_id], f)
 
     def find_default_indices(self, series_list: list) -> tuple[list, bool]:
         """Find default indices based on series keywords.
@@ -482,6 +588,50 @@ class SeriesSelection:
             logger.error(f"Error processing {modality} series: {e}")
             return True, {}
 
+    def _select_ct_volume(self, tmp: plb.Path, ct_dcm_dirpath: str | os.PathLike) -> plb.Path:
+        """Pick which CT volume to keep from dcm2niix's output.
+
+        dcm2niix may emit several NIfTIs for one input directory: a gantry-tilt-corrected ``*_Eq_1``
+        version, or — when the directory bundles multiple reconstructions (e.g. two convolution
+        kernels, or an ORIGINAL/PRIMARY plus an ORIGINAL/SECONDARY series, as in the anonymized
+        whole-body cohorts) — one NIfTI per reconstruction. Preference order:
+
+        1. the gantry-tilt-corrected ``*_Eq_1`` output, if present;
+        2. ORIGINAL/PRIMARY over SECONDARY (read from each volume's JSON sidecar ``ImageType``);
+        3. the volume with the most slices (largest anatomical coverage);
+        4. largest file, then name — purely for determinism.
+
+        Never silently drops the rest: discarded volumes are logged. Raises if dcm2niix produced no
+        NIfTI (so the caller flags the series instead of crashing on an undefined variable).
+        """
+        nii_files = sorted(tmp.glob("*.nii.gz"))
+        if not nii_files:
+            raise ValueError(f"CT conversion produced no NIfTI files for {ct_dcm_dirpath}")
+        eq = [f for f in nii_files if f.name.endswith("_Eq_1.nii.gz")]
+        if eq:
+            return eq[0]
+        if len(nii_files) == 1:
+            return nii_files[0]
+
+        def _rank(f: plb.Path):
+            image_type = []
+            sidecar = f.with_suffix("").with_suffix(".json")
+            if sidecar.is_file():
+                with open(sidecar) as jf:
+                    image_type = [str(x).upper() for x in json.load(jf).get("ImageType", [])]
+            primary = "PRIMARY" in image_type and "SECONDARY" not in image_type
+            shape = nib.load(str(f)).shape
+            n_slices = shape[2] if len(shape) >= 3 else 0
+            return (primary, len(shape) < 4, n_slices, f.stat().st_size)
+
+        nii = max(nii_files, key=_rank)
+        discarded = sorted(f.name for f in nii_files if f != nii)
+        logger.warning(
+            f"dcm2niix produced {len(nii_files)} CT volumes for {ct_dcm_dirpath}; "
+            f"kept {nii.name} (shape {nib.load(str(nii)).shape}), discarded: {discarded}"
+        )
+        return nii
+
     def convert_dcm2nii_CT(self, CT_dcm_dirpath: str | os.PathLike, output_dirpath: str | os.PathLike) -> dict:
         """Conversion of CT DICOM (in the CT_dcm_path) to nifti and save in output_dirpath
 
@@ -496,23 +646,24 @@ class SeriesSelection:
         if not os.path.isfile(out_fpath):
             with tempfile.TemporaryDirectory() as tmp:  # convert CT
                 tmp = plb.Path(str(tmp))
-                dicom_tags = {}
-                # convert dicom directory to nifti
-                # (store results in temp directory)
+                # convert dicom directory to nifti (store results in temp directory)
                 run_dcm2niix(CT_dcm_dirpath, plb.Path(tmp))
-                if len(os.listdir(tmp)) == 2:
-                    nii = next(tmp.glob("*nii.gz"))
-                elif len(os.listdir(tmp)) == 3:
-                    nii = next(tmp.glob("*Eq_1.nii.gz"))
-                else:
-                    # raise ValueError("CT conversion failed")
-                    logger.info("CT conversion failed")
+                nii = self._select_ct_volume(tmp, CT_dcm_dirpath)
 
-                # copy niftis to output folder with consistent naming
-                out_fpath = os.path.join(output_dirpath, "CT.nii.gz")
+                # copy chosen nifti to output folder with consistent naming
                 shutil.copy(nii, out_fpath)
-                nii = next(tmp.glob("*json"))
-                with open(nii) as json_file:
+                # dcm2niix mis-derives the slice axis for series missing SpacingBetweenSlices
+                # (e.g. Siemens NAEOTOM Alpha VMI), producing an upside-down/stretched volume;
+                # repair the affine from the DICOM positions when it disagrees.
+                try:
+                    repair_ct_affine_from_dicom(out_fpath, CT_dcm_dirpath)
+                except Exception as e:
+                    logger.error(f"CT affine sanity-check failed for {out_fpath}: {e}")
+                # read the sidecar matching the chosen volume (same stem)
+                jsn = nii.with_suffix("").with_suffix(".json")
+                if not jsn.is_file():
+                    jsn = next(tmp.glob("*json"))
+                with open(jsn) as json_file:
                     dicom_tags = json.load(json_file)
         else:
             logger.info(f"CT NIfTI already exists at {out_fpath}")
@@ -860,30 +1011,42 @@ def series_selection_entrypoint():
     parser = argparse.ArgumentParser(description="Selection of DICOM series for conversion to NIfTI format.")
     parser.add_argument("--input-dir", help="Path to PET/CT input directory.", required=True)
     parser.add_argument("--output-dir", help="Path to designated output directory.", required=True)
+    # nargs="*" so a flag passed without values yields an empty list (distinct from absent=None).
+    # Passing any keyword flag empty disables keyword filtering and selects every series — useful
+    # for anonymized cohorts whose Series/Study Description tags are empty.
     parser.add_argument(
-        "--ct-primary-keywords", help="List of keywords to look for in CT study descriptions for default selection."
+        "--ct-primary-keywords",
+        nargs="*",
+        help="Keywords to look for in CT series descriptions for default selection. Pass empty to select all series.",
     )
     parser.add_argument(
         "--ct-secondary-keywords",
-        help="List of keywords to look for in CT study descriptions for alternative selection.",
+        nargs="*",
+        help="Keywords to look for in CT series descriptions for alternative selection.",
     )
-    parser.add_argument("--ct-exclusion-keywords", help="List of keywords to exclude CT studies from selection.")
+    parser.add_argument("--ct-exclusion-keywords", nargs="*", help="Keywords to exclude CT series from selection.")
     parser.add_argument(
-        "--pt-primary-keywords", help="List of keywords to look for in PT study descriptions for default selection."
+        "--pt-primary-keywords",
+        nargs="*",
+        help="Keywords to look for in PT series descriptions for default selection.",
     )
     parser.add_argument(
         "--pt-secondary-keywords",
-        help="List of keywords to look for in PT study descriptions for alternative selection.",
+        nargs="*",
+        help="Keywords to look for in PT series descriptions for alternative selection.",
     )
-    parser.add_argument("--pt-exclusion-keywords", help="List of keywords to exclude PT studies from selection.")
+    parser.add_argument("--pt-exclusion-keywords", nargs="*", help="Keywords to exclude PT series from selection.")
     parser.add_argument(
-        "--mr-primary-keywords", help="List of keywords to look for in MR study descriptions for default selection."
+        "--mr-primary-keywords",
+        nargs="*",
+        help="Keywords to look for in MR series descriptions for default selection.",
     )
     parser.add_argument(
         "--mr-secondary-keywords",
-        help="List of keywords to look for in MR study descriptions for alternative selection.",
+        nargs="*",
+        help="Keywords to look for in MR series descriptions for alternative selection.",
     )
-    parser.add_argument("--mr-exclusion-keywords", help="List of keywords to exclude MR studies from selection.")
+    parser.add_argument("--mr-exclusion-keywords", nargs="*", help="Keywords to exclude MR series from selection.")
     args = parser.parse_args()
 
     series_keywords = setup_series_keywords(

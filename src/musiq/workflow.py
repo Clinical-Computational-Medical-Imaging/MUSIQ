@@ -5,9 +5,32 @@ import pathlib as plb
 import platform
 import subprocess
 
-from .utils import create_logger, setup_series_keywords
+from .utils import RESERVED_PROCESSED_DIRS, create_logger, setup_series_keywords
 
 _REPO_ROOT = plb.Path(__file__).parent.parent.parent
+
+
+def build_cohort_info(output_dirpath: str) -> dict:
+    """Rebuild ``cohort_info.json`` fresh from every ``patient_info.json`` under ``output_dirpath``.
+
+    Walks the processed tree, merges each patient's ``patient_info.json`` keyed by ``PatientID``,
+    and overwrites ``cohort_info.json`` at the root. Does not pre-load the existing file, so patients
+    no longer on disk are dropped (a clean rebuild).
+    """
+    cohort_info = {}
+    for dirpath, dirnames, filenames in os.walk(output_dirpath):
+        # Don't descend into non-patient dirs (e.g. cads_staging intermediates).
+        dirnames[:] = [d for d in dirnames if d not in RESERVED_PROCESSED_DIRS]
+        if "patient_info.json" in filenames:
+            with open(os.path.join(dirpath, "patient_info.json")) as json_file:
+                patient_info = json.load(json_file)
+                patient_id = patient_info.get("PatientID", "Unknown")
+                cohort_info.update({patient_id: patient_info})
+
+    with open(os.path.join(output_dirpath, "cohort_info.json"), "w") as f:
+        json.dump(cohort_info, f)
+
+    return cohort_info
 
 
 class Workflow:
@@ -17,6 +40,8 @@ class Workflow:
         output_dirpath: str,
         tasks: list[str] | None = None,
         cads_tasks: list[str] | None = None,
+        cads_work_dir: str | None = None,
+        cads_cpu: bool = False,
         pet_metric: str | list[str] | None = None,
         ct_primary_keywords: list[str] | None = None,
         ct_secondary_keywords: list[str] | None = None,
@@ -27,6 +52,14 @@ class Workflow:
         mr_primary_keywords: list[str] | None = None,
         mr_secondary_keywords: list[str] | None = None,
         mr_exclusion_keywords: list[str] | None = None,
+        boa_weights_path: str | None = None,
+        boa_image: str = "shipai/boa-cli",
+        boa_fast: bool = False,
+        boa_no_pdf: bool = False,
+        boa_device: str = "gpu",
+        boa_reuse_total: bool = True,
+        boa_runtime: str = "docker",
+        boa_sif: str | None = None,
     ) -> None:
         """
         Run the MUSIQ workflow with the specified parameters.
@@ -43,6 +76,7 @@ class Workflow:
                 - "tumor": Compute tumor level statistics.
                 - "plot": Create visualisations.
                 - "cads": Run CADS on CT images.
+                - "boa": Run UMEssen BOA Body Composition Analysis (BCA) on CT images via Docker.
             ct_primary_keywords (list[str] | None): Keywords for primary selection of CT series.
             ct_secondary_keywords (list[str] | None): Keywords for secondary selection of CT series.
             ct_exclusion_keywords (list[str] | None): Keywords to exclude CT series.
@@ -70,7 +104,9 @@ class Workflow:
                 "plot",
                 "moose",
                 "muscle_fat",
+                "sul",
                 "cads",
+                "boa",
             ]
         else:
             tasks_error = bool(
@@ -85,7 +121,9 @@ class Workflow:
                         "plot",
                         "moose",
                         "muscle_fat",
+                        "sul",
                         "cads",
+                        "boa",
                     ]
                     for t in tasks or []
                 )
@@ -95,7 +133,7 @@ class Workflow:
                     "Invalid tasks specified. Possible values are: "
                     "'series_selection', 'radiomics', 'autopet', "
                     "'totalsegmentator', 'tumor', 'plot', 'moose', "
-                    "'muscle_fat', 'cads'."
+                    "'muscle_fat', 'sul', 'cads', 'boa'."
                 )
 
         self.series_selection = "series_selection" in (tasks or [])
@@ -103,10 +141,21 @@ class Workflow:
         self.cads = "cads" in (tasks or [])
         self.totalsegmentator = "totalsegmentator" in (tasks or [])
         self.muscle_fat = "muscle_fat" in (tasks or [])
+        self.sul = "sul" in (tasks or [])
         self.moose = "moose" in (tasks or [])
         self.radiomics = "radiomics" in (tasks or [])
         self.tumor = "tumor" in (tasks or [])
         self.plot = "plot" in (tasks or [])
+        self.boa = "boa" in (tasks or [])
+
+        self.boa_weights_path = boa_weights_path
+        self.boa_image = boa_image
+        self.boa_fast = boa_fast
+        self.boa_no_pdf = boa_no_pdf
+        self.boa_device = boa_device
+        self.boa_reuse_total = boa_reuse_total
+        self.boa_runtime = boa_runtime
+        self.boa_sif = boa_sif
 
         cads_tasks_error = bool(
             any(
@@ -138,6 +187,8 @@ class Workflow:
             self.cads = False
 
         self.cads_tasks = cads_tasks
+        self.cads_work_dir = cads_work_dir
+        self.cads_cpu = cads_cpu
 
         self.series_keywords = setup_series_keywords(
             ct_primary_keywords,
@@ -174,11 +225,35 @@ class Workflow:
             ).run()
 
         if self.muscle_fat:
-            from .totalsegmentator_muscle_fat_sul import TotalSegmentatorMuscleFatSUL
+            from .totalsegmentator_muscle_fat import TotalSegmentatorMuscleFat
 
-            logger.info("\n" + "#" * 50 + "\nStarting TotalSegmentator Muscle Fat and SUL computation\n" + "#" * 50)
-            TotalSegmentatorMuscleFatSUL(
+            logger.info("\n" + "#" * 50 + "\nStarting TotalSegmentator Muscle Fat computation\n" + "#" * 50)
+            TotalSegmentatorMuscleFat(
                 input_dirpath_processed=self.output_dirpath,
+            ).run()
+
+        if self.sul:
+            from .sul_computation import SulInference
+
+            logger.info("\n" + "#" * 50 + "\nStarting SUL computation\n" + "#" * 50)
+            SulInference(
+                input_dirpath_processed=self.output_dirpath,
+            ).run()
+
+        if self.boa:
+            from .boa_inference import BoaInference
+
+            logger.info("\n" + "#" * 50 + "\nStarting BOA Body Composition Analysis\n" + "#" * 50)
+            BoaInference(
+                input_dirpath_processed=self.output_dirpath,
+                weights_dirpath=self.boa_weights_path,
+                image=self.boa_image,
+                fast_bca=self.boa_fast,
+                no_pdf=self.boa_no_pdf,
+                device=self.boa_device,
+                reuse_total=self.boa_reuse_total,
+                runtime=self.boa_runtime,
+                sif_path=self.boa_sif,
             ).run()
 
         if self.autopet:
@@ -200,6 +275,8 @@ class Workflow:
             CadsInference(
                 input_dirpath_processed=self.output_dirpath,
                 tasks=self.cads_tasks,
+                work_dir=self.cads_work_dir,
+                use_cpu=self.cads_cpu,
             ).run()
 
         if self.moose:
@@ -246,19 +323,7 @@ class Workflow:
             ).run()
 
         logger.info("\n" + "#" * 50 + "\nStarting Cohort Info Creation\n" + "#" * 50)
-        cohort_info = {}
-        if os.path.exists(os.path.join(self.output_dirpath, "cohort_info.json")):
-            with open(os.path.join(self.output_dirpath, "cohort_info.json")) as f:
-                cohort_info = json.load(f)
-        for dirpath, _, filenames in os.walk(self.output_dirpath):
-            if "patient_info.json" in filenames:
-                with open(os.path.join(dirpath, "patient_info.json")) as json_file:
-                    patient_info = json.load(json_file)
-                    patient_id = patient_info.get("PatientID", "Unknown")
-                    cohort_info.update({patient_id: patient_info})
-
-        with open(os.path.join(self.output_dirpath, "cohort_info.json"), "w") as f:
-            json.dump(cohort_info, f)
+        build_cohort_info(self.output_dirpath)
 
         if self.plot:
             from .plot_summary import PlotSummary
@@ -288,7 +353,7 @@ def workflow_entrypoint():
         "--tasks",
         nargs="+",
         help="List of tasks to run. Possible values: series_selection, "
-        "radiomics, autopet, totalsegmentator, tumor, plot, moose, muscle_fat, cads.",
+        "radiomics, autopet, totalsegmentator, tumor, plot, moose, muscle_fat, sul, cads, boa.",
         default=None,
     )
     parser.add_argument(
@@ -299,29 +364,48 @@ def workflow_entrypoint():
         default=None,
     )
     parser.add_argument(
-        "--ct-primary-keywords", help="List of keywords to look for in CT study descriptions for default selection."
+        "--cads-work-dir",
+        type=str,
+        default=None,
+        help="Staging dir for CADS intermediates. Default: <output-dirpath>/cads_staging.",
+    )
+    parser.add_argument("--cads-cpu", action="store_true", help="Run CADS inference on CPU instead of GPU.")
+    # nargs="*" so a flag passed without values yields an empty list (distinct from absent=None).
+    # Passing any keyword flag empty disables keyword filtering and selects every series — useful
+    # for anonymized cohorts whose Series/Study Description tags are empty.
+    parser.add_argument(
+        "--ct-primary-keywords",
+        nargs="*",
+        help="Keywords to look for in CT series descriptions for default selection. Pass empty to select all series.",
     )
     parser.add_argument(
         "--ct-secondary-keywords",
-        help="List of keywords to look for in CT study descriptions for alternative selection.",
+        nargs="*",
+        help="Keywords to look for in CT series descriptions for alternative selection.",
     )
-    parser.add_argument("--ct-exclusion-keywords", help="List of keywords to exclude CT studies from selection.")
+    parser.add_argument("--ct-exclusion-keywords", nargs="*", help="Keywords to exclude CT series from selection.")
     parser.add_argument(
-        "--pt-primary-keywords", help="List of keywords to look for in PT study descriptions for default selection."
+        "--pt-primary-keywords",
+        nargs="*",
+        help="Keywords to look for in PT series descriptions for default selection.",
     )
     parser.add_argument(
         "--pt-secondary-keywords",
-        help="List of keywords to look for in PT study descriptions for alternative selection.",
+        nargs="*",
+        help="Keywords to look for in PT series descriptions for alternative selection.",
     )
-    parser.add_argument("--pt-exclusion-keywords", help="List of keywords to exclude PT studies from selection.")
+    parser.add_argument("--pt-exclusion-keywords", nargs="*", help="Keywords to exclude PT series from selection.")
     parser.add_argument(
-        "--mr-primary-keywords", help="List of keywords to look for in MR study descriptions for default selection."
+        "--mr-primary-keywords",
+        nargs="*",
+        help="Keywords to look for in MR series descriptions for default selection.",
     )
     parser.add_argument(
         "--mr-secondary-keywords",
-        help="List of keywords to look for in MR study descriptions for alternative selection.",
+        nargs="*",
+        help="Keywords to look for in MR series descriptions for alternative selection.",
     )
-    parser.add_argument("--mr-exclusion-keywords", help="List of keywords to exclude MR studies from selection.")
+    parser.add_argument("--mr-exclusion-keywords", nargs="*", help="Keywords to exclude MR series from selection.")
     parser.add_argument(
         "--pet-metric",
         type=str,
@@ -329,6 +413,34 @@ def workflow_entrypoint():
         choices=["SUV", "SUL"],
         default=["SUV", "SUL"],
         help="PET metric(s) to use. Pass one or both: --pet-metric SUV SUL (default: SUV SUL)",
+    )
+    parser.add_argument(
+        "--boa-weights-path",
+        type=str,
+        default=None,
+        help="Local BOA weights directory, mounted into the BOA container at /app/weights.",
+    )
+    parser.add_argument("--boa-image", type=str, default="shipai/boa-cli", help="BOA Docker image tag.")
+    parser.add_argument("--boa-fast", action="store_true", help="Use the fast single-fold BCA variant.")
+    parser.add_argument("--boa-no-pdf", action="store_true", help="Skip the BCA PDF report (keep JSON measurements).")
+    parser.add_argument("--boa-device", type=str, default="gpu", help="BOA device: gpu, cuda or cpu.")
+    parser.add_argument(
+        "--boa-no-reuse-total",
+        action="store_true",
+        help="Let BOA compute its own total segmentation instead of reusing CTseg.nii.gz.",
+    )
+    parser.add_argument(
+        "--boa-runtime",
+        type=str,
+        default="docker",
+        choices=["docker", "apptainer"],
+        help="Container runtime for BOA (default: docker). Use 'apptainer' on HPC clusters.",
+    )
+    parser.add_argument(
+        "--boa-sif",
+        type=str,
+        default=None,
+        help="Path to the BOA Apptainer/Singularity image (.sif). Required when --boa-runtime apptainer.",
     )
     args = parser.parse_args()
 
@@ -341,6 +453,8 @@ def workflow_entrypoint():
         output_dirpath=args.output_dirpath,
         tasks=args.tasks,
         cads_tasks=args.cads_tasks,
+        cads_work_dir=args.cads_work_dir,
+        cads_cpu=args.cads_cpu,
         ct_primary_keywords=args.ct_primary_keywords,
         ct_secondary_keywords=args.ct_secondary_keywords,
         ct_exclusion_keywords=args.ct_exclusion_keywords,
@@ -351,7 +465,34 @@ def workflow_entrypoint():
         mr_secondary_keywords=args.mr_secondary_keywords,
         mr_exclusion_keywords=args.mr_exclusion_keywords,
         pet_metric=args.pet_metric,
+        boa_weights_path=args.boa_weights_path,
+        boa_image=args.boa_image,
+        boa_fast=args.boa_fast,
+        boa_no_pdf=args.boa_no_pdf,
+        boa_device=args.boa_device,
+        boa_reuse_total=not args.boa_no_reuse_total,
+        boa_runtime=args.boa_runtime,
+        boa_sif=args.boa_sif,
     ).run()
+
+
+def cohort_info_entrypoint():
+    """Entrypoint to rebuild cohort_info.json from the processed tree without running any stage."""
+    logger = create_logger("musiq.cohort_info")
+
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Rebuild cohort_info.json fresh from all patient_info.json files.")
+    parser.add_argument(
+        "--input-dirpath-processed",
+        required=True,
+        help="Path to the processed output directory (root containing the per-patient folders).",
+    )
+    args = parser.parse_args()
+
+    logger.info(f"Rebuilding cohort_info.json under {args.input_dirpath_processed}")
+    cohort_info = build_cohort_info(args.input_dirpath_processed)
+    logger.info(f"Wrote cohort_info.json with {len(cohort_info)} patient(s).")
 
 
 if __name__ == "__main__":

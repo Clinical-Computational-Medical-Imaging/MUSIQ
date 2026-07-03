@@ -8,7 +8,7 @@ import tempfile
 
 import torch
 
-from .utils import natural_key, resample_image
+from .utils import list_patient_dirs, resample_image
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +42,7 @@ class AutopetInference:
         self.pet_metrics = pet_metrics
 
     def run(self) -> None:
-        top_dirs = [d for d in os.listdir(self.input_dirpath) if os.path.isdir(os.path.join(self.input_dirpath, d))]
-        top_dirs.sort(key=natural_key)
+        top_dirs = list_patient_dirs(self.input_dirpath)
 
         for metric in self.pet_metrics:
             petseg_fname = "PETseg.nii.gz" if metric == "SUV" else "PETsegSUL.nii.gz"
