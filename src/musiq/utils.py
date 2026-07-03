@@ -177,13 +177,20 @@ def time_to_seconds(t: str | float | int) -> float:
 
 def create_logger(name=None) -> logging.Logger:
     """Instantiates a logger with two h andlers: one for file output and one for console output."""
-    os.makedirs("./logger", exist_ok=True)
+    # Anchor the log dir to the repo root (two levels up from this file: src/musiq/utils.py),
+    # not the cwd, so every stage/job logs to the same <repo>/logger/ regardless of where it
+    # was launched from. Suffix the filename with the SLURM job id (or PID) so concurrent jobs
+    # started in the same minute don't collide on one file.
+    log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "logger")
+    os.makedirs(log_dir, exist_ok=True)
+    run_id = os.environ.get("SLURM_JOB_ID") or str(os.getpid())
+    log_path = os.path.join(log_dir, f"musiq_{datetime.now().strftime('%Y-%m-%d-%H-%M')}_{run_id}.log")
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(lineno)d - %(levelname)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
         handlers=[
-            logging.FileHandler(f"./logger/musiq_{datetime.now().strftime('%Y-%m-%d-%H-%M')}.log"),
+            logging.FileHandler(log_path),
             logging.StreamHandler(sys.stdout),
         ],
     )
