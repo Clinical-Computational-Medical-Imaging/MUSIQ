@@ -43,6 +43,10 @@ class Workflow:
         cads_work_dir: str | None = None,
         cads_cpu: bool = False,
         pet_metric: str | list[str] | None = None,
+        mask_sources: list[str] | None = None,
+        label_dirpath: str | None = None,
+        label_glob: str | None = None,
+        radiomics_workers: int = 1,
         ct_primary_keywords: list[str] | None = None,
         ct_secondary_keywords: list[str] | None = None,
         ct_exclusion_keywords: list[str] | None = None,
@@ -94,6 +98,18 @@ class Workflow:
         if pet_metric is None:
             pet_metric = ["SUV", "SUL"]
         self.pet_metric = pet_metric
+        # Which mask(s) the radiomics/tumor stages compute on: "auto" (PETseg -> TumorStats[SUL]) and/or
+        # "revised" (physician label -> TumorStatsRevised). Both run sequentially, so their distinct
+        # output keys never race even under multiprocessing.
+        if mask_sources is None:
+            mask_sources = ["auto"]
+        for s in mask_sources:
+            if s not in ("auto", "revised"):
+                raise ValueError(f"mask_sources entries must be 'auto' or 'revised', got '{s}'")
+        self.mask_sources = mask_sources
+        self.label_dirpath = label_dirpath
+        self.label_glob = label_glob
+        self.radiomics_workers = radiomics_workers
         if tasks is None:
             tasks = [
                 "series_selection",
@@ -202,6 +218,17 @@ class Workflow:
             mr_exclusion_keywords,
         )
 
+    def _revised_label_kwargs(self, source: str) -> dict:
+        """Label lookup kwargs for the extractors — only meaningful for the 'revised' mask source."""
+        if source != "revised":
+            return {}
+        kwargs = {}
+        if self.label_dirpath:
+            kwargs["label_dirpath"] = self.label_dirpath
+        if self.label_glob:
+            kwargs["label_glob"] = self.label_glob
+        return kwargs
+
     def run(self) -> None:
         # Ensure output directory exists
         os.makedirs(self.output_dirpath, exist_ok=True)
@@ -308,19 +335,30 @@ class Workflow:
             from .radiomics_extraction import RadiomicsExtractor
 
             logger.info("\n" + "#" * 50 + "\nStarting Radiomics Computation\n" + "#" * 50)
-            RadiomicsExtractor(
-                input_dirpath_processed=self.output_dirpath,
-                pet_metric=self.pet_metric,
-            ).run()
+            for source in self.mask_sources:
+                # Revised runs on SUV only (the manual label is drawn once, independent of SUV/SUL).
+                metric = self.pet_metric if source == "auto" else ["SUV"]
+                RadiomicsExtractor(
+                    input_dirpath_processed=self.output_dirpath,
+                    pet_metric=metric,
+                    mask_source=source,
+                    workers=self.radiomics_workers,
+                    **self._revised_label_kwargs(source),
+                ).run()
 
         if self.tumor:
             from .tumor_info_extraction import TumorInfoExtraction
 
             logger.info("\n" + "#" * 50 + "\nStarting Tumor Info Extraction\n" + "#" * 50)
-            TumorInfoExtraction(
-                input_dirpath_processed=self.output_dirpath,
-                pet_metric=self.pet_metric,
-            ).run()
+            for source in self.mask_sources:
+                metric = self.pet_metric if source == "auto" else ["SUV"]
+                TumorInfoExtraction(
+                    input_dirpath_processed=self.output_dirpath,
+                    pet_metric=metric,
+                    mask_source=source,
+                    workers=self.radiomics_workers,
+                    **self._revised_label_kwargs(source),
+                ).run()
 
         logger.info("\n" + "#" * 50 + "\nStarting Cohort Info Creation\n" + "#" * 50)
         build_cohort_info(self.output_dirpath)
@@ -415,6 +453,39 @@ def workflow_entrypoint():
         help="PET metric(s) to use. Pass one or both: --pet-metric SUV SUL (default: SUV SUL)",
     )
     parser.add_argument(
+        "--mask-source",
+        dest="mask_sources",
+        type=str,
+        nargs="+",
+        choices=["auto", "revised"],
+        default=["auto"],
+        help="Mask(s) for radiomics/tumor: 'auto' (PETseg -> TumorStats[SUL]) and/or 'revised' "
+        "(physician label -> TumorStatsRevised, SUV only). Pass both to compute all: "
+        "--mask-source auto revised (default: auto).",
+    )
+    parser.add_argument(
+        "--label-dirpath",
+        type=str,
+        default=None,
+        help="Physician label location for --mask-source revised. Omit to look inside each study dir "
+        "(e.g. MULTIPRO PETseg_revised.nii); set to a parallel labels root to look under "
+        "<label_dirpath>/<PatientID>/ (e.g. Scheurer).",
+    )
+    parser.add_argument(
+        "--label-glob",
+        type=str,
+        default=None,
+        help="Filename pattern of the revised label for --mask-source revised (wildcards allowed), "
+        "e.g. 'PETseg_revised.nii' (default in code) or '*segmentation_Tumor.nii' (Scheurer).",
+    )
+    parser.add_argument(
+        "--radiomics-workers",
+        type=int,
+        default=1,
+        help="Parallel worker processes for the radiomics and tumor stages (patients run in parallel). "
+        "Default: 1 (serial).",
+    )
+    parser.add_argument(
         "--boa-weights-path",
         type=str,
         default=None,
@@ -465,6 +536,10 @@ def workflow_entrypoint():
         mr_secondary_keywords=args.mr_secondary_keywords,
         mr_exclusion_keywords=args.mr_exclusion_keywords,
         pet_metric=args.pet_metric,
+        mask_sources=args.mask_sources,
+        label_dirpath=args.label_dirpath,
+        label_glob=args.label_glob,
+        radiomics_workers=args.radiomics_workers,
         boa_weights_path=args.boa_weights_path,
         boa_image=args.boa_image,
         boa_fast=args.boa_fast,
