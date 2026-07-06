@@ -232,6 +232,15 @@ class RadiomicsExtractor:
             }
         spacing = get_spacing_from_niftipath(suv_fpath)
 
+        # Dmax and SDmax share the same (dissemination) computation, so memoize it to compute it at
+        # most once per study even when both metrics are missing, while keeping each metric's own skip logic.
+        _dmax_cache: dict = {}
+
+        def _dmax() -> np.float64:
+            if "v" not in _dmax_cache:
+                _dmax_cache["v"] = metrics.calculate_patient_level_dissemination(gtarray, spacing)
+            return _dmax_cache["v"]
+
         # Define all metrics to calculate
         metrics_to_calculate = {
             "SUVmean": lambda: metrics.calculate_patient_level_lesion_suvmean_suvmax(
@@ -243,10 +252,8 @@ class RadiomicsExtractor:
             "LesionCount": lambda: metrics.calculate_patient_level_lesion_count(gtarray),
             "TMTV": lambda: metrics.calculate_patient_level_tmtv(gtarray, spacing),
             "TLG": lambda: metrics.calculate_patient_level_tlg(ptarray, gtarray, spacing),
-            "Dmax": lambda: metrics.calculate_patient_level_dissemination(gtarray, spacing),
-            "SDmax": lambda: metrics.calculate_patient_level_dissemination(gtarray, spacing) / std_factor
-            if std_factor
-            else "NAN",
+            "Dmax": lambda: _dmax(),
+            "SDmax": lambda: _dmax() / std_factor if std_factor else "NAN",
             "SurfaceArea": lambda: metrics.calculate_patient_level_surface_area(gtarray, spacing),
             "MTV2.5": lambda: metrics.calculate_patient_level_mtv_psmatv(ptarray, gtarray, 2.5, spacing),
             "MTV3.0": lambda: metrics.calculate_patient_level_mtv_psmatv(ptarray, gtarray, 3.0, spacing),

@@ -6,12 +6,25 @@ from concurrent.futures import ProcessPoolExecutor
 import cc3d
 import numpy as np
 import pandas as pd
+from scipy import ndimage
 from tqdm import tqdm
 
 from . import metrics, utils
 from .radiomics_extraction import DEFAULT_LABEL_GLOB, MASK_SOURCES, resolve_mask
 
 logger = logging.getLogger(__name__)
+
+
+def _suvpeak_half_kernel(spacing_mm: float) -> int:
+    """Half-width (in voxels) of the ~1 cm^3 SUVpeak kernel along one axis.
+
+    Mirrors the kernel sizing in metrics.calculate_suvpeak_median so per-lesion crops can be padded
+    enough that the peak neighbourhood is fully contained and SUVpeak matches a full-volume computation.
+    """
+    num = max(1, int(round(10.0 / spacing_mm)))  # 10 mm = 1 cm
+    if num % 2 == 0:
+        num += 1
+    return num // 2
 
 
 class TumorInfoExtraction:
@@ -221,16 +234,30 @@ class TumorInfoExtraction:
         # Perform connected component analysis
         labeled_tumors, num_lesions = cc3d.connected_components(petseg_array, connectivity=26, return_N=True)
 
+        # Compute each lesion inside a small padded bounding box instead of scanning the full volume once
+        # per lesion. Cost then scales with total lesion size rather than num_lesions * volume, so a
+        # highly multifocal mask (thousands of components) no longer takes hours. Padding keeps results
+        # identical to a full-volume computation: >=1 voxel so marching-cubes closes the surface, and
+        # >= the SUVpeak 1 cm^3 half-kernel so the peak neighbourhood is fully contained.
+        pad = [max(1, _suvpeak_half_kernel(sp)) for sp in spacing]
+        bboxes = ndimage.find_objects(labeled_tumors)
+
         # Process each tumor
         results = []
         for i in range(1, num_lesions + 1):
-            tumor_mask = np.zeros_like(labeled_tumors)
-            tumor_mask[labeled_tumors == i] = 1
+            bbox = bboxes[i - 1]
+            if bbox is None:  # cc3d labels are contiguous 1..N, but stay safe
+                continue
+            crop = tuple(
+                slice(max(0, s.start - p), min(dim, s.stop + p))
+                for s, p, dim in zip(bbox, pad, labeled_tumors.shape, strict=True)
+            )
+            tumor_mask = (labeled_tumors[crop] == i).astype(np.uint8)
 
-            pet_metrics = utils.compute_pet_metrics(tumor_mask, suv_array, spacing)
+            pet_metrics = utils.compute_pet_metrics(tumor_mask, suv_array[crop], spacing)
             if organ_labels:
-                organ_overlap = utils.compute_tumor_organ_overlap(tumor_mask, ctsegres_array, organ_labels)
-            num_nonzero_voxels = len(np.nonzero(tumor_mask)[0])
+                organ_overlap = utils.compute_tumor_organ_overlap(tumor_mask, ctsegres_array[crop], organ_labels)
+            num_nonzero_voxels = int(tumor_mask.sum())
 
             results.append(
                 {
