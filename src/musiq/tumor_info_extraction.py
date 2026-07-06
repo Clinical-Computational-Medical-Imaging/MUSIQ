@@ -10,7 +10,12 @@ from scipy import ndimage
 from tqdm import tqdm
 
 from . import metrics, utils
-from .radiomics_extraction import DEFAULT_LABEL_GLOB, MASK_SOURCES, resolve_mask
+from .radiomics_extraction import (
+    DEFAULT_LABEL_GLOB,
+    MASK_SOURCES,
+    resample_label_to_image_grid,
+    resolve_mask,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -188,24 +193,37 @@ class TumorInfoExtraction:
 
         petseg_array = metrics.get_3darray_from_niftipath(petseg_fpath)
         suv_array = metrics.get_3darray_from_niftipath(suv_fpath)
-        # A revised (physician) label must sit on the same grid as the SUV/SUL image. When the physician
-        # segmented a different reconstruction the grids differ — skip and report rather than silently
-        # producing misaligned metrics. (Automated PETseg masks share the grid by construction.)
+        # A revised (physician) label must line up with the SUV/SUL image. Shapes can differ even when the
+        # label shares physical space (e.g. a different z-crop), so rather than rejecting on shape we
+        # resample the label onto the image grid (world space, nearest-neighbor) and only skip when the
+        # tumor falls entirely outside the image world space — a genuinely disjoint reconstruction, which
+        # resamples to empty. (Automated PETseg masks share the grid by construction, so this only affects
+        # revised masks.)
         if self.mask_source == "revised" and petseg_array.shape != suv_array.shape:
-            logger.warning(
-                "Grid mismatch for %s: Tumor label %s vs %s %s. Skipping.",
+            resampled = resample_label_to_image_grid(petseg_fpath, suv_fpath, study_dirpath)
+            if resampled is None or ((petseg_array > 0).any() and not (resampled > 0).any()):
+                logger.warning(
+                    "Grid mismatch (disjoint world space) for %s: Tumor label %s vs %s %s. Skipping.",
+                    study_dirpath,
+                    petseg_array.shape,
+                    pet_metric,
+                    suv_array.shape,
+                )
+                return {
+                    "study_dirpath": study_dirpath,
+                    "pet_metric": pet_metric,
+                    "label_path": petseg_fpath,
+                    "label_shape": str(petseg_array.shape),
+                    "image_shape": str(suv_array.shape),
+                }
+            logger.info(
+                "Revised label for %s resampled onto the %s grid (%s -> %s); tumor preserved.",
                 study_dirpath,
-                petseg_array.shape,
                 pet_metric,
+                petseg_array.shape,
                 suv_array.shape,
             )
-            return {
-                "study_dirpath": study_dirpath,
-                "pet_metric": pet_metric,
-                "label_path": petseg_fpath,
-                "label_shape": str(petseg_array.shape),
-                "image_shape": str(suv_array.shape),
-            }
+            petseg_array = resampled
         ctsegres_array = metrics.get_3darray_from_niftipath(ctsegres_fpath)
         spacing = utils.get_spacing_from_niftipath(suv_fpath)
         voxel_volume_cc = np.prod(spacing) / 1000

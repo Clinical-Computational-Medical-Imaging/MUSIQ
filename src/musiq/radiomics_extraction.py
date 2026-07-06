@@ -6,11 +6,45 @@ from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 import pandas as pd
+from nilearn.image.resampling import BoundingBoxError
 
 from . import metrics
-from .utils import RESERVED_PROCESSED_DIRS, get_spacing_from_niftipath, make_json_safe
+from .utils import RESERVED_PROCESSED_DIRS, get_spacing_from_niftipath, make_json_safe, resample_image
 
 logger = logging.getLogger(__name__)
+
+
+def resample_label_to_image_grid(label_fpath: str, target_fpath: str, work_dirpath: str) -> np.ndarray | None:
+    """Resample a segmentation label onto the voxel grid of ``target_fpath`` and return it as an array
+    aligned with ``metrics.get_3darray_from_niftipath(target_fpath)``, or ``None`` when the label's
+    reconstruction is geometrically disjoint from the image (no world-space overlap).
+
+    A revised (physician) label sometimes shares physical space with the PET/SUV image but sits on a
+    different voxel grid (e.g. a different z-crop), so a plain shape comparison wrongly rejects it.
+    Nearest-neighbor resampling via the affines (world space) preserves the tumor. If the two field
+    of views do not overlap at all, nilearn raises ``BoundingBoxError`` and we return ``None`` so the
+    caller can skip. The label is loaded back through the same loader used for the image so the two
+    arrays line up element-wise, and the temporary resampled file is removed afterwards.
+    """
+    tmp_fname = "_revised_label_resampled.nii.gz"
+    try:
+        resample_image(
+            source_img=label_fpath,
+            target_img=target_fpath,
+            nii_output_dirpath=work_dirpath,
+            output_fname=tmp_fname,
+            interpolation="nearest",
+            fill_value=0,
+        )
+    except BoundingBoxError:
+        return None
+    out_fpath = os.path.join(work_dirpath, tmp_fname)
+    try:
+        return metrics.get_3darray_from_niftipath(out_fpath)
+    finally:
+        if os.path.exists(out_fpath):
+            os.remove(out_fpath)
+
 
 # Radiomics can run off two mask sources, selected via ``mask_source``:
 #   "auto"    - the pipeline's automated PETseg.nii.gz / PETsegSUL.nii.gz mask inside the study dir
@@ -212,24 +246,37 @@ class RadiomicsExtractor:
 
         ptarray = metrics.get_3darray_from_niftipath(suv_fpath)
         gtarray = metrics.get_3darray_from_niftipath(petseg_fpath)
-        # A revised (physician) label must sit on the same grid as the SUV/SUL image. When the physician
-        # segmented a different reconstruction the grids differ — skip and report rather than silently
-        # producing misaligned radiomics. (Automated PETseg masks share the grid by construction.)
+        # A revised (physician) label must line up with the SUV/SUL image. Shapes can differ even when the
+        # label shares physical space (e.g. a different z-crop), so rather than rejecting on shape we
+        # resample the label onto the image grid (world space, nearest-neighbor) and only skip when the
+        # tumor falls entirely outside the image world space — a genuinely disjoint reconstruction, which
+        # resamples to empty. (Automated PETseg masks share the grid by construction, so this only affects
+        # revised masks.)
         if self.mask_source == "revised" and gtarray.shape != ptarray.shape:
-            logger.warning(
-                "Grid mismatch for %s: Tumor label %s vs %s %s. Skipping.",
+            resampled = resample_label_to_image_grid(petseg_fpath, suv_fpath, dirpath)
+            if resampled is None or ((gtarray > 0).any() and not (resampled > 0).any()):
+                logger.warning(
+                    "Grid mismatch (disjoint world space) for %s: Tumor label %s vs %s %s. Skipping.",
+                    dirpath,
+                    gtarray.shape,
+                    pet_metric,
+                    ptarray.shape,
+                )
+                return {
+                    "study_dirpath": dirpath,
+                    "pet_metric": pet_metric,
+                    "label_path": petseg_fpath,
+                    "label_shape": str(gtarray.shape),
+                    "image_shape": str(ptarray.shape),
+                }
+            logger.info(
+                "Revised label for %s resampled onto the %s grid (%s -> %s); tumor preserved.",
                 dirpath,
-                gtarray.shape,
                 pet_metric,
+                gtarray.shape,
                 ptarray.shape,
             )
-            return {
-                "study_dirpath": dirpath,
-                "pet_metric": pet_metric,
-                "label_path": petseg_fpath,
-                "label_shape": str(gtarray.shape),
-                "image_shape": str(ptarray.shape),
-            }
+            gtarray = resampled
         spacing = get_spacing_from_niftipath(suv_fpath)
 
         # Dmax and SDmax share the same (dissemination) computation, so memoize it to compute it at
