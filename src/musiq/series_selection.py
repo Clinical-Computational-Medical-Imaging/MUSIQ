@@ -872,10 +872,30 @@ class SeriesSelection:
                 dicom_tags = json.load(json_file)
         return nii_path, dicom_tags
 
+    @staticmethod
+    def _series_identity(series_dict: dict) -> str:
+        """Stable identity of a series entry, used to deduplicate across runs.
+
+        A description-less series is keyed by a fresh random ``Missing_SeriesDesc_*`` name on every
+        run, so deduplicating on that key lets re-runs accumulate a duplicate entry per run for the
+        same physical series (e.g. CT-only studies, which the "already processed" guard never skips
+        because it also requires PET/SUV). The raw ``InputDirPath`` (the series' SeriesInstanceUID
+        directory) is stable across runs, so key on its basename; fall back to the description key
+        only when InputDirPath is absent.
+        """
+        for key, info in series_dict.items():
+            if isinstance(info, dict) and info.get("InputDirPath"):
+                return os.path.basename(str(info["InputDirPath"]).rstrip("/"))
+            return key
+        return ""
+
     def _merge_studies(self, existing: dict, new: dict) -> dict:
         """Deep-merge new studies into existing ones without overwriting already-recorded series.
 
-        Merges at three levels: study date → modality → series list (deduplicated by series description key).
+        Merges at three levels: study date → modality → series list (deduplicated by stable series
+        identity, i.e. the InputDirPath basename — see ``_series_identity``). An already-recorded
+        series is kept as-is (preserving detail added by later stages); only genuinely new series
+        are appended.
         """
         merged = dict(existing)
         for study_date, new_study in new.items():
@@ -888,12 +908,12 @@ class SeriesSelection:
                 if modality not in existing_modalities:
                     existing_modalities[modality] = new_series_list
                 else:
-                    existing_keys = {key for series_dict in existing_modalities[modality] for key in series_dict}
+                    existing_ids = {self._series_identity(sd) for sd in existing_modalities[modality]}
                     for series_dict in new_series_list:
-                        for key in series_dict:
-                            if key not in existing_keys:
-                                existing_modalities[modality].append(series_dict)
-                                existing_keys.add(key)
+                        ident = self._series_identity(series_dict)
+                        if ident not in existing_ids:
+                            existing_modalities[modality].append(series_dict)
+                            existing_ids.add(ident)
             existing_study["Modalities"] = existing_modalities
             merged[study_date] = existing_study
         return merged
