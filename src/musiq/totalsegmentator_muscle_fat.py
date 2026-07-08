@@ -116,6 +116,11 @@ class TotalSegmentatorMuscleFat:
                                 seg_path_key=seg_path_key,
                                 output_fpath=output_fpath,
                             )
+                            # The body-composition stats already exist, but LBM may still be missing or
+                            # stale — e.g. PatientWeight was absent/0 when the stats were first computed and
+                            # has since been corrected. Recompute it here (cheap arithmetic, no seg reload)
+                            # so a re-run picks up the new weight instead of skipping LBM entirely.
+                            self._backfill_lbm(patient_info_path, study_date, modality, patient_id, series_index=0)
                             continue
 
                         segmentation_exists = os.path.isfile(output_fpath)
@@ -398,6 +403,54 @@ class TotalSegmentatorMuscleFat:
         with open(patient_info_path, "w") as f:
             json.dump(data, f)
         logger.info(f"Recorded {seg_path_key} for {study_date} in patient_info.json.")
+
+    def _backfill_lbm(
+        self,
+        patient_info_path: str | os.PathLike,
+        study_date: str,
+        modality: str,
+        patient_id: str,
+        series_index: int = 0,
+    ) -> None:
+        """Compute and store PatientLBM for an already-processed study, if it can be (re)derived.
+
+        Used by the skip gate: when a CT study's body-composition stats already exist we don't want to
+        redo the segmentation, but LBM may be missing or stale (e.g. PatientWeight was absent/0 at first
+        run and has since been corrected). LBM is pure arithmetic on the recorded weight and fat%, so we
+        recompute it cheaply here. Idempotent: only writes when the value is missing or actually changes.
+        """
+        if not os.path.isfile(patient_info_path):
+            return
+        with open(patient_info_path) as f:
+            data = json.load(f)
+        try:
+            series_list = data["Studies"][study_date]["Modalities"][modality]
+            series_name = next(iter(series_list[series_index]))
+            series_data = series_list[series_index][series_name]
+        except (KeyError, IndexError, TypeError, StopIteration):
+            return
+
+        patient_weight = series_data.get("DICOM", {}).get("PatientWeight")
+        if patient_weight is None:
+            return
+        try:
+            weight = float(patient_weight)
+        except (TypeError, ValueError):
+            logger.warning(f"Invalid PatientWeight {patient_weight!r} for {patient_id}, cannot backfill LBM.")
+            return
+        if weight <= 0:
+            return
+        fat_in_percent = series_data.get("body_composition_analysis", {}).get("glut_to_c6", {}).get("total_fat_in_%")
+        if fat_in_percent is None:
+            return
+
+        lean_body_mass = weight * (1 - fat_in_percent / 100)
+        if series_data.get("PatientLBM") == lean_body_mass:
+            return  # already up to date
+        series_data["PatientLBM"] = lean_body_mass
+        with open(patient_info_path, "w") as f:
+            json.dump(data, f)
+        logger.info(f"Backfilled PatientLBM ({lean_body_mass:.2f}) for {patient_id} ({study_date}).")
 
     def calc_size(
         self, path: os.PathLike, fat_img: nib.Nifti1Image, labels: dict[int, str], layers: list[str]
