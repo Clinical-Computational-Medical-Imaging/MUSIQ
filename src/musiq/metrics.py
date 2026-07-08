@@ -9,7 +9,8 @@ import cc3d
 import nibabel as nib  # nibabel needs installation
 import numpy as np
 import SimpleITK as sitk
-from joblib import Parallel, delayed
+from scipy.spatial import ConvexHull, QhullError
+from scipy.spatial.distance import pdist
 from skimage import measure
 from tqdm import tqdm
 
@@ -284,23 +285,29 @@ def calculate_patient_level_dissemination(maskarray: np.ndarray, spacing: tuple)
     """
     maskarray = maskarray.astype(np.int8)
     nonzero_voxels = np.argwhere(maskarray == 1)
+    if len(nonzero_voxels) < 2:
+        return np.float64(0.0)
 
-    def calculate_max_distance_for_voxel(i):
-        max_distance = 0
-        for j in range(i + 1, len(nonzero_voxels)):  # Avoid redundant calculations
-            distance = np.sqrt(np.sum(((nonzero_voxels[i] - nonzero_voxels[j]) * spacing) ** 2))
-            if distance > max_distance:
-                max_distance = distance
-        return max_distance
+    # The maximum pairwise distance (diameter) of a point set is always realized by two vertices of
+    # its convex hull, so we only need the hull vertices instead of every foreground voxel. This turns
+    # the old O(N^2) all-voxel loop (hours for whole-body masks with ~1e5 voxels) into hull + a small
+    # pairwise distance over a few hundred vertices (sub-second). Voxel indices are scaled to physical
+    # mm first so the Euclidean diameter matches the anisotropic-spacing distance used before.
+    points = nonzero_voxels.astype(np.float64) * np.asarray(spacing, dtype=np.float64)
+    try:
+        candidates = points[ConvexHull(points).vertices]
+    except QhullError:
+        # Degenerate (collinear/coplanar) point sets have no well-defined hull; joggle the input,
+        # and if that still fails fall back to the full point set.
+        try:
+            candidates = points[ConvexHull(points, qhull_options="QJ").vertices]
+        except QhullError:
+            candidates = points
 
-    max_distances = Parallel(n_jobs=-1, backend="threading")(
-        delayed(calculate_max_distance_for_voxel)(i) for i in tqdm(range(len(nonzero_voxels)))
-    )
-
-    dmax = max(max_distances) / 10  # converting to cm
+    dmax = float(pdist(candidates).max()) / 10  # converting to cm
     del maskarray
     del nonzero_voxels
-    return dmax
+    return np.float64(dmax)
 
 
 #%%

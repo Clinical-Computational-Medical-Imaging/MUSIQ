@@ -116,6 +116,11 @@ class TotalSegmentatorMuscleFat:
                                 seg_path_key=seg_path_key,
                                 output_fpath=output_fpath,
                             )
+                            # The body-composition stats already exist, but LBM may still be missing or
+                            # stale — e.g. PatientWeight was absent/0 when the stats were first computed and
+                            # has since been corrected. Recompute it here (cheap arithmetic, no seg reload)
+                            # so a re-run picks up the new weight instead of skipping LBM entirely.
+                            self._backfill_lbm(patient_info_path, study_date, modality, patient_id, series_index=0)
                             continue
 
                         segmentation_exists = os.path.isfile(output_fpath)
@@ -399,6 +404,54 @@ class TotalSegmentatorMuscleFat:
             json.dump(data, f)
         logger.info(f"Recorded {seg_path_key} for {study_date} in patient_info.json.")
 
+    def _backfill_lbm(
+        self,
+        patient_info_path: str | os.PathLike,
+        study_date: str,
+        modality: str,
+        patient_id: str,
+        series_index: int = 0,
+    ) -> None:
+        """Compute and store PatientLBM for an already-processed study, if it can be (re)derived.
+
+        Used by the skip gate: when a CT study's body-composition stats already exist we don't want to
+        redo the segmentation, but LBM may be missing or stale (e.g. PatientWeight was absent/0 at first
+        run and has since been corrected). LBM is pure arithmetic on the recorded weight and fat%, so we
+        recompute it cheaply here. Idempotent: only writes when the value is missing or actually changes.
+        """
+        if not os.path.isfile(patient_info_path):
+            return
+        with open(patient_info_path) as f:
+            data = json.load(f)
+        try:
+            series_list = data["Studies"][study_date]["Modalities"][modality]
+            series_name = next(iter(series_list[series_index]))
+            series_data = series_list[series_index][series_name]
+        except (KeyError, IndexError, TypeError, StopIteration):
+            return
+
+        patient_weight = series_data.get("DICOM", {}).get("PatientWeight")
+        if patient_weight is None:
+            return
+        try:
+            weight = float(patient_weight)
+        except (TypeError, ValueError):
+            logger.warning(f"Invalid PatientWeight {patient_weight!r} for {patient_id}, cannot backfill LBM.")
+            return
+        if weight <= 0:
+            return
+        fat_in_percent = series_data.get("body_composition_analysis", {}).get("glut_to_c6", {}).get("total_fat_in_%")
+        if fat_in_percent is None:
+            return
+
+        lean_body_mass = weight * (1 - fat_in_percent / 100)
+        if series_data.get("PatientLBM") == lean_body_mass:
+            return  # already up to date
+        series_data["PatientLBM"] = lean_body_mass
+        with open(patient_info_path, "w") as f:
+            json.dump(data, f)
+        logger.info(f"Backfilled PatientLBM ({lean_body_mass:.2f}) for {patient_id} ({study_date}).")
+
     def calc_size(
         self, path: os.PathLike, fat_img: nib.Nifti1Image, labels: dict[int, str], layers: list[str]
     ) -> dict[str, dict]:
@@ -465,11 +518,17 @@ class TotalSegmentatorMuscleFat:
 
         voxel_volume = np.prod(fat_img.header.get_zooms())
         fat_full = np.asanyarray(fat_img.dataobj)
-        total_vol = np.sum(np.asanyarray(base_img.dataobj) > -1000) * voxel_volume / 1000
+        # Body mask on the base image (everything denser than air). fat/muscle % is a fraction of the
+        # body volume *within the same axial range as the layer*, so the denominator is restricted to
+        # the layer's slice bounds below — not the whole scan FOV. Using the whole-scan volume made the
+        # narrower layers (l3, glut_to_c6) report systematically low fat% on whole-body scans.
+        body_mask = np.asanyarray(base_img.dataobj) > -1000
 
         results: dict[str, dict] = {}
         for i, layer in enumerate(layers):
             fat_data = fat_full.copy()
+            # Axial (array axis 0) bounds defining the layer; default is the full extent (full_picture).
+            z_lo, z_hi = 0, fat_data.shape[0] - 1
 
             if layer == "l3":
                 l3_coords = np.argwhere(seg_data == name_to_label["vertebrae_L3"])
@@ -478,6 +537,7 @@ class TotalSegmentatorMuscleFat:
                     results.update({rem: dict(fallback) for rem in layers[i:]})
                     break
                 l_min, l_max = l3_coords[:, 0].min(), l3_coords[:, 0].max()
+                z_lo, z_hi = l_min, l_max
                 fat_data[:l_min] = 0
                 fat_data[l_max + 1 :] = 0
 
@@ -498,8 +558,12 @@ class TotalSegmentatorMuscleFat:
                     break
                 g_min = glut_coords[:, 0].min()
                 c_max = c6_coords[:, 0].max()
+                z_lo, z_hi = g_min, c_max
                 fat_data[:g_min] = 0
                 fat_data[c_max + 1 :] = 0
+
+            # Body volume within the same axial range as the (masked) fat numerator.
+            total_vol = np.sum(body_mask[z_lo : z_hi + 1]) * voxel_volume / 1000
 
             unique, counts = np.unique(fat_data, return_counts=True)
             label_counts = dict(zip(unique, counts, strict=False))
@@ -515,8 +579,13 @@ class TotalSegmentatorMuscleFat:
                 elif label.endswith("muscle"):
                     total_muscle += vols
 
-            result_dict["total_fat_in_%"] = total_fat / total_vol * 100
-            result_dict["total_muscle_in_%"] = total_muscle / total_vol * 100
+            if total_vol > 0:
+                result_dict["total_fat_in_%"] = total_fat / total_vol * 100
+                result_dict["total_muscle_in_%"] = total_muscle / total_vol * 100
+            else:
+                logger.warning(f"Empty body volume for layer '{layer}'; cannot compute fat/muscle %.")
+                result_dict["total_fat_in_%"] = None
+                result_dict["total_muscle_in_%"] = None
             result_dict["muscle_fat_ratio"] = total_muscle / total_fat if total_fat > 0 else None
             results[layer] = result_dict
 
