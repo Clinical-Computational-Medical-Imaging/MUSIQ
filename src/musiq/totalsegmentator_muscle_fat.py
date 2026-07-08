@@ -518,11 +518,17 @@ class TotalSegmentatorMuscleFat:
 
         voxel_volume = np.prod(fat_img.header.get_zooms())
         fat_full = np.asanyarray(fat_img.dataobj)
-        total_vol = np.sum(np.asanyarray(base_img.dataobj) > -1000) * voxel_volume / 1000
+        # Body mask on the base image (everything denser than air). fat/muscle % is a fraction of the
+        # body volume *within the same axial range as the layer*, so the denominator is restricted to
+        # the layer's slice bounds below — not the whole scan FOV. Using the whole-scan volume made the
+        # narrower layers (l3, glut_to_c6) report systematically low fat% on whole-body scans.
+        body_mask = np.asanyarray(base_img.dataobj) > -1000
 
         results: dict[str, dict] = {}
         for i, layer in enumerate(layers):
             fat_data = fat_full.copy()
+            # Axial (array axis 0) bounds defining the layer; default is the full extent (full_picture).
+            z_lo, z_hi = 0, fat_data.shape[0] - 1
 
             if layer == "l3":
                 l3_coords = np.argwhere(seg_data == name_to_label["vertebrae_L3"])
@@ -531,6 +537,7 @@ class TotalSegmentatorMuscleFat:
                     results.update({rem: dict(fallback) for rem in layers[i:]})
                     break
                 l_min, l_max = l3_coords[:, 0].min(), l3_coords[:, 0].max()
+                z_lo, z_hi = l_min, l_max
                 fat_data[:l_min] = 0
                 fat_data[l_max + 1 :] = 0
 
@@ -551,8 +558,12 @@ class TotalSegmentatorMuscleFat:
                     break
                 g_min = glut_coords[:, 0].min()
                 c_max = c6_coords[:, 0].max()
+                z_lo, z_hi = g_min, c_max
                 fat_data[:g_min] = 0
                 fat_data[c_max + 1 :] = 0
+
+            # Body volume within the same axial range as the (masked) fat numerator.
+            total_vol = np.sum(body_mask[z_lo : z_hi + 1]) * voxel_volume / 1000
 
             unique, counts = np.unique(fat_data, return_counts=True)
             label_counts = dict(zip(unique, counts, strict=False))
@@ -568,8 +579,13 @@ class TotalSegmentatorMuscleFat:
                 elif label.endswith("muscle"):
                     total_muscle += vols
 
-            result_dict["total_fat_in_%"] = total_fat / total_vol * 100
-            result_dict["total_muscle_in_%"] = total_muscle / total_vol * 100
+            if total_vol > 0:
+                result_dict["total_fat_in_%"] = total_fat / total_vol * 100
+                result_dict["total_muscle_in_%"] = total_muscle / total_vol * 100
+            else:
+                logger.warning(f"Empty body volume for layer '{layer}'; cannot compute fat/muscle %.")
+                result_dict["total_fat_in_%"] = None
+                result_dict["total_muscle_in_%"] = None
             result_dict["muscle_fat_ratio"] = total_muscle / total_fat if total_fat > 0 else None
             results[layer] = result_dict
 
