@@ -2,21 +2,52 @@
 import pytest
 
 
+class DummyDS:
+    def __init__(
+        self,
+        patient_id,
+        study_date,
+        modality,
+        series_description,
+        study_description,
+        manufacturer,
+        protocol_name=None,
+    ):
+        self.PatientID = patient_id
+        self.StudyDate = study_date
+        self.Modality = modality
+        self.SeriesDescription = series_description
+        self.StudyDescription = study_description
+        self.Manufacturer = manufacturer
+        self.ProtocolName = protocol_name
+
+
 @pytest.fixture()
 def dummy_dicom_dataset():
-    class DummyDS:
-        def __init__(self, patientID, studyDate, modality, seriesDescription, studyDescription, manufacturer):
-            self.PatientID = patientID
-            self.StudyDate = studyDate
-            self.Modality = modality
-            self.SeriesDescription = seriesDescription
-            self.StudyDescription = studyDescription
-            self.Manufacturer = manufacturer
-
     return {
         "P001": DummyDS("P001", "20240101", "CT", "series_desc", "study_desc", "manufacturer"),
         "P002": DummyDS("P002", "20240102", "MR", "series_desc2", "study_desc2", "manufacturer2"),
     }
+
+
+@pytest.fixture()
+def make_dummy_ds():
+    """Factory for building a DummyDS with sensible defaults, overridable per test."""
+
+    def _make(
+        patient_id="P999",
+        study_date="20240101",
+        modality="CT",
+        series_description="series_desc",
+        study_description="study_desc",
+        manufacturer="manufacturer",
+        protocol_name=None,
+    ):
+        return DummyDS(
+            patient_id, study_date, modality, series_description, study_description, manufacturer, protocol_name
+        )
+
+    return _make
 
 
 @pytest.fixture()
