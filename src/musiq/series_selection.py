@@ -900,13 +900,49 @@ class SeriesSelection:
             return key
         return ""
 
+    # DICOM fields a PET (re)conversion authoritatively (re)computes. On merge these are refreshed
+    # into an already-recorded series so a corrected SUVFactor / decay reference propagates to
+    # patient_info.json, without touching other (possibly manually-recovered) DICOM tags such as
+    # PatientWeight/PatientSize. Absent from CT conversions, so refreshing a CT series is a no-op.
+    _PET_CONVERSION_DICOM_FIELDS = (
+        "SUVFactor",
+        "AcquisitionTime",
+        "DecayCorrectionReference",
+        "RadiopharmaceuticalStartTime",
+        "InjectedRadioactivity",
+        "RadionuclideHalfLife",
+    )
+
+    @classmethod
+    def _refresh_conversion_fields(cls, existing_series: dict, new_series: dict) -> None:
+        """Refresh conversion-owned DICOM fields of an already-recorded series in place.
+
+        Only the allow-listed :data:`_PET_CONVERSION_DICOM_FIELDS` are copied from the new
+        conversion, and only when present — so later-stage keys (SULPath, PETsegSULPath, ...) and
+        untouched DICOM tags are preserved. Series-name keys may differ between runs (e.g. a random
+        ``Missing_SeriesDesc_*``), so the inner dicts are taken positionally.
+        """
+        ex_inner = next(iter(existing_series.values()), None)
+        nw_inner = next(iter(new_series.values()), None)
+        if not isinstance(ex_inner, dict) or not isinstance(nw_inner, dict):
+            return
+        new_dicom = nw_inner.get("DICOM")
+        if not isinstance(new_dicom, dict):
+            return
+        ex_dicom = ex_inner.setdefault("DICOM", {})
+        for field in cls._PET_CONVERSION_DICOM_FIELDS:
+            if field in new_dicom:
+                ex_dicom[field] = new_dicom[field]
+
     def _merge_studies(self, existing: dict, new: dict) -> dict:
         """Deep-merge new studies into existing ones without overwriting already-recorded series.
 
         Merges at three levels: study date → modality → series list (deduplicated by stable series
-        identity, i.e. the InputDirPath basename — see ``_series_identity``). An already-recorded
-        series is kept as-is (preserving detail added by later stages); only genuinely new series
-        are appended.
+        identity, i.e. the InputDirPath basename — see ``_series_identity``). Genuinely new series
+        are appended. For a series that is already recorded, keys added by later stages (e.g.
+        ``SULPath``, ``PETsegSULPath``) are preserved, but the conversion-owned DICOM fields it
+        (re)computes are refreshed from the new conversion — so a corrected ``SUVFactor`` / decay
+        reference from a re-run lands in patient_info.json instead of being discarded.
         """
         merged = dict(existing)
         for study_date, new_study in new.items():
@@ -919,12 +955,14 @@ class SeriesSelection:
                 if modality not in existing_modalities:
                     existing_modalities[modality] = new_series_list
                 else:
-                    existing_ids = {self._series_identity(sd) for sd in existing_modalities[modality]}
+                    existing_by_id = {self._series_identity(sd): sd for sd in existing_modalities[modality]}
                     for series_dict in new_series_list:
                         ident = self._series_identity(series_dict)
-                        if ident not in existing_ids:
+                        if ident in existing_by_id:
+                            self._refresh_conversion_fields(existing_by_id[ident], series_dict)
+                        else:
                             existing_modalities[modality].append(series_dict)
-                            existing_ids.add(ident)
+                            existing_by_id[ident] = series_dict
             existing_study["Modalities"] = existing_modalities
             merged[study_date] = existing_study
         return merged
