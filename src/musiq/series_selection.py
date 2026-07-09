@@ -19,9 +19,11 @@ from .utils import (
     convert_pet,
     extract_dicom_data,
     find_mr_niftis,
+    list_dicom_files,
     make_json_safe,
     mr_nifti_exists,
     repair_ct_affine_from_dicom,
+    resolve_pet_decay_reference,
     run_dcm2niix,
     setup_series_keywords,
 )
@@ -682,48 +684,57 @@ class SeriesSelection:
         """
         out_pet_fpath = os.path.join(output_dirpath, "PET.nii.gz")
         out_suv_fpath = os.path.join(output_dirpath, "SUV.nii.gz")
-        first_pt_dcm = os.listdir(PET_dcm_dirpath)[0]
-        ds = pydicom.dcmread(os.path.join(PET_dcm_dirpath, first_pt_dcm))
+
+        # Read the series-constant radiopharmaceutical/patient tags from a deterministic,
+        # filtered DICOM file — never a bare os.listdir()[0], which may be a non-DICOM file
+        # or an arbitrary bed position.
+        dicom_files = list_dicom_files(PET_dcm_dirpath)
+        if not dicom_files:
+            raise FileNotFoundError(f"No DICOM files found in {PET_dcm_dirpath}")
+        ds = pydicom.dcmread(dicom_files[0])
+        seq = ds.RadiopharmaceuticalInformationSequence[0]
+        total_dose = float(seq.RadionuclideTotalDose)
+        start_time = str(seq.RadiopharmaceuticalStartTime)
+        half_life = float(seq.RadionuclideHalfLife)
+        weight = float(ds.PatientWeight)
+
+        # Decay-correction reference time. Whole-body PET AcquisitionTime (0008,0032) varies
+        # per bed position; the scanner decay-corrects the pixels to the acquisition START
+        # (SeriesTime). Using a per-slice acq time here inflated SUV by up to ~25%. Resolve
+        # the scan-start reference so the factor matches the image calibration, and so the
+        # SUL stage can reuse SUVFactor and share one reference by construction.
+        ref_time, decay_ref = resolve_pet_decay_reference(PET_dcm_dirpath, ds)
+        suv_corr_factor = calculate_suv_factor(total_dose, start_time, half_life, ref_time, weight)
+
         if os.path.isfile(out_pet_fpath) and os.path.isfile(out_suv_fpath):
             logger.info(f"PET NIfTI and SUV NIfTI already exist at {out_pet_fpath} and {out_suv_fpath}")
             dicom_tags = extract_dicom_data(plb.Path(PET_dcm_dirpath), self.dicom_tags)
-            seq = ds.RadiopharmaceuticalInformationSequence[0]
-            dicom_tags["RadiopharmaceuticalStartTime"] = seq.RadiopharmaceuticalStartTime
-            dicom_tags["InjectedRadioactivity"] = seq.RadionuclideTotalDose
-            dicom_tags["RadionuclideHalfLife"] = seq.RadionuclideHalfLife
-            return dicom_tags
         else:
-            total_dose = ds.RadiopharmaceuticalInformationSequence[0].RadionuclideTotalDose
-            start_time = ds.RadiopharmaceuticalInformationSequence[0].RadiopharmaceuticalStartTime
-            half_life = ds.RadiopharmaceuticalInformationSequence[0].RadionuclideHalfLife
-            acq_time = ds.AcquisitionTime
-            weight = ds.PatientWeight
-            suv_corr_factor = calculate_suv_factor(total_dose, start_time, half_life, acq_time, weight)
-
             with tempfile.TemporaryDirectory() as tmp:  # convert PET
                 tmp = plb.Path(str(tmp))
-                # convert dicom directory to nifti
-                # (store results in temp directory)
+                # convert dicom directory to nifti (store results in temp directory)
                 run_dcm2niix(PET_dcm_dirpath, plb.Path(tmp))
                 nii = next(tmp.glob("*nii.gz"))
                 # copy nifti to output folder with consistent naming
-                out_pet_fpath = os.path.join(output_dirpath, "PET.nii.gz")
                 shutil.copy(nii, out_pet_fpath)
-                nii = next(tmp.glob("*json"))
-                with open(nii) as json_file:
+                sidecar = next(tmp.glob("*json"))
+                with open(sidecar) as json_file:
                     dicom_tags = json.load(json_file)
 
-                dicom_tags["RadiopharmaceuticalStartTime"] = start_time
-                dicom_tags["SUVFactor"] = suv_corr_factor
+            # convert pet images to quantitative suv images and save nifti file
+            suv_pet_nii = convert_pet(nib.load(out_pet_fpath), suv_factor=suv_corr_factor)  # type: ignore
+            nib.save(img=suv_pet_nii, filename=out_suv_fpath)  # type: ignore
 
-                # convert pet images to quantitative suv images and save nifti file
-                out_suv_fpath = os.path.join(output_dirpath, "SUV.nii.gz")
-                suv_pet_nii = convert_pet(
-                    nib.load(os.path.join(output_dirpath, "PET.nii.gz")),
-                    suv_factor=suv_corr_factor,  # type: ignore
-                )
-                nib.save(img=suv_pet_nii, filename=out_suv_fpath)  # type: ignore
-            return dicom_tags
+        # Single source of truth: record the exact fields + factor + reference the SUV image
+        # was built with, so patient_info.json stays consistent with SUV.nii.gz on re-runs and
+        # the SUL stage reuses SUVFactor instead of re-deriving a possibly-different reference.
+        dicom_tags["RadiopharmaceuticalStartTime"] = start_time
+        dicom_tags["InjectedRadioactivity"] = total_dose
+        dicom_tags["RadionuclideHalfLife"] = half_life
+        dicom_tags["AcquisitionTime"] = ref_time
+        dicom_tags["SUVFactor"] = suv_corr_factor
+        dicom_tags["DecayCorrectionReference"] = decay_ref
+        return dicom_tags
 
     def _dynamic_sibling_dirs(self, study_info: list, entry: dict) -> list | None:
         """Detect a dynamic acquisition stored as separate DICOM series (one per timepoint).

@@ -510,16 +510,90 @@ def get_modalities_in_dir(directory: str | os.PathLike) -> set:
     return modalities
 
 
-def extract_dicom_data(dirpath: plb.Path, tags: dict) -> dict[Any, Any]:
-    dicom_files = [
+# Suffixes that are never DICOM slices; skip them when picking a file to read tags from.
+_NON_DICOM_SUFFIXES = frozenset(
+    {".zip", ".inf", ".jar", ".icns", ".info", ".exe", ".pdf", ".txt", ".ini", ".xml", ".bmp", ".sh", ".json"}
+)
+
+
+def list_dicom_files(dirpath: str | os.PathLike) -> list[plb.Path]:
+    """Return candidate DICOM slice files in ``dirpath``, sorted for determinism.
+
+    Filters out DICOMDIR, obvious non-DICOM sidecars/artifacts (incl. dcm2niix ``.json``)
+    and dotfiles, so callers never read tags from a non-image file, and sorts with
+    :func:`natural_key` so the "first" file is stable across runs and filesystems — a bare
+    ``os.listdir()[0]`` is neither filtered nor ordered.
+    """
+    dirpath = plb.Path(dirpath)
+    files = [
         f
         for f in dirpath.iterdir()
         if f.is_file()
         and f.name.lower() != "dicomdir"
-        and f.suffix.lower()
-        not in [".zip", ".inf", ".jar", ".icns", ".info", ".exe", ".pdf", ".txt", ".ini", ".xml", ".bmp", ".sh"]
+        and f.suffix.lower() not in _NON_DICOM_SUFFIXES
         and f.name != ".DS_Store"
     ]
+    return sorted(files, key=lambda p: natural_key(p.name))
+
+
+def resolve_pet_decay_reference(dicom_dirpath: str | os.PathLike, ds=None) -> tuple[str, str | None]:
+    """Resolve the reference time PET pixels are decay-corrected to (for SUV/SUL).
+
+    Whole-body PET ``AcquisitionTime`` (0008,0032) varies per slice/bed position across the
+    ~10-20 min acquisition, so it must NOT be used directly as the decay reference — doing so
+    inflated SUV by up to ~25%. When ``DecayCorrection`` (0054,1102) is ``START`` (the Siemens
+    default) the pixels are corrected to the acquisition start, i.e. ``SeriesTime`` (0008,0031);
+    we use that. If ``SeriesTime`` is missing we fall back to the earliest ``AcquisitionTime``
+    across the series. Returns ``(reference_time, decay_flag)``.
+
+    ``ds`` may be a pre-read reference dataset (avoids a re-read); otherwise the first filtered
+    DICOM file is used for the series-level tags.
+    """
+    if ds is None:
+        files = list_dicom_files(dicom_dirpath)
+        if not files:
+            raise FileNotFoundError(f"No DICOM files found in {dicom_dirpath}")
+        ds = pydicom.dcmread(files[0], stop_before_pixels=True)
+
+    decay_flag = str(ds[(0x0054, 0x1102)].value) if (0x0054, 0x1102) in ds else None
+    series_time = getattr(ds, "SeriesTime", None)
+    if decay_flag in (None, "START") and series_time:
+        # Sanity guard: a series cannot start after a slice was acquired, so SeriesTime must be
+        # <= the reference slice's own AcquisitionTime. If a vendor sets SeriesTime later than
+        # that (reconstruction time, etc.), trusting it would re-inflate SUV — fall back to the
+        # earliest-AcquisitionTime scan instead. (Time-only compare; assumes no midnight wrap.)
+        slice_acq = getattr(ds, "AcquisitionTime", None)
+        if slice_acq is None or time_to_seconds(series_time) <= time_to_seconds(slice_acq) + 1:
+            return str(series_time), decay_flag
+        logger.warning(
+            f"SeriesTime {series_time} is later than slice AcquisitionTime {slice_acq} in {dicom_dirpath}; "
+            "SeriesTime looks unreliable — scanning for the earliest AcquisitionTime instead."
+        )
+
+    # Fallback: scan the whole series for the earliest AcquisitionTime (the START reference).
+    earliest = None
+    for f in list_dicom_files(dicom_dirpath):
+        try:
+            d = pydicom.dcmread(f, stop_before_pixels=True, specific_tags=[(0x0008, 0x0032)])
+        except Exception:
+            continue
+        at = getattr(d, "AcquisitionTime", None)
+        if at is not None and (earliest is None or time_to_seconds(at) < time_to_seconds(earliest)):
+            earliest = str(at)
+    if earliest is not None:
+        if decay_flag not in (None, "START"):
+            logger.warning(
+                f"DecayCorrection={decay_flag!r} (not 'START') in {dicom_dirpath}; using earliest "
+                "AcquisitionTime as the decay reference — verify SUV calibration for this scanner."
+            )
+        return earliest, decay_flag
+
+    logger.warning(f"Could not resolve SeriesTime/AcquisitionTime in {dicom_dirpath}; using reference-slice time.")
+    return str(getattr(ds, "AcquisitionTime", "")), decay_flag
+
+
+def extract_dicom_data(dirpath: plb.Path, tags: dict) -> dict[Any, Any]:
+    dicom_files = list_dicom_files(dirpath)
     if not dicom_files:
         return {}
 
