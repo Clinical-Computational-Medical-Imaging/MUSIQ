@@ -524,7 +524,23 @@ class TotalSegmentatorMuscleFat:
     def remove_arms(
         self, tissue_img: nib.Nifti1Image, organ_img, labels, affine, z_axis, input_fpath: os.PathLike
     ) -> nib.Nifti1Image:
-        """Zero out arm voxels in the tissue seg using the TotalSegmentator body mask (arms-down studies)."""
+        """Zero out arm voxels in the tissue-type segmentation using a TotalSegmentator body mask.
+
+        Runs the TotalSegmentator ``body`` task to obtain a trunk mask, extends it superiorly from the
+        scapula and inferiorly from the hip, and removes voxels lateral to the trunk — so arms-down
+        studies can still be quantified for LBM instead of being skipped.
+
+        Args:
+            tissue_img: Tissue-type segmentation image to be masked.
+            organ_img: Integer label array from the 'total' segmentation.
+            labels: 'total' segmentation mapping of label names to integers.
+            affine: Affine matrix of the segmentation image.
+            z_axis: Index of the head-to-toe axis (0, 1, or 2).
+            input_fpath: Path to the original CT NIfTI; used to derive the CTbody.nii.gz output path.
+
+        Returns:
+            The tissue-type segmentation with arm voxels zeroed out (unmodified on body-seg failure).
+        """
         output_fpath = os.path.join(os.path.dirname(input_fpath), "CTbody.nii.gz")
         if not os.path.isfile(output_fpath):
             # Lazy import: pulls in torch/nnU-Net; only needed for arms-down studies.
