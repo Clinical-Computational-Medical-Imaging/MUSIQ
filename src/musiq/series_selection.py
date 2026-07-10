@@ -25,6 +25,7 @@ from .utils import (
     repair_ct_affine_from_dicom,
     resolve_pet_decay_reference,
     run_dcm2niix,
+    select_dominant_ct_acquisition,
     setup_series_keywords,
 )
 
@@ -708,8 +709,20 @@ class SeriesSelection:
         if not os.path.isfile(out_fpath):
             with tempfile.TemporaryDirectory() as tmp:  # convert CT
                 tmp = plb.Path(str(tmp))
+                # A CT series dir may bundle several acquisitions with inconsistent slice spacing
+                # (a main stack + coarser end-cap blocks under one SeriesInstanceUID). dcm2niix
+                # can't grid those into one volume and emits a stretched/flipped NIfTI, so convert
+                # only the dominant, uniformly-spaced acquisition when that is detected. The affine
+                # repair below then runs against the same filtered DICOMs.
+                conv_dcm_dirpath = CT_dcm_dirpath
+                dominant_files = select_dominant_ct_acquisition(CT_dcm_dirpath)
+                if dominant_files:
+                    conv_dcm_dirpath = tmp / "acq"
+                    conv_dcm_dirpath.mkdir()
+                    for f in dominant_files:
+                        os.symlink(f, conv_dcm_dirpath / os.path.basename(f))
                 # convert dicom directory to nifti (store results in temp directory)
-                run_dcm2niix(CT_dcm_dirpath, plb.Path(tmp))
+                run_dcm2niix(conv_dcm_dirpath, plb.Path(tmp))
                 nii = self._select_ct_volume(tmp, CT_dcm_dirpath)
 
                 # copy chosen nifti to output folder with consistent naming
@@ -718,7 +731,7 @@ class SeriesSelection:
                 # (e.g. Siemens NAEOTOM Alpha VMI), producing an upside-down/stretched volume;
                 # repair the affine from the DICOM positions when it disagrees.
                 try:
-                    repair_ct_affine_from_dicom(out_fpath, CT_dcm_dirpath)
+                    repair_ct_affine_from_dicom(out_fpath, conv_dcm_dirpath)
                 except Exception as e:
                     logger.error(f"CT affine sanity-check failed for {out_fpath}: {e}")
                 # read the sidecar matching the chosen volume (same stem)

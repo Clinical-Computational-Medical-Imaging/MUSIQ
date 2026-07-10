@@ -4,6 +4,7 @@ import pathlib as plb
 import re
 import subprocess
 import sys
+from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
@@ -311,6 +312,92 @@ def repair_ct_affine_from_dicom(
     repaired.set_qform(new_affine, code=1)
     nib.save(repaired, nifti_path)
     return True
+
+
+def select_dominant_ct_acquisition(
+    dicom_dirpath: str | os.PathLike,
+    spacing_rtol: float = 0.1,
+) -> list[str] | None:
+    """Return the DICOM file paths of the dominant CT acquisition when a series directory
+    bundles several acquisitions with inconsistent slice spacing; otherwise ``None``.
+
+    A single CT ``SeriesInstanceUID`` sometimes contains more than one acquisition — e.g. a main
+    high-resolution whole-body stack plus coarser "end-cap" blocks that extend head/feet coverage
+    (observed in the anonymized whole-body cohorts, filed under one series with distinct
+    ``AcquisitionNumber``). Because the through-plane spacing differs between them, dcm2niix cannot
+    place all slices on one regular grid and emits a stretched, often head-for-feet-flipped volume
+    that ``repair_ct_affine_from_dicom`` cannot recover (both origin and sign end up wrong). This
+    returns the file paths of the acquisition(s) whose spacing matches the dominant (most-slices)
+    one, so the caller can convert just those.
+
+    Returns ``None`` — convert the directory as-is — when it holds a single acquisition, or several
+    acquisitions that already share one consistent slice spacing (a genuine multi-part volume).
+    Only mixed spacing triggers filtering, so uniformly-spaced multi-acquisition stacks are left
+    intact. Two overlapping same-spacing reconstructions are not handled here (dcm2niix splits
+    those into separate NIfTIs, resolved by ``_select_ct_volume``).
+    """
+    normal_lps = None
+    files: list[tuple[str, str, float]] = []  # (path, acquisition, projection onto slice normal)
+    for entry in os.scandir(dicom_dirpath):
+        if not entry.is_file():
+            continue
+        try:
+            ds = pydicom.dcmread(entry.path, stop_before_pixels=True)
+            ipp = np.asarray(ds.ImagePositionPatient, dtype=float)
+            iop = np.asarray(ds.ImageOrientationPatient, dtype=float)
+        except Exception:
+            continue
+        if normal_lps is None:
+            normal_lps = np.cross(iop[:3], iop[3:6])
+            norm = np.linalg.norm(normal_lps)
+            if norm == 0:
+                return None
+            normal_lps = normal_lps / norm
+        files.append(
+            (os.path.abspath(entry.path), str(getattr(ds, "AcquisitionNumber", None)), float(ipp @ normal_lps))
+        )
+
+    if not files:
+        return None
+    groups: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    for path, acq, proj in files:
+        groups[acq].append((path, proj))
+    if len(groups) < 2:
+        return None  # single acquisition — nothing to disambiguate
+
+    # Representative through-plane spacing per acquisition = median |Δposition| along the normal.
+    spacing = {}
+    for acq, items in groups.items():
+        projs = sorted(p for _, p in items)
+        if len(projs) >= 2:
+            spacing[acq] = float(np.median(np.diff(projs)))
+    if len(spacing) < 2:
+        return None  # not enough multi-slice acquisitions to compare
+    smin, smax = min(spacing.values()), max(spacing.values())
+    if smin <= 0 or smax / smin <= 1 + spacing_rtol:
+        return None  # one consistent spacing → coherent multi-part volume, convert whole dir
+
+    # Mixed spacing: keep only acquisitions whose spacing matches the dominant (most-slices) one.
+    dominant = max(groups, key=lambda a: len(groups[a]))
+    dom_sp = spacing.get(dominant)
+    if dom_sp is None:
+        return None
+    keep, dropped = [], []
+    for acq, items in groups.items():
+        sp = spacing.get(acq)
+        if sp is not None and abs(sp - dom_sp) <= spacing_rtol * dom_sp:
+            keep.extend(p for p, _ in items)
+        else:
+            projs = [p for _, p in items]
+            dropped.append((acq, len(items), round(min(projs), 1), round(max(projs), 1)))
+    if not keep or not dropped:
+        return None
+    logger.warning(
+        f"CT series {dicom_dirpath} bundles acquisitions with mixed slice spacing "
+        f"({sorted(round(s, 3) for s in spacing.values())} mm); converting only the dominant "
+        f"acquisition(s) at ~{dom_sp:.3f} mm ({len(keep)} slices), dropping (acq, n, z-min, z-max): {dropped}."
+    )
+    return keep
 
 
 def run_dcm2niix(input_folder: str | os.PathLike, output_folder: str | os.PathLike, merge: bool = False) -> None:
