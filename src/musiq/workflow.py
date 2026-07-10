@@ -60,9 +60,33 @@ class Workflow:
         boa_runtime: str = "docker",
         boa_sif: str | None = None,
     ) -> None:
-        """Configure a MUSIQ workflow run.
+        """
+        Run the MUSIQ workflow with the specified parameters.
 
-        Runs the selected task stages over the input tree, writing results into the processed tree.
+        Args:
+            input_dir (str): Path to the input directory containing PET/CT images.
+            output_dir (str): Path to the output directory for results.
+            tasks (list[str] | None): List of tasks to run. If None, all tasks are run. Possible values are:
+                - "series_selection": Select series based on keywords.
+                - "autopet": Run autopet3 on PET images.
+                - "totalsegmentator": Run TotalSegmentator on CT images.
+                - "moose": Run Moose on CT images.
+                - "radiomics": Extract radiomics features from selected series.
+                - "tumor": Compute tumor level statistics.
+                - "plot": Create visualisations.
+                - "cads": Run CADS on CT images.
+                - "boa": Run UMEssen BOA Body Composition Analysis (BCA) on CT images via Docker.
+            ct_primary_keywords (list[str] | None): Keywords for primary selection of CT series.
+            ct_secondary_keywords (list[str] | None): Keywords for secondary selection of CT series.
+            ct_exclusion_keywords (list[str] | None): Keywords to exclude CT series.
+            pt_primary_keywords (list[str] | None): Keywords for primary selection of PT series.
+            pt_secondary_keywords (list[str] | None): Keywords for secondary selection of PT series.
+            pt_exclusion_keywords (list[str] | None): Keywords to exclude PT series.
+            mr_primary_keywords (list[str] | None): Keywords for primary selection of MR series.
+            mr_secondary_keywords (list[str] | None): Keywords for secondary selection of MR series.
+            mr_exclusion_keywords (list[str] | None): Keywords to exclude MR series.
+            pet_metric (str | list[str] | None): PET metric(s) to use for radiomics and tumor computations.
+            Possible values are "SUV" and "SUL". Can pass one or both. Defaults to ["SUV", "SUL"].
         """
         self.input_dirpath = input_dirpath
         self.output_dirpath = output_dirpath

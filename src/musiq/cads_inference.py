@@ -111,8 +111,23 @@ def _restore_one_case(job: dict) -> dict:
 
 
 class CadsInference:
-    """Staged CADS pipeline (preprocess CT -> run models -> restore+combine into CTcads.nii.gz),
-    split so CPU/GPU stages run separately.
+    """Staged CADS pipeline over the MUSIQ processed tree.
+
+    CADS is split into three standalone stages so CPU and GPU work can run as separate
+    jobs (see https://github.com/murong-xu/CADS Option 2). Intermediate artifacts are kept
+    in a staging directory (default ``<processed>/cads_staging``) keyed by a per-study case
+    id ``<patient_id>__<study_date>`` and auto-removed once a study's ``CTcads.nii.gz`` is
+    produced:
+
+    1. :meth:`preprocess` (CPU)  — reorient/resample each ``CT.nii.gz`` to 1.5 mm RAS and write
+       a ``<case>.nii.gz`` plus ``<case>_metadata.pkl``.
+    2. :meth:`inference` (GPU)   — run the CADS models on the preprocessed images, producing
+       per-task ``<case>_part_55X.nii.gz`` masks in preprocessed space.
+    3. :meth:`restore` (CPU)     — restore each part to the original geometry, combine them into
+       a single ``CTcads.nii.gz`` (labelmap_all_structure labels), update ``patient_info.json``
+       and clean up the case's intermediates.
+
+    :meth:`run` executes all three in order (used by the unified ``cads`` workflow task).
     """
 
     def __init__(

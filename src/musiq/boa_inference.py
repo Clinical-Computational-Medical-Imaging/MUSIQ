@@ -30,10 +30,38 @@ class BoaInference:
         runtime: str = "docker",
         sif_path: str | os.PathLike | None = None,
     ) -> None:
-        """Run the UMEssen BOA Body Composition Analysis (BCA) on every ``CT.nii.gz`` in the processed tree.
+        """Run the UMEssen BOA Body Composition Analysis (BCA) on every ``CT.nii.gz``
+        in the processed tree by shelling out to the ``shipai/boa-cli`` container,
+        via either Docker (default) or Apptainer/Singularity (for HPC clusters).
 
-        Reuses MUSIQ's TotalSegmentator ``CTseg.nii.gz`` as BOA's ``total`` seg (when ``reuse_total``);
-        runs the container via Docker (default) or Apptainer/Singularity.
+        BOA's ``--input-image`` accepts a single NIfTI, so MUSIQ's existing
+        ``CT.nii.gz`` is fed directly. BCA depends on TotalSegmentator's ``total``
+        model; when ``reuse_total`` is set and MUSIQ already produced ``CTseg.nii.gz``
+        it is seeded as ``total.nii.gz`` in BOA's output dir so BOA skips recomputing
+        it (BOA reuses existing segmentations unless ``--force-recompute`` is passed).
+
+        The BCA tissue/body-region models have no MUSIQ equivalent and always run.
+
+        The inner ``python -m body_organ_analysis ...`` command is identical across
+        runtimes; only the container wrapper differs. Under Apptainer the process
+        already runs as the invoking user (no ``DOCKER_USER`` chown dance), so
+        ``apptainer exec`` is used to bypass the image ENTRYPOINT and run the command
+        directly. Because the SIF filesystem is read-only, BOA cannot download weights
+        into the image at runtime — under Apptainer you must pass ``weights_dirpath``
+        to a pre-populated, writable dir bound at ``/app/weights``.
+
+        Args:
+            input_dirpath_processed: Processed output tree (processed/<patient>/<study_date>/).
+            weights_dirpath: Local BOA/TotalSegmentator weights dir, mounted at /app/weights.
+                If None, BOA downloads weights on first inference (Docker only).
+            image: BOA Docker image tag (used when ``runtime="docker"``).
+            fast_bca: Pass --fast-bca (single-fold instead of 5-fold ensemble).
+            no_pdf: Pass --bca-no-pdf (skip the PDF report, keep JSON measurements).
+            device: BOA --device value ("gpu", "cuda" or "cpu").
+            reuse_total: Seed CTseg.nii.gz as total.nii.gz so BOA skips the total model.
+            runtime: Container runtime, "docker" or "apptainer".
+            sif_path: Path to the BOA Apptainer/Singularity image (.sif). Required when
+                ``runtime="apptainer"``.
         """
         self.input_dirpath = input_dirpath_processed
         self.weights_dirpath = weights_dirpath

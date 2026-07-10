@@ -20,9 +20,15 @@ class AutopetInference:
         autopet_checkpoint_dirpath: str | os.PathLike,
         pet_metric: str | list[str] | None = None,
     ) -> None:
-        """Resample CT to PT size and run AutoPET inference on SUV/SUL files. Creates CTres.nii and PETseg.nii.
-
+        """Resample CT to PT size and run AutoPET inference on SUV/SUL files. Creates CTres.nii and PETseg.nii.gz
+        or PETsegSUL.nii.gz in the same directory as the input PET metric. Updates patient_info.json with the new paths.
         Expects exactly one PT and matching CT series per study date.
+        Args:
+            input_dirpath_processed (str | os.PathLike): Directory containing the PET metric files. Can be nested.
+            autopet_checkpoint_dirpath (str | os.PathLike): Directory containing the nnUNet checkpoint for
+            AutoPET inference. See README for details on how to obtain the checkpoint and how to name the folder.
+            pet_metric (str | list[str] | None): PET metric(s) to use as input.
+                Accepts "SUV", "SUL", or both. Defaults to ["SUV", "SUL"].
         """
         if pet_metric is None:
             pet_metric = ["SUV", "SUL"]

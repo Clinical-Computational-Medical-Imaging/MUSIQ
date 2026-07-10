@@ -42,10 +42,23 @@ class TumorInfoExtraction:
         label_glob: str = DEFAULT_LABEL_GLOB,
         workers: int = 1,
     ) -> None:
-        """Extract tumor information from a mask, SUV/SUL and CTseg files.
+        """Class to handle tumor information extraction from a mask, SUV/SUL, and CTseg files in a specified folder.
+        Creates CTsegres.nii.gz if it does not exist.
+        The existing patient_info.json is required to extract and save data.
+        Expects exactly one CT.nii.gz file per serie.
 
-        Creates CTsegres.nii.gz if it does not exist. Expects exactly one CT.nii.gz per series.
-        See RadiomicsExtractor for the mask_source / label_dirpath / label_glob / workers args.
+        Args:
+            input_dirpath_processed (str | os.PathLike): Directory containing the CT.nii.gz file. Can be nested.
+            pet_metric (str | list[str] | None): PET metric(s) to use as input.
+                Accepts "SUV", "SUL", or both. Defaults to ["SUV", "SUL"].
+            mask_source (str): "auto" (PETseg/PETsegSUL -> TumorStats/TumorStatsSUL) or
+                "revised" (physician Tumor label -> TumorStatsRevised/TumorStatsRevisedSUL).
+            label_dirpath (str | os.PathLike | None): used when mask_source="revised". None looks for the
+                label inside each study dir; a path looks under <label_dirpath>/<PatientID>/.
+            label_glob (str): filename pattern of the revised label (may contain wildcards), e.g.
+                "PETseg_revised.nii" or "*segmentation_Tumor.nii".
+            workers (int): number of parallel worker processes. 1 (default) runs serially. Patients are
+                the unit of parallelism, so each patient_info.json is only ever written by one worker.
         """
         if pet_metric is None:
             pet_metric = ["SUV", "SUL"]
