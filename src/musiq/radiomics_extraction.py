@@ -46,14 +46,8 @@ def resample_label_to_image_grid(label_fpath: str, target_fpath: str, work_dirpa
             os.remove(out_fpath)
 
 
-# Radiomics can run off two mask sources, selected via ``mask_source``:
-#   "auto"    - the pipeline's automated PETseg.nii.gz / PETsegSUL.nii.gz mask inside the study dir
-#               (results -> TumorStats / TumorStatsSUL).
-#   "revised" - a physician Tumor segmentation (results -> TumorStatsRevised / TumorStatsRevisedSUL),
-#               which must share the SUV/PET grid. Its filename varies by cohort (label_glob) and it
-#               lives either inside the study dir (label_dirpath=None, e.g. MULTIPRO's PETseg_revised.nii)
-#               or in a parallel tree keyed by PatientID (label_dirpath set, e.g. Scheurer's
-#               <label_dirpath>/<PatientID>/<PatientID> segmentation_Tumor.nii).
+# Mask sources (``mask_source``): "auto" = pipeline PETseg/PETsegSUL mask, "revised" = physician
+# Tumor label (must share the SUV/PET grid).
 MASK_SOURCES = ("auto", "revised")
 DEFAULT_LABEL_GLOB = "PETseg_revised.nii"
 
@@ -122,8 +116,7 @@ class RadiomicsExtractor:
                 label inside each study dir; a path looks under <label_dirpath>/<PatientID>/.
             label_glob (str): filename pattern of the revised label (may contain wildcards), e.g.
                 "PETseg_revised.nii" or "*segmentation_Tumor.nii".
-            workers (int): number of parallel worker processes. 1 (default) runs serially. Patients are
-                the unit of parallelism, so each patient_info.json is only ever written by one worker.
+            workers (int): number of parallel worker processes (patients are the unit); default 1 = serial.
         """
         if pet_metric is None:
             pet_metric = ["SUV", "SUL"]
@@ -139,7 +132,7 @@ class RadiomicsExtractor:
         self.label_dirpath = label_dirpath
         self.label_glob = label_glob
         self.workers = max(1, int(workers))
-        self.skipped: list[dict] = []  # studies skipped due to a grid mismatch with the SUV/SUL image
+        self.skipped: list[dict] = []  # studies skipped on grid mismatch
 
     def run(self) -> None:
         for metric in self.pet_metrics:
@@ -170,8 +163,7 @@ class RadiomicsExtractor:
                 continue
 
             sub_dirs = sorted(sub_dirs, key=lambda x: os.path.basename(os.path.dirname(x)))
-            # Group study dirs by patient dir so each patient_info.json is only ever touched by one
-            # worker — this is what makes multiprocessing safe.
+            # Group by patient dir so each patient_info.json has a single writer
             patient_groups: dict[str, list[str]] = {}
             for d in sub_dirs:
                 patient_groups.setdefault(os.path.dirname(d), []).append(d)
@@ -246,12 +238,7 @@ class RadiomicsExtractor:
 
         ptarray = metrics.get_3darray_from_niftipath(suv_fpath)
         gtarray = metrics.get_3darray_from_niftipath(petseg_fpath)
-        # A revised (physician) label must line up with the SUV/SUL image. Shapes can differ even when the
-        # label shares physical space (e.g. a different z-crop), so rather than rejecting on shape we
-        # resample the label onto the image grid (world space, nearest-neighbor) and only skip when the
-        # tumor falls entirely outside the image world space — a genuinely disjoint reconstruction, which
-        # resamples to empty. (Automated PETseg masks share the grid by construction, so this only affects
-        # revised masks.)
+        # Revised label must align in world-space; resample if shape differs, skip if disjoint
         if self.mask_source == "revised" and gtarray.shape != ptarray.shape:
             resampled = resample_label_to_image_grid(petseg_fpath, suv_fpath, dirpath)
             if resampled is None or ((gtarray > 0).any() and not (resampled > 0).any()):
@@ -279,8 +266,7 @@ class RadiomicsExtractor:
             gtarray = resampled
         spacing = get_spacing_from_niftipath(suv_fpath)
 
-        # Dmax and SDmax share the same (dissemination) computation, so memoize it to compute it at
-        # most once per study even when both metrics are missing, while keeping each metric's own skip logic.
+        # Memoize Dmax (shared by SDmax)
         _dmax_cache: dict = {}
 
         def _dmax() -> np.float64:
@@ -288,7 +274,6 @@ class RadiomicsExtractor:
                 _dmax_cache["v"] = metrics.calculate_patient_level_dissemination(gtarray, spacing)
             return _dmax_cache["v"]
 
-        # Define all metrics to calculate
         metrics_to_calculate = {
             "SUVmean": lambda: metrics.calculate_patient_level_lesion_suvmean_suvmax(
                 ptarray, gtarray, marker="SUVmean"
@@ -316,7 +301,6 @@ class RadiomicsExtractor:
             "HU Mean": lambda: metrics.calculate_hu_statistics(ct_fpath, ctseg_fpath),
         }
 
-        # Calculate missing metrics
         new_metrics = {}
         for metric, calc_func in metrics_to_calculate.items():
             if metric not in existing_metrics or existing_metrics[metric] in [None, "", "0"]:
@@ -329,7 +313,6 @@ class RadiomicsExtractor:
                     logger.info(f"Error calculating {metric}: {e}")
                     new_metrics[metric] = None
 
-        # Append new metrics to the json file
         if new_metrics and os.path.isfile(patient_info_path):
             patient_info["Studies"][study_date][tumor_stats_key] = {**existing_metrics, **new_metrics}
             with open(os.path.join(patient_dirpath, "patient_info.json"), "w") as f:

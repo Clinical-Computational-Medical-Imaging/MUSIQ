@@ -14,14 +14,8 @@ logger = logging.getLogger(__name__)
 class SulInference:
     """Compute the lean-body-mass-corrected PET (SUL) image for each PET/CT study.
 
-    This is the CPU-only counterpart to the ``muscle_fat`` stage: it reads the ``PatientLBM``
-    produced there (stored on the CT series in ``patient_info.json``) and the ``PET.nii.gz``,
-    applies the SUV/SUL decay correction and writes ``SUL.nii.gz`` plus ``SULPath``. It does not
-    import TotalSegmentator/torch, so it can run on a plain CPU node.
-
-    Ordering: run after ``muscle_fat`` (needs ``PatientLBM``) and before ``autopet``/radiomics when
-    SUL metrics are used. Idempotent: a study is skipped when ``SUL.nii.gz`` already exists, when
-    there is no ``PET.nii.gz`` to convert, or when ``PatientLBM`` is not yet available.
+    CPU-only (no torch): reads ``PatientLBM`` from the muscle_fat stage and writes ``SUL.nii.gz``.
+    Idempotent: skips a study when SUL.nii.gz exists, there is no PET.nii.gz, or PatientLBM is absent.
     """
 
     def __init__(self, input_dirpath_processed: str | os.PathLike) -> None:
@@ -76,10 +70,9 @@ class SulInference:
             logger.info(f"SUL.nii.gz already exists for {patient_id} ({study_date}).")
             sul_path = sul_fpath
         else:
-            # convert_pet2sul may recover missing DICOM timing fields into `data` in place.
+            # Persist any DICOM timing fields recovered by convert_pet2sul
             sul_path = self.convert_pet2sul(dirpath, data, study_date, lbm)
             if sul_path is None:
-                # Persist any partially recovered DICOM fields so they aren't lost.
                 with open(patient_info_path, "w") as f:
                     json.dump(data, f)
                 return
@@ -134,9 +127,7 @@ class SulInference:
         pt_series = pt_list[0][series_name]
         dicom_data = pt_series["DICOM"]
 
-        # Preferred path: reuse the exact SUV factor baked into SUV.nii.gz. Both factors are
-        # 1000*mass/decayed_dose, so sul_factor = suv_factor * LBM / weight — SUL then shares
-        # SUV's decay reference by construction and the two can never diverge.
+        # Preferred: reuse SUV factor. sul_factor = suv_factor * LBM / weight (shared decay reference)
         sul_corr_factor = None
         suv_factor = dicom_data.get("SUVFactor")
         pt_weight = dicom_data.get("PatientWeight")
@@ -149,8 +140,7 @@ class SulInference:
                 sul_corr_factor = None
 
         if sul_corr_factor is None:
-            # Fallback for studies whose SUV predates SUVFactor being recorded: recompute from
-            # DICOM timing (the stored AcquisitionTime is the scan-start reference).
+            # Fallback if SUVFactor wasn't recorded: recompute from DICOM timing
             required = [
                 "InjectedRadioactivity",
                 "RadionuclideHalfLife",
@@ -210,9 +200,8 @@ def sul_computation_entrypoint() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Recursively compute the lean-body-mass-corrected PET image (SUL.nii.gz) for every "
-        "PET/CT study in a processed tree, using the PatientLBM produced by the muscle_fat stage. "
-        "CPU-only; run muscle_fat first."
+        description="Compute the lean-body-mass-corrected PET image (SUL.nii.gz) for a processed tree "
+        "(CPU-only; run muscle_fat first)."
     )
     parser.add_argument(
         "--input-dirpath-processed",

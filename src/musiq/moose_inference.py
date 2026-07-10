@@ -10,44 +10,9 @@ logger = create_logger("musiq.moose_inference")
 
 class MooseInference:
     def __init__(self, input_dirpath_processed: str | os.PathLike, moose_task: str | list[str]) -> None:
-        """
-        Class to handle Moose inference on CT.nii.gz files in a specified folder.
-        It processes each file, runs the given segmentation and safes in moose_task_segmentation_CT.nii.gz
+        """Run Moose segmentation on CT.nii.gz files.
 
-        Moose tasks(model_name):
-                clin_ct_body: it segments Legs, Body, Head, Arms
-                clin_ct_body_composition: it segments skeletal_muscle, subcutaneous_fat, visceral_fat;
-                clin_ct_cardiac: it segments heart_myocardium, heart_atrium_left, heart_atrium_right,
-                    heart_ventricle_left, heart_ventricle_right, aorta, iliac_artery_left, iliac_artery_right,
-                    iliac_vena_left, iliac_vena_right, inferior_vena_cava, portal_splenic_vein, pulmonary_artery;
-                clin_ct_digestive: it segments colon, duodenum, esophagus, small_bowel;
-                clin_ct_lungs: it segments lung_upper_lobe_left, lung_lower_lobe_left, lung_upper_lobe_right,
-                    lung_middle_lobe_right, lung_lower_lobe_right;
-                clin_ct_muscles: it segments autochthon_left, autochthon_right, gluteus_maximus_left,
-                    gluteus_maximus_right, gluteus_medius_left, gluteus_medius_right, gluteus_minimus_left,
-                    gluteus_minimus_right, iliopsoas_left, iliopsoas_right;
-                clin_ct_organs: it segments adrenal_gland_left, adrenal_gland_right, bladder, brain, gallbladder,
-                    kidney_left, kidney_right, liver, lung_lower_lobe_left, lung_lower_lobe_right,
-                    lung_middle_lobe_right, lung_upper_lobe_left, lung_upper_lobe_right, pancreas, spleen, stomach,
-                    thyroid_left, thyroid_right, trachea;
-                clin_ct_peripheral_bones: it segments carpal_left, carpal_right, clavicle_left, clavicle_right,
-                    femur_left, femur_right, fibula_left, fibula_right, fingers_left, fingers_right, humerus_left,
-                    humerus_right, metacarpal_left, metacarpal_right, metatarsal_left, metatarsal_right, patella_left,
-                    patella_right, radius_left, radius_right, scapula_left, scapula_right, skull, tarsal_left,
-                    tarsal_right, tibia_left, tibia_right, toes_left, toes_right, ulna_left, ulna_right;
-                clin_ct_ribs: it segments rib_left_1, rib_left_2, rib_left_3, rib_left_4, rib_left_5, rib_left_6,
-                    rib_left_7, rib_left_8, rib_left_9, rib_left_10, rib_left_11, rib_left_12, rib_left_13, rib_right_1,
-                    rib_right_2, rib_right_3, rib_right_4, rib_right_5, rib_right_6, rib_right_7, rib_right_8,
-                    rib_right_9, rib_right_10, rib_right_11, rib_right_12, rib_right_13, sternum;
-                clin_ct_vertebrae: it segments vertebra_C1, vertebra_C2, vertebra_C3, vertebra_C4, vertebra_C5,
-                    vertebra_C6, vertebra_C7, vertebra_T1, vertebra_T2, vertebra_T3, vertebra_T4, vertebra_T5,
-                    vertebra_T6, vertebra_T7, vertebra_T8, vertebra_T9, vertebra_T10, vertebra_T11, vertebra_T12,
-                    vertebra_L1, vertebra_L2, vertebra_L3, vertebra_L4, vertebra_L5, vertebra_L6, hip_left, hip_right,
-                    sacrum;
-
-        Args:
-            input_dirpath_processed (str | os.PathLike): Directory containing the CT.nii.gz files. Can be nested.
-            moose_task (str | list[str]): Contains one or more out of Moose tasks from above.
+        See the moosez library for available tasks and their outputs.
         """
         self.input_dirpath = input_dirpath_processed
         if isinstance(moose_task, str):
@@ -57,10 +22,7 @@ class MooseInference:
         self.accelerator = "cuda"
 
     def run(self) -> None:
-        """
-        Recursively search the folder for CT.nii.gz files.
-        For each found file, run segmentation using moose.
-        """
+        """Run Moose segmentation on all CT.nii.gz files in the folder."""
         if not os.path.isdir(self.input_dirpath):
             raise ValueError(f"{self.input_dirpath} is not a valid directory.")
 
@@ -103,7 +65,7 @@ class MooseInference:
                                 logger.error(f"Missing patient_info.json in {patient_dirpath}.")
 
                             if json_exists and patient_info is not None:
-                                # expecting exactly one CT per study
+                                # one CT per study
                                 study_date = dirpath.split(os.sep)[-1]
                                 series_name = next(iter(patient_info["Studies"][study_date]["Modalities"]["CT"][0]))
                                 patient_info["Studies"][study_date]["Modalities"]["CT"][0][series_name][

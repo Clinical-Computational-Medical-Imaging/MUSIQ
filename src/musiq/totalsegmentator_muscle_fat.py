@@ -15,11 +15,7 @@ logger = logging.getLogger(__name__)
 def total_seg_path(input_fpath: str | os.PathLike) -> str:
     """Path to the TotalSegmentator 'total' segmentation for a given input image.
 
-    Mirrors the naming produced by the totalsegmentator stage (see
-    totalsegmentator_inference.py): ``CT.nii.gz`` -> ``CTseg.nii.gz`` while an MR series
-    ``<stem>.nii.gz`` -> ``<stem>_seg.nii.gz``. A plain ``.nii.gz`` -> ``seg.nii.gz``
-    replacement only works for CT (it drops the underscore for MR), which is why the seg
-    was never found for MR series.
+    ``CT.nii.gz`` -> ``CTseg.nii.gz``; MR ``<stem>.nii.gz`` -> ``<stem>_seg.nii.gz``.
     """
     dirpath, filename = os.path.split(str(input_fpath))
     if filename == "CT.nii.gz":
@@ -29,24 +25,11 @@ def total_seg_path(input_fpath: str | os.PathLike) -> str:
 
 class TotalSegmentatorMuscleFat:
     def __init__(self, input_dirpath_processed: os.PathLike | str) -> None:
-        """Class to handle TotalSegmentator muscle fat analysis on CT.nii.gz and MRI files in a specified folder.
-        It processes each file, runs segmentation, extracts label mapping, computes body-composition
-        stats and the lean body mass (LBM). Creates CT_muscle_fat.nii.gz and stores stats/LBM in
-        patient_info.json. SUL is produced by the separate ``sul`` stage (see sul_computation.py).
-
-        Args:
-            input_dirpath_processed (str | os.PathLike): Directory containing the CT.nii.gz files. Can be nested.
-        """
+        """Compute muscle/fat body composition and LBM from CT (and segmentation-only for MR)."""
         self.input_dirpath = input_dirpath_processed
 
     def run(self) -> None:
-        """
-        Recursively search the folder for CT.nii.gz files.
-        For each found file, run the tissue_4_types for CT or tissue_types_mr for MRI segmentation,
-        extract the label mapping from the segmentation output, and save a metadata JSON file.
-        It also calculates the lean body mass (LBM) from the fat percentage obtained from the
-        segmentation and the patient weight. The SUL image is produced by the separate ``sul`` stage.
-        """
+        """Process all CT/MR images: segment, compute body composition, record stats."""
         if not os.path.isdir(self.input_dirpath):
             logger.error(f"Error: {self.input_dirpath} is not a valid directory.")
             return
@@ -66,7 +49,7 @@ class TotalSegmentatorMuscleFat:
                 patient_id, study_date = rel_parts
                 for filename in filenames:
                     try:
-                        # Skip existing muscle/fat segmentations - we don't want to segment them again.
+                        # Skip existing muscle/fat segmentations
                         if filename.endswith("_muscle_fat.nii.gz"):
                             continue
 
@@ -96,17 +79,14 @@ class TotalSegmentatorMuscleFat:
                         seg_path_key = f"{modality}muscle_fatPath"
 
                         patient_info_path = os.path.join(os.path.dirname(dirpath), "patient_info.json")
-                        # A CT study is fully processed once the segmentation exists AND its body-composition
-                        # stats are recorded. Recording the stats (not just the seg file) is what lets re-runs
-                        # skip instead of reloading the whole-body seg and recomputing. SUL is a separate stage.
+                        # Fully processed only once seg exists AND body-composition stats are recorded (so re-runs skip)
                         if (
                             is_ct
                             and os.path.isfile(output_fpath)
                             and self._bca_recorded(patient_info_path, study_date, modality)
                         ):
                             logger.info(f"muscle/fat analysis already complete for {patient_id}, skipping.")
-                            # Backfill the series-level muscle/fat path for patients processed before this
-                            # path was recorded (consistent with CTsegPath / CTcadsPath).
+                            # Backfill series-level muscle/fat path (consistent with CTsegPath/CTcadsPath)
                             self._record_muscle_fat_path(
                                 patient_info_path,
                                 study_date,
@@ -116,17 +96,13 @@ class TotalSegmentatorMuscleFat:
                                 seg_path_key=seg_path_key,
                                 output_fpath=output_fpath,
                             )
-                            # The body-composition stats already exist, but LBM may still be missing or
-                            # stale — e.g. PatientWeight was absent/0 when the stats were first computed and
-                            # has since been corrected. Recompute it here (cheap arithmetic, no seg reload)
-                            # so a re-run picks up the new weight instead of skipping LBM entirely.
+                            # Recompute LBM in case PatientWeight was corrected since first run
                             self._backfill_lbm(patient_info_path, study_date, modality, patient_id, series_index=0)
                             continue
 
                         segmentation_exists = os.path.isfile(output_fpath)
 
-                        # For MR we only produce the segmentation file (no muscle/fat %, LBM or SUL),
-                        # so if it already exists there is nothing left to do.
+                        # MR: segmentation only (fat%/LBM/SUL are CT/PET concepts)
                         if not is_ct and segmentation_exists:
                             logger.info(f"MR segmentation already exists for {filename}, skipping.")
                             continue
@@ -193,9 +169,7 @@ class TotalSegmentatorMuscleFat:
                         if not segmentation_exists:
                             logger.info(f"Processing file {filename} for patient {patient_id}.")
 
-                            # Run TotalSegmentator using the Python API with ml option and appropriate task.
-                            # Imported lazily: pulls in torch/nnU-Net (slow CUDA init), so a run where every
-                            # study is skipped never pays that startup cost.
+                            # Lazy import: torch/nnU-Net CUDA init is slow; skip it when all studies are skipped
                             if not os.path.isfile(output_fpath):
                                 from totalsegmentator.python_api import totalsegmentator
 
@@ -222,13 +196,11 @@ class TotalSegmentatorMuscleFat:
                                 logger.error(f"Error loading segmentation file {output_fpath}: {e}")
                                 label_map_dict = {}
 
-                            # For MR we only want the segmentation file — muscle/fat % (and the LBM/SUL
-                            # it feeds) are CT/PET concepts, so skip them here.
+                            # MR: segmentation only (fat%/LBM/SUL are CT/PET concepts)
                             if not is_ct:
                                 continue
 
-                            # Imported lazily: totalsegmentator.config pulls in torch, so keep it off the
-                            # module-import path where every study may be skipped.
+                            # Lazy import (pulls in torch)
                             from totalsegmentator.config import get_version
 
                             seg_metadata = {
@@ -238,11 +210,8 @@ class TotalSegmentatorMuscleFat:
                             }
 
                             layers = ["full_picture", "l3", "glut_to_c6"]
-                            # calc_size loads the base image + whole-body seg once and measures every
-                            # layer in a single pass (arms-down studies have the arms masked out first).
-                            # A fallback (missing seg / missing landmark) is recorded for the affected
-                            # layers so the completeness check above stays satisfied and re-runs don't
-                            # reload and recompute (~10s).
+                            # calc_size loads image+seg once, measures every layer (arms masked out first);
+                            # fallback recorded for missing seg/landmark
                             layer_results = self.calc_size(input_fpath, segmentation_img, label_map_dict, layers)
 
                             if json_exists and patient_info is not None:
@@ -280,17 +249,12 @@ class TotalSegmentatorMuscleFat:
 
                         series_name = next(iter(data["Studies"][study_date]["Modalities"][modality][series_index]))
                         series_data = data["Studies"][study_date]["Modalities"][modality][series_index][series_name]
-                        # Record the muscle/fat segmentation path at the series level (consistent with how
-                        # CTsegPath / CTcadsPath are stored), independent of whether body-composition stats
-                        # were computed. Persist immediately, since the LBM block below may `continue`
-                        # out before the final json.dump.
+                        # Record muscle/fat seg path at series level; persist now (LBM block below may continue out)
                         if os.path.isfile(output_fpath) and series_data.get(seg_path_key) != output_fpath:
                             series_data[seg_path_key] = output_fpath
                             with open(patient_info_path, "w") as f:
                                 json.dump(data, f)
-                        # PatientWeight may be missing entirely, or stored as a string (e.g. "80", "83.0")
-                        # in patient_info.json, which would make `weight * (...)` raise
-                        # "can't multiply sequence by non-int".
+                        # PatientWeight may be missing or a string; coerce to float
                         patient_weight = series_data.get("DICOM", {}).get("PatientWeight")
                         if patient_weight is None:
                             logger.warning(
@@ -315,17 +279,12 @@ class TotalSegmentatorMuscleFat:
                         if fat_in_percent is None:
                             seg_path = total_seg_path(input_fpath)
                             if not os.path.isfile(seg_path):
-                                reason = (
-                                    f"segmentation not found at {seg_path} — run TotalSegmentator task='total' first"
-                                )
+                                reason = f"seg not found at {seg_path}; run TotalSegmentator 'total' first"
                             else:
-                                reason = (
-                                    "arms detected beside the body (humerus below T4 threshold); "
-                                    "LBM cannot be estimated reliably"
-                                )
+                                reason = "arms beside body; LBM unreliable"
                             logger.warning(f"Skipping LBM computation for {patient_id}: {reason}.")
                             continue
-                        # LBM is consumed by the separate `sul` stage (via PatientLBM) to build SUL.nii.gz.
+                        # LBM feeds the sul stage (via PatientLBM)
                         lean_body_mass = weight * (1 - fat_in_percent / 100)
                         data["Studies"][study_date]["Modalities"][modality][series_index][series_name]["PatientLBM"] = (
                             lean_body_mass
@@ -337,12 +296,7 @@ class TotalSegmentatorMuscleFat:
                         logger.exception(f"Failed to process {filename} for {patient_id} ({study_date}); skipping.")
 
     def _bca_recorded(self, patient_info_path: str | os.PathLike, study_date: str, modality: str) -> bool:
-        """True if body-composition stats (``glut_to_c6``) are already stored for this study's series.
-
-        Mirrors the completeness check further down (see the ``body_composition_analysis`` /
-        ``glut_to_c6`` guard): used by the skip gate so CT-only studies are only skipped once their
-        stats have actually been computed, not merely because the segmentation file exists.
-        """
+        """True if body-composition stats (glut_to_c6) are recorded for this study."""
         if not os.path.isfile(patient_info_path):
             return False
         try:
@@ -364,11 +318,7 @@ class TotalSegmentatorMuscleFat:
         seg_path_key: str,
         output_fpath: str | os.PathLike,
     ) -> None:
-        """Store the muscle/fat segmentation path at the series level in patient_info.json.
-
-        Mirrors how CTsegPath / CTcadsPath are recorded. Idempotent: only writes when the key is
-        missing or stale, so it can safely backfill already-processed patients on a re-run.
-        """
+        """Store the muscle/fat seg path at series level (idempotent)."""
         if not os.path.isfile(output_fpath) or not os.path.isfile(patient_info_path):
             return
         with open(patient_info_path) as f:
@@ -412,13 +362,7 @@ class TotalSegmentatorMuscleFat:
         patient_id: str,
         series_index: int = 0,
     ) -> None:
-        """Compute and store PatientLBM for an already-processed study, if it can be (re)derived.
-
-        Used by the skip gate: when a CT study's body-composition stats already exist we don't want to
-        redo the segmentation, but LBM may be missing or stale (e.g. PatientWeight was absent/0 at first
-        run and has since been corrected). LBM is pure arithmetic on the recorded weight and fat%, so we
-        recompute it cheaply here. Idempotent: only writes when the value is missing or actually changes.
-        """
+        """Recompute and store PatientLBM if weight/fat% changed since first run (idempotent)."""
         if not os.path.isfile(patient_info_path):
             return
         with open(patient_info_path) as f:
@@ -457,22 +401,8 @@ class TotalSegmentatorMuscleFat:
     ) -> dict[str, dict]:
         """Compute body-composition stats (label volumes + fat/muscle %) for each requested layer.
 
-        The base image and the whole-body 'total' segmentation are layer-independent, so they are
-        loaded — and the arms-beside-body check run — once here, then reused for every layer. (The
-        previous implementation took a single ``layer`` and reloaded both from disk on every call.)
-
-        Args:
-            path: Path to the original CT/MR NIfTI image.
-            fat_img: The muscle/fat segmentation image (already loaded).
-            labels: Mapping of label numbers to names for ``fat_img``.
-            layers: Layers to measure, e.g. ``["full_picture", "l3", "glut_to_c6"]``.
-
-        Returns:
-            ``{layer: result_dict}``. A missing 'total' segmentation maps all layers to the fallback.
-            When arms are detected beside the body they are masked out (via a TotalSegmentator ``body``
-            segmentation) before measuring, rather than skipped. A per-layer landmark miss (e.g. no L3)
-            fills that layer and the remaining ones with the fallback, mirroring the original
-            break-on-first-fallback behavior.
+        The base image and 'total' seg are loaded once (with the arms-beside-body check) and reused
+        for every layer. Returns ``{layer: result_dict}``; a missing seg or landmark yields the fallback.
         """
         fallback = {"total_fat_in_%": None, "total_muscle_in_%": None, "muscle_fat_ratio": None}
         all_fallback = {layer: dict(fallback) for layer in layers}
@@ -594,23 +524,7 @@ class TotalSegmentatorMuscleFat:
     def remove_arms(
         self, tissue_img: nib.Nifti1Image, organ_img, labels, affine, z_axis, input_fpath: os.PathLike
     ) -> nib.Nifti1Image:
-        """Zero out arm voxels in the tissue-type segmentation using a TotalSegmentator body mask.
-
-        Runs the TotalSegmentator ``body`` task to obtain a trunk mask, extends it superiorly from the
-        scapula and inferiorly from the hip, and removes voxels lateral to the trunk — so arms-down
-        studies can still be quantified for LBM instead of being skipped.
-
-        Args:
-            tissue_img: Tissue-type segmentation image to be masked.
-            organ_img: Integer label array from the 'total' segmentation.
-            labels: 'total' segmentation mapping of label names to integers.
-            affine: Affine matrix of the segmentation image.
-            z_axis: Index of the head-to-toe axis (0, 1, or 2).
-            input_fpath: Path to the original CT NIfTI; used to derive the CTbody.nii.gz output path.
-
-        Returns:
-            The tissue-type segmentation with arm voxels zeroed out (unmodified on body-seg failure).
-        """
+        """Zero out arm voxels in the tissue seg using the TotalSegmentator body mask (arms-down studies)."""
         output_fpath = os.path.join(os.path.dirname(input_fpath), "CTbody.nii.gz")
         if not os.path.isfile(output_fpath):
             # Lazy import: pulls in torch/nnU-Net; only needed for arms-down studies.
@@ -674,10 +588,7 @@ def totalsegmentator_muscle_fat_entrypoint() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Recursively run TotalSegmentator for muscle and fat (ml option) on all CT.nii.gz or "
-        "MRI files in a folder. It processes each file, runs segmentation, extracts label mapping and "
-        "computes body-composition stats and the lean body mass (LBM). Creates CT_muscle_fat.nii.gz and "
-        "extends patient_info.json. Run the `sul` stage afterwards to produce SUL.nii.gz."
+        description="Run TotalSegmentator muscle/fat on all CT/MR images, recording body-composition stats and LBM."
     )
     parser.add_argument(
         "--input-dirpath-processed",

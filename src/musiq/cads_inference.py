@@ -29,9 +29,7 @@ VALID_TASK_IDS = {551, 552, 553, 554, 555, 556, 557, 558, 559}
 
 
 def _expand_task_deps(task_ids: list[int]) -> list[int]:
-    """Add the dependency tasks CADS needs internally (mirrors predict_preprocessed_images /
-    predict): groups 557/558 need 553 (brain) and 558 also needs 552 (spine). The combined
-    output is built over this expanded set, exactly as the monolithic predict() does."""
+    """Expand task_ids with required dependencies (557/558 need 553; 558 also needs 552)."""
     ids = sorted(task_ids)
     if any(t in ids for t in (557, 558)) and 553 not in ids:
         ids.append(553)
@@ -40,23 +38,15 @@ def _expand_task_deps(task_ids: list[int]) -> list[int]:
     return sorted(ids)
 
 
-# Combined-labelmap inverse (class name -> global label id), computed once at import so the
-# ProcessPool workers don't rebuild it per case.
+# Combined-labelmap inverse (class name -> global label id)
 _LABELMAP_INV = {v: k for k, v in labelmap_all_structure.items()}
 
 
 def _restore_one_case(job: dict) -> dict:
     """Restore + combine a single CADS case into its ``CTcads.nii.gz``.
 
-    Module-level (hence picklable) so it can run in a ProcessPoolExecutor worker — the per-case
-    work (9 label maps resampled back to original whole-body geometry) is the restore bottleneck
-    and is embarrassingly parallel across cases. Deliberately does NOT touch ``patient_info.json``:
-    studies of the same patient share one json, so concurrent writes would race — the parent
-    updates the json serially from the returned result instead. Cleanup only removes this case's
-    own staging files, so it is safe to do here.
-
-    Returns a result dict with a ``status`` in
-    {exists, no_seg, no_metadata, no_parts, error, wrote}.
+    Module-level (hence picklable) so it can run in a ProcessPoolExecutor worker. Returns a result
+    dict with a ``status`` in {exists, no_seg, no_metadata, no_parts, error, wrote}.
     """
     case = job["case"]
     dirpath = job["dirpath"]
@@ -82,16 +72,13 @@ def _restore_one_case(job: dict) -> dict:
         with open(metadata_path, "rb") as f:
             metadata_orig = pickle.load(f)
 
-        # Restore every part file to the original image geometry (in place).
         for seg_file in os.listdir(case_seg_dir):
             if not seg_file.endswith(".nii.gz"):
                 continue  # skip *_ERROR.log etc.
             seg_path = os.path.join(case_seg_dir, seg_file)
             restore_seg_in_orig_format(seg_path, seg_path, metadata_orig, num_threads_preprocessing=num_threads)
 
-        # Combine all task parts into one labelmap_all_structure segmentation. Read via dataobj
-        # (native integer dtype) rather than get_fdata() (float64) — labels are exact integers, so
-        # this cuts per-part memory ~8x, which matters when many workers run concurrently.
+        # Combine parts into labelmap_all_structure; read via dataobj (native int) not get_fdata (float64)
         seg_combined = None
         affine = None
         for task_id in expanded_tasks:
@@ -112,10 +99,10 @@ def _restore_one_case(job: dict) -> dict:
             return {**result, "status": "no_parts"}
 
         nib.save(nib.Nifti1Image(seg_combined, affine), output_fpath)
-    except Exception as e:  # keep one bad case from killing the whole pool
+    except Exception as e:  # don't let one bad case kill the pool
         return {**result, "status": "error", "error": repr(e)}
 
-    # Clean up this case's intermediates (only its own files → safe under parallelism).
+    # Clean up this case's intermediates
     for path in (os.path.join(preprocessed_dir, f"{case}.nii.gz"), metadata_path):
         if os.path.isfile(path):
             os.remove(path)
@@ -124,23 +111,8 @@ def _restore_one_case(job: dict) -> dict:
 
 
 class CadsInference:
-    """Staged CADS pipeline over the MUSIQ processed tree.
-
-    CADS is split into three standalone stages so CPU and GPU work can run as separate
-    jobs (see https://github.com/murong-xu/CADS Option 2). Intermediate artifacts are kept
-    in a staging directory (default ``<processed>/cads_staging``) keyed by a per-study case
-    id ``<patient_id>__<study_date>`` and auto-removed once a study's ``CTcads.nii.gz`` is
-    produced:
-
-    1. :meth:`preprocess` (CPU)  — reorient/resample each ``CT.nii.gz`` to 1.5 mm RAS and write
-       a ``<case>.nii.gz`` plus ``<case>_metadata.pkl``.
-    2. :meth:`inference` (GPU)   — run the CADS models on the preprocessed images, producing
-       per-task ``<case>_part_55X.nii.gz`` masks in preprocessed space.
-    3. :meth:`restore` (CPU)     — restore each part to the original geometry, combine them into
-       a single ``CTcads.nii.gz`` (labelmap_all_structure labels), update ``patient_info.json``
-       and clean up the case's intermediates.
-
-    :meth:`run` executes all three in order (used by the unified ``cads`` workflow task).
+    """Staged CADS pipeline (preprocess CT -> run models -> restore+combine into CTcads.nii.gz),
+    split so CPU/GPU stages run separately.
     """
 
     def __init__(
@@ -246,9 +218,7 @@ class CadsInference:
                 num_threads_preprocessing=self.num_threads_preprocessing,
             )
             if not os.path.isfile(pre_img):
-                # preprocess_nifti_and_save_to_dir skips writing when the CT is already at
-                # 1.5 mm RAS with zero origin (very rare for clinical CT). Without it the later
-                # stages have no input/metadata, so flag the case rather than silently dropping it.
+                # preprocess skips writing when CT is already 1.5mm RAS w/ zero origin; flag rather than silently drop
                 logger.warning(
                     f"No preprocessed image written for {case} (CT may already be 1.5 mm RAS); "
                     "this case will be skipped by inference/restore."
@@ -314,12 +284,7 @@ class CadsInference:
         expanded_tasks = _expand_task_deps(self.task_ids)
         cases = self._case_to_study()
 
-        # Parallelize across cases: per-case resampling of 9 whole-body label maps is the
-        # bottleneck (~minutes/case) and is independent per case. Peak memory scales with the number
-        # of CONCURRENT cases (each holds full-res whole-body volumes), NOT with CPU count — running
-        # one worker per CPU OOMs on whole-body CT. So the pool size (concurrent cases) is set by
-        # restore_workers, and each worker gets cpus//workers threads so all allocated cores stay
-        # busy without inflating the concurrent-case count. Rule of thumb: budget ~8 GB per worker.
+        # Parallelize across cases; peak memory scales with concurrent cases
         n_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK") or os.cpu_count() or 4)
         n_workers = max(1, self.restore_workers or n_cpus)
         per_worker_threads = max(1, n_cpus // n_workers)
@@ -350,8 +315,7 @@ class CadsInference:
             status = res["status"]
             if status == "wrote":
                 logger.info(f"Wrote {res['output_fpath']}.")
-                # patient_info.json is updated here in the parent (serially): studies of one
-                # patient share a json, so parallel workers must not write it concurrently.
+                # Update patient_info.json serially in the parent (studies of one patient share it)
                 self._update_patient_info(res["dirpath"], res["study_date"], res["output_fpath"])
             elif status == "exists":
                 logger.info(f"CTcads.nii.gz already exists for {case}, skipping restore.")

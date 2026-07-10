@@ -11,12 +11,7 @@ _REPO_ROOT = plb.Path(__file__).parent.parent.parent
 
 
 def build_cohort_info(output_dirpath: str) -> dict:
-    """Rebuild ``cohort_info.json`` fresh from every ``patient_info.json`` under ``output_dirpath``.
-
-    Walks the processed tree, merges each patient's ``patient_info.json`` keyed by ``PatientID``,
-    and overwrites ``cohort_info.json`` at the root. Does not pre-load the existing file, so patients
-    no longer on disk are dropped (a clean rebuild).
-    """
+    """Rebuild ``cohort_info.json`` by merging every ``patient_info.json`` (orphaned patients dropped)."""
     cohort_info = {}
     for dirpath, dirnames, filenames in os.walk(output_dirpath):
         # Don't descend into non-patient dirs (e.g. cads_staging intermediates).
@@ -65,42 +60,16 @@ class Workflow:
         boa_runtime: str = "docker",
         boa_sif: str | None = None,
     ) -> None:
-        """
-        Run the MUSIQ workflow with the specified parameters.
+        """Configure a MUSIQ workflow run.
 
-        Args:
-            input_dir (str): Path to the input directory containing PET/CT images.
-            output_dir (str): Path to the output directory for results.
-            tasks (list[str] | None): List of tasks to run. If None, all tasks are run. Possible values are:
-                - "series_selection": Select series based on keywords.
-                - "autopet": Run autopet3 on PET images.
-                - "totalsegmentator": Run TotalSegmentator on CT images.
-                - "moose": Run Moose on CT images.
-                - "radiomics": Extract radiomics features from selected series.
-                - "tumor": Compute tumor level statistics.
-                - "plot": Create visualisations.
-                - "cads": Run CADS on CT images.
-                - "boa": Run UMEssen BOA Body Composition Analysis (BCA) on CT images via Docker.
-            ct_primary_keywords (list[str] | None): Keywords for primary selection of CT series.
-            ct_secondary_keywords (list[str] | None): Keywords for secondary selection of CT series.
-            ct_exclusion_keywords (list[str] | None): Keywords to exclude CT series.
-            pt_primary_keywords (list[str] | None): Keywords for primary selection of PT series.
-            pt_secondary_keywords (list[str] | None): Keywords for secondary selection of PT series.
-            pt_exclusion_keywords (list[str] | None): Keywords to exclude PT series.
-            mr_primary_keywords (list[str] | None): Keywords for primary selection of MR series.
-            mr_secondary_keywords (list[str] | None): Keywords for secondary selection of MR series.
-            mr_exclusion_keywords (list[str] | None): Keywords to exclude MR series.
-            pet_metric (str | list[str] | None): PET metric(s) to use for radiomics and tumor computations.
-            Possible values are "SUV" and "SUL". Can pass one or both. Defaults to ["SUV", "SUL"].
+        Runs the selected task stages over the input tree, writing results into the processed tree.
         """
         self.input_dirpath = input_dirpath
         self.output_dirpath = output_dirpath
         if pet_metric is None:
             pet_metric = ["SUV", "SUL"]
         self.pet_metric = pet_metric
-        # Which mask(s) the radiomics/tumor stages compute on: "auto" (PETseg -> TumorStats[SUL]) and/or
-        # "revised" (physician label -> TumorStatsRevised). Both run sequentially, so their distinct
-        # output keys never race even under multiprocessing.
+        # mask_sources: 'auto' (PETseg -> TumorStats[SUL]) and/or 'revised' (physician label -> TumorStatsRevised)
         if mask_sources is None:
             mask_sources = ["auto"]
         for s in mask_sources:
@@ -230,7 +199,6 @@ class Workflow:
         return kwargs
 
     def run(self) -> None:
-        # Ensure output directory exists
         os.makedirs(self.output_dirpath, exist_ok=True)
 
         if self.series_selection:
@@ -376,7 +344,7 @@ class Workflow:
 
 def workflow_entrypoint():
     """Entrypoint to run the MUSIQ workflow."""
-    # Set the start method for multiprocessing to 'spawn' for compatibility
+    # Use spawn start method
     mp.set_start_method("spawn", force=True)
 
     global logger
@@ -408,9 +376,7 @@ def workflow_entrypoint():
         help="Staging dir for CADS intermediates. Default: <output-dirpath>/cads_staging.",
     )
     parser.add_argument("--cads-cpu", action="store_true", help="Run CADS inference on CPU instead of GPU.")
-    # nargs="*" so a flag passed without values yields an empty list (distinct from absent=None).
-    # Passing any keyword flag empty disables keyword filtering and selects every series — useful
-    # for anonymized cohorts whose Series/Study Description tags are empty.
+    # nargs="*": passing a keyword flag empty selects all series (anonymized cohorts w/ empty descriptions)
     parser.add_argument(
         "--ct-primary-keywords",
         nargs="*",
