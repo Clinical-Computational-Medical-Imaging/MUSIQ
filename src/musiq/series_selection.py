@@ -471,10 +471,39 @@ class SeriesSelection:
             elif any(sk in desc for sk in secondary_keywords):
                 modality_matches[modality]["secondary"].append(i)
 
+        def _num_slices(idx: int) -> int:
+            if "NumSlices" not in series_list[idx]:
+                series_list[idx]["NumSlices"] = self.get_number_of_slices(series_list[idx]["SeriesPath"])
+            return series_list[idx]["NumSlices"]
+
+        single_pt_done = False
         for match_type in ["primary", "secondary"]:
-            for _modality, match in modality_matches.items():
+            for modality, match in modality_matches.items():
                 indices = match[match_type]
                 if not indices:
+                    continue
+
+                # PET: exactly one series per study. Pick the highest-priority match by keyword
+                # order in the PRIMARY/SECONDARY list, tie-broken by most slices — so duplicate
+                # reconstructions of one acquisition (QC/body variants) never add extra series.
+                if modality == "PT":
+                    if single_pt_done:
+                        continue
+                    kw_list = [k.lower() for k in self.series_keywords["PT"].get(match_type.upper(), [])]
+                    best_idx = min(
+                        indices,
+                        key=lambda x, kw=kw_list: (
+                            min(
+                                (p for p, k in enumerate(kw) if k in series_list[x]["SeriesDescription"].lower()),
+                                default=len(kw),
+                            ),
+                            -_num_slices(x),
+                        ),
+                    )
+                    preselected_indices.append(best_idx)
+                    single_pt_done = True
+                    if match_type == "secondary":
+                        secondary_used = True
                     continue
 
                 desc_group_indices = defaultdict(list)
@@ -501,6 +530,32 @@ class SeriesSelection:
         logger.info("✅ Selected Series:")
         patient_id = list(selected_series.keys())[0]
         flags = []
+
+        # A PET series may carry PatientWeight = 0/missing (which zeros out SUV). Precompute a
+        # positive study weight up front — independent of processing order — to fall back on when
+        # the PET tag is invalid: first from any selected series' DICOM (e.g. the CT), then from a
+        # previously recorded (possibly manually recovered) study weight in patient_info.json.
+        study_weight = None
+        for s in selected_series[patient_id]:
+            w = extract_dicom_data(plb.Path(s["SeriesPath"]), self.series_tags).get("PatientWeight")
+            try:
+                if w is not None and float(w) > 0:
+                    study_weight = float(w)
+                    break
+            except (TypeError, ValueError):
+                pass
+        if study_weight is None:
+            recorded_pj = os.path.join(self.output_dirpath, patient_id, "patient_info.json")
+            study_date0 = selected_series[patient_id][0]["StudyDate"]
+            if os.path.isfile(recorded_pj):
+                try:
+                    with open(recorded_pj) as fh:
+                        recorded = json.load(fh).get("Studies", {}).get(study_date0, {})
+                    w = recorded.get("PatientWeight")
+                    if w is not None and float(w) > 0:
+                        study_weight = float(w)
+                except (ValueError, TypeError, OSError):
+                    pass
 
         for i, series in enumerate(selected_series[patient_id]):
             study_date = series["StudyDate"]
@@ -532,6 +587,7 @@ class SeriesSelection:
                 dicom_input_dirpath=series_path,
                 out_dirpath=os.path.join(self.output_dirpath, patient_id, study_date),
                 dynamic_sibling_dirs=series.get("DynamicSiblingPaths"),
+                fallback_weight=study_weight,
             )
             if paths_and_dicom_tags:
                 self.patient_results[patient_id]["Studies"][study_date]["Modalities"][modality].append(
@@ -543,7 +599,9 @@ class SeriesSelection:
         logger.info("-" * 90)
         return flags
 
-    def start_dcm2nii(self, modality, dicom_input_dirpath, out_dirpath, dynamic_sibling_dirs=None) -> tuple[bool, dict]:
+    def start_dcm2nii(
+        self, modality, dicom_input_dirpath, out_dirpath, dynamic_sibling_dirs=None, fallback_weight=None
+    ) -> tuple[bool, dict]:
         """Start the DICOM to NIfTI conversion process for the specified modality.
 
         Args:
@@ -565,7 +623,9 @@ class SeriesSelection:
             elif modality == "PT":
                 out_fpath = os.path.join(out_dirpath, "PET.nii.gz")
                 suv_fpath = os.path.join(out_dirpath, "SUV.nii.gz")
-                dicom_tags = self.convert_dcm2nii_PET(PET_dcm_dirpath=dicom_input_dirpath, output_dirpath=out_dirpath)
+                dicom_tags = self.convert_dcm2nii_PET(
+                    PET_dcm_dirpath=dicom_input_dirpath, output_dirpath=out_dirpath, fallback_weight=fallback_weight
+                )
             elif modality == "MR":
                 out_fpath, dicom_tags = self.convert_dcm2nii_MR(
                     MR_dcm_dirpath=dicom_input_dirpath,
@@ -672,12 +732,19 @@ class SeriesSelection:
             dicom_tags = extract_dicom_data(plb.Path(CT_dcm_dirpath), self.dicom_tags)
         return dicom_tags
 
-    def convert_dcm2nii_PET(self, PET_dcm_dirpath: str | os.PathLike, output_dirpath: str | os.PathLike) -> dict:
+    def convert_dcm2nii_PET(
+        self,
+        PET_dcm_dirpath: str | os.PathLike,
+        output_dirpath: str | os.PathLike,
+        fallback_weight: float | None = None,
+    ) -> dict:
         """Conversion of PET DICOM (in the PET_dcm_path) to nifti (and SUV nifti) and save in output_dirpath.
 
         Args:
             PET_dcm_dirpath (str | os.PathLike): Directory containing the PET DICOM files.
             output_dirpath (str | os.PathLike): Directory to save the converted NIfTI files.
+            fallback_weight (float | None): Study-level PatientWeight to use when the PET series tag is
+                missing or non-positive (some scans carry PatientWeight = 0, which would zero out SUV).
 
         Returns:
             dict: A dictionary containing the DICOM tags extracted from the converted NIfTI files.
@@ -696,7 +763,19 @@ class SeriesSelection:
         total_dose = float(seq.RadionuclideTotalDose)
         start_time = str(seq.RadiopharmaceuticalStartTime)
         half_life = float(seq.RadionuclideHalfLife)
-        weight = float(ds.PatientWeight)
+        raw_weight = getattr(ds, "PatientWeight", None)
+        weight = float(raw_weight) if raw_weight not in (None, "") else 0.0
+        # A missing/zero PET-series PatientWeight would make the SUV factor 0 (SUV.nii.gz all zeros).
+        # Fall back to the study-level weight (e.g. from the CT series) when available.
+        if weight <= 0:
+            if fallback_weight and float(fallback_weight) > 0:
+                logger.warning(
+                    f"PET series PatientWeight={raw_weight} in {PET_dcm_dirpath}; "
+                    f"using study-level weight {fallback_weight} kg for the SUV factor."
+                )
+                weight = float(fallback_weight)
+            else:
+                logger.error(f"No valid PatientWeight for {PET_dcm_dirpath}; SUV factor will be invalid.")
 
         # Decay-correction reference time. Whole-body PET AcquisitionTime (0008,0032) varies
         # per bed position; the scanner decay-corrects the pixels to the acquisition START
@@ -706,8 +785,10 @@ class SeriesSelection:
         ref_time, decay_ref = resolve_pet_decay_reference(PET_dcm_dirpath, ds)
         suv_corr_factor = calculate_suv_factor(total_dose, start_time, half_life, ref_time, weight)
 
-        if os.path.isfile(out_pet_fpath) and os.path.isfile(out_suv_fpath):
-            logger.info(f"PET NIfTI and SUV NIfTI already exist at {out_pet_fpath} and {out_suv_fpath}")
+        # Regenerate only what is missing; never overwrite an existing PET. SUV is a pure scaling
+        # of PET, so a missing SUV is rebuilt from the existing PET without reconverting it.
+        if os.path.isfile(out_pet_fpath):
+            logger.info(f"PET NIfTI already exists at {out_pet_fpath}; not reconverting.")
             dicom_tags = extract_dicom_data(plb.Path(PET_dcm_dirpath), self.dicom_tags)
         else:
             with tempfile.TemporaryDirectory() as tmp:  # convert PET
@@ -715,12 +796,15 @@ class SeriesSelection:
                 # convert dicom directory to nifti (store results in temp directory)
                 run_dcm2niix(PET_dcm_dirpath, plb.Path(tmp))
                 nii = next(tmp.glob("*nii.gz"))
-                # copy nifti to output folder with consistent naming
-                shutil.copy(nii, out_pet_fpath)
+                # copy nifti to output folder with consistent naming (copyfile: data only, no chmod)
+                shutil.copyfile(nii, out_pet_fpath)
                 sidecar = next(tmp.glob("*json"))
                 with open(sidecar) as json_file:
                     dicom_tags = json.load(json_file)
 
+        if os.path.isfile(out_suv_fpath):
+            logger.info(f"SUV NIfTI already exists at {out_suv_fpath}; not regenerating.")
+        else:
             # convert pet images to quantitative suv images and save nifti file
             suv_pet_nii = convert_pet(nib.load(out_pet_fpath), suv_factor=suv_corr_factor)  # type: ignore
             nib.save(img=suv_pet_nii, filename=out_suv_fpath)  # type: ignore
@@ -734,6 +818,9 @@ class SeriesSelection:
         dicom_tags["AcquisitionTime"] = ref_time
         dicom_tags["SUVFactor"] = suv_corr_factor
         dicom_tags["DecayCorrectionReference"] = decay_ref
+        # Record the weight actually used for the factor (may be the study-level fallback), so the
+        # JSON is consistent with SUV.nii.gz and the SUL stage's SUVFactor*LBM/weight reuse is correct.
+        dicom_tags["PatientWeight"] = weight
         return dicom_tags
 
     def _dynamic_sibling_dirs(self, study_info: list, entry: dict) -> list | None:
