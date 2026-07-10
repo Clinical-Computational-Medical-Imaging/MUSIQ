@@ -9,10 +9,8 @@ from .utils import list_patient_dirs
 
 logger = logging.getLogger(__name__)
 
-# Names BOA writes into its --output-dir for the BCA segmentation maps. They are
-# moved into the study root with these MUSIQ-style names. ``total.nii.gz`` is the
-# reused TotalSegmentator organ map and is intentionally excluded (it is the seed,
-# not a BCA product).
+# BOA output name -> MUSIQ study-root name for BCA segmentation maps.
+# ``total.nii.gz`` is excluded: it's the reused seed, not a BCA product.
 BCA_SEG_RENAME = {
     "tissues.nii.gz": "CTbca_tissues.nii.gz",
     "body_regions.nii.gz": "CTbca_body_regions.nii.gz",
@@ -111,7 +109,7 @@ class BoaInference:
                 self._process_study(dirpath, patient_id, study_date)
 
     def _process_study(self, dirpath: str, patient_id: str, study_date: str) -> None:
-        # Idempotency: skip if the BCA tissue map already lives next to CT.nii.gz.
+        # Skip if BCA outputs already exist
         final_seg = os.path.join(dirpath, BCA_SEG_RENAME["tissues.nii.gz"])
         if os.path.isfile(final_seg):
             logger.info(f"BCA outputs already exist for {patient_id} {study_date}, skipping.")
@@ -120,7 +118,7 @@ class BoaInference:
         work_dir = os.path.join(dirpath, "boa")
         os.makedirs(work_dir, exist_ok=True)
 
-        # Seed the reused TotalSegmentator organ map so BOA skips the `total` model.
+        # Seed total seg so BOA skips the 'total' model
         ctseg_path = os.path.join(dirpath, "CTseg.nii.gz")
         if self.reuse_total:
             if os.path.isfile(ctseg_path):
@@ -146,9 +144,7 @@ class BoaInference:
         self._update_patient_info(dirpath, study_date, patient_id, seg_paths, metrics)
 
     def _seed_total(self, work_dir: str, ctseg_path: str) -> None:
-        """Place CTseg.nii.gz as total.nii.gz in BOA's output dir via a relative symlink
-        (copy fallback). Both files share the study dir, so a relative link resolves
-        correctly inside the Docker bind mount."""
+        """Place CTseg.nii.gz as total.nii.gz in BOA's output dir (relative symlink, copy fallback)."""
         total_path = os.path.join(work_dir, "total.nii.gz")
         if os.path.lexists(total_path):
             os.remove(total_path)
@@ -164,8 +160,7 @@ class BoaInference:
         return self._build_docker_cmd(study_dir)
 
     def _boa_args(self) -> list[str]:
-        """The inner BOA invocation, identical across runtimes. Paths are container-side
-        (``/workspace`` is the bind-mounted study dir)."""
+        # Container-side paths (/workspace = bind-mounted study dir)
         args = [
             "python",
             "-m",
@@ -210,10 +205,10 @@ class BoaInference:
         return cmd
 
     def _build_apptainer_cmd(self, study_dir: str) -> list[str]:
-        """Apptainer equivalent of the Docker command. ``exec`` bypasses the image
-        ENTRYPOINT so the command runs directly as the invoking user (no DOCKER_USER
-        chown needed); ``--nv`` exposes the GPU; the host's /dev/shm and ulimits are
-        inherited, so --shm-size/--ulimit are unnecessary."""
+        """Apptainer equivalent of the Docker command.
+
+        ``exec`` bypasses ENTRYPOINT (runs as the invoking user); ``--nv`` exposes the GPU.
+        """
         cmd = ["apptainer", "exec"]
         if self.device != "cpu":
             cmd.append("--nv")
@@ -225,8 +220,7 @@ class BoaInference:
         return cmd
 
     def _collect_segmentations(self, work_dir: str, study_dir: str) -> dict[str, str]:
-        """Move BOA's BCA segmentation NIfTIs up into the study root with MUSIQ-style
-        names. Returns {json_key: path} for the ones found."""
+        """Move BCA segmentation NIfTIs to the study root with MUSIQ names; return {json_key: path}."""
         seg_paths: dict[str, str] = {}
         for src_name, dst_name in BCA_SEG_RENAME.items():
             src = os.path.join(work_dir, src_name)
@@ -238,14 +232,14 @@ class BoaInference:
             key = f"{dst_name[:-7]}Path"  # e.g. CTbca_tissuesPath
             seg_paths[key] = dst
 
-        # Surface any other (unexpected) segmentation files so naming drift is visible.
+        # Log unexpected seg files
         for f in os.listdir(work_dir):
             if f.endswith(".nii.gz") and f != "total.nii.gz" and f not in BCA_SEG_RENAME:
                 logger.warning(f"Unmapped BOA segmentation file left in {work_dir}: {f}")
         return seg_paths
 
     def _collect_metrics(self, work_dir: str) -> dict:
-        """Read BOA's JSON measurement files into a single dict keyed by file stem."""
+        """Aggregate BOA JSON measurements keyed by file stem."""
         metrics: dict = {}
         for f in sorted(os.listdir(work_dir)):
             if not f.endswith(".json"):
@@ -301,9 +295,7 @@ def boa_inference_entrypoint() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Recursively run the UMEssen BOA Body Composition Analysis (BCA) on all CT.nii.gz "
-        "files in a processed folder via the shipai/boa-cli Docker image. Reuses MUSIQ's CTseg.nii.gz "
-        "as BOA's total segmentation when present."
+        description="Run BOA Body Composition Analysis (BCA) on all CT.nii.gz in a processed folder."
     )
     parser.add_argument(
         "--input-dirpath-processed", type=str, required=True, help="Path to the processed output folder."

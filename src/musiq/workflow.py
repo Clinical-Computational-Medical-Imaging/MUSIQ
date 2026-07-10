@@ -11,12 +11,7 @@ _REPO_ROOT = plb.Path(__file__).parent.parent.parent
 
 
 def build_cohort_info(output_dirpath: str) -> dict:
-    """Rebuild ``cohort_info.json`` fresh from every ``patient_info.json`` under ``output_dirpath``.
-
-    Walks the processed tree, merges each patient's ``patient_info.json`` keyed by ``PatientID``,
-    and overwrites ``cohort_info.json`` at the root. Does not pre-load the existing file, so patients
-    no longer on disk are dropped (a clean rebuild).
-    """
+    """Rebuild ``cohort_info.json`` by merging every ``patient_info.json`` (orphaned patients dropped)."""
     cohort_info = {}
     for dirpath, dirnames, filenames in os.walk(output_dirpath):
         # Don't descend into non-patient dirs (e.g. cads_staging intermediates).
@@ -98,9 +93,7 @@ class Workflow:
         if pet_metric is None:
             pet_metric = ["SUV", "SUL"]
         self.pet_metric = pet_metric
-        # Which mask(s) the radiomics/tumor stages compute on: "auto" (PETseg -> TumorStats[SUL]) and/or
-        # "revised" (physician label -> TumorStatsRevised). Both run sequentially, so their distinct
-        # output keys never race even under multiprocessing.
+        # mask_sources: 'auto' (PETseg -> TumorStats[SUL]) and/or 'revised' (physician label -> TumorStatsRevised)
         if mask_sources is None:
             mask_sources = ["auto"]
         for s in mask_sources:
@@ -230,7 +223,6 @@ class Workflow:
         return kwargs
 
     def run(self) -> None:
-        # Ensure output directory exists
         os.makedirs(self.output_dirpath, exist_ok=True)
 
         if self.series_selection:
@@ -376,7 +368,7 @@ class Workflow:
 
 def workflow_entrypoint():
     """Entrypoint to run the MUSIQ workflow."""
-    # Set the start method for multiprocessing to 'spawn' for compatibility
+    # Use spawn start method
     mp.set_start_method("spawn", force=True)
 
     global logger
@@ -408,9 +400,7 @@ def workflow_entrypoint():
         help="Staging dir for CADS intermediates. Default: <output-dirpath>/cads_staging.",
     )
     parser.add_argument("--cads-cpu", action="store_true", help="Run CADS inference on CPU instead of GPU.")
-    # nargs="*" so a flag passed without values yields an empty list (distinct from absent=None).
-    # Passing any keyword flag empty disables keyword filtering and selects every series — useful
-    # for anonymized cohorts whose Series/Study Description tags are empty.
+    # nargs="*": passing a keyword flag empty selects all series (anonymized cohorts w/ empty descriptions)
     parser.add_argument(
         "--ct-primary-keywords",
         nargs="*",

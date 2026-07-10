@@ -14,20 +14,11 @@ logger = logging.getLogger(__name__)
 
 class TotalSegmentatorInference:
     def __init__(self, input_dirpath_processed: str | os.PathLike) -> None:
-        """Class to handle TotalSegmentator inference on CT.nii.gz files in a specified folder.
-        It processes each file, runs segmentation, extracts label mapping. Creates CTseg.nii.
-
-        Args:
-            input_dirpath_processed (str | os.PathLike): Directory containing the CT.nii.gz files. Can be nested.
-        """
+        """Run TotalSegmentator on CT.nii.gz files."""
         self.input_dirpath = input_dirpath_processed
 
     def run(self) -> None:
-        """
-        Recursively search the folder for CT.nii.gz files.
-        For each found file, create a 'CTseg' subfolder, run segmentation using ml option,
-        extract the label mapping from the segmentation output, and save a metadata JSON file.
-        """
+        """Process CT files: run segmentation, extract labels, save metadata."""
         if not os.path.isdir(self.input_dirpath):
             logger.error(f"Error: {self.input_dirpath} is not a valid directory.")
             return
@@ -48,11 +39,10 @@ class TotalSegmentatorInference:
                 patient_dirpath = os.path.join(self.input_dirpath, patient_id)
 
                 for filename in filenames:
-                    # Skip muscle/fat segmentations - we don't want an organ segmentation on top of them.
+                    # Skip muscle/fat segmentations
                     if filename.endswith("_muscle_fat.nii.gz"):
                         continue
 
-                    # Determine if this is a CT or MR file and set parameters accordingly
                     is_ct = filename == "CT.nii.gz"
                     is_mr = (
                         filename.endswith("nii.gz")
@@ -93,7 +83,7 @@ class TotalSegmentatorInference:
 
                     logger.info(f"Processing file {filename} for patient {patient_id}.")
 
-                    # Run TotalSegmentator using the Python API with ml option and appropriate task.
+                    # Run segmentation
                     try:
                         totalsegmentator(
                             input_fpath,
@@ -109,7 +99,7 @@ class TotalSegmentatorInference:
                         logger.error(f"Error during segmentation for {input_fpath}:\n  {e}")
                         continue
 
-                    # Load the segmentation file to extract the label mapping from its extended header.
+                    # Extract label mapping from the seg header
                     try:
                         segmentation_img, label_map_dict = load_multilabel_nifti(output_fpath)
                         logger.info("Label mapping successfully loaded from segmentation file.")
@@ -117,7 +107,6 @@ class TotalSegmentatorInference:
                         logger.error(f"Error loading segmentation file {output_fpath}: {e}")
                         label_map_dict = {}
 
-                    # Prepare metadata with settings, task/model info, and the label mapping obtained.
                     seg_metadata = {
                         "settings": {"input_fpath": input_fpath, "task": task, "ml": True},
                         "model": "total",

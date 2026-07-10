@@ -74,7 +74,7 @@ class TumorInfoExtraction:
         self.label_dirpath = label_dirpath
         self.label_glob = label_glob
         self.workers = max(1, int(workers))
-        self.skipped: list[dict] = []  # studies skipped due to a grid mismatch with the SUV/SUL image
+        self.skipped: list[dict] = []  # studies skipped on grid mismatch
 
     def run(self) -> None:
         for metric in self.pet_metrics:
@@ -111,8 +111,7 @@ class TumorInfoExtraction:
                 continue
 
             study_dirs = sorted(study_dirs, key=lambda x: os.path.basename(os.path.dirname(x)))
-            # Group study dirs by patient dir so each patient_info.json is only ever touched by one
-            # worker — this is what makes multiprocessing safe.
+            # Group by patient dir so each patient_info.json has a single writer
             patient_groups: dict[str, list[str]] = {}
             for d in study_dirs:
                 patient_groups.setdefault(os.path.dirname(d), []).append(d)
@@ -193,12 +192,7 @@ class TumorInfoExtraction:
 
         petseg_array = metrics.get_3darray_from_niftipath(petseg_fpath)
         suv_array = metrics.get_3darray_from_niftipath(suv_fpath)
-        # A revised (physician) label must line up with the SUV/SUL image. Shapes can differ even when the
-        # label shares physical space (e.g. a different z-crop), so rather than rejecting on shape we
-        # resample the label onto the image grid (world space, nearest-neighbor) and only skip when the
-        # tumor falls entirely outside the image world space — a genuinely disjoint reconstruction, which
-        # resamples to empty. (Automated PETseg masks share the grid by construction, so this only affects
-        # revised masks.)
+        # Revised label must align in world-space; resample if shape differs, skip if disjoint
         if self.mask_source == "revised" and petseg_array.shape != suv_array.shape:
             resampled = resample_label_to_image_grid(petseg_fpath, suv_fpath, study_dirpath)
             if resampled is None or ((petseg_array > 0).any() and not (resampled > 0).any()):
@@ -230,7 +224,6 @@ class TumorInfoExtraction:
 
         study_date = study_dirpath.split(os.sep)[-1]
 
-        # expects exactly one CT per serie
         if json_exists:
             series_name = next(iter(patient_info["Studies"][study_date]["Modalities"]["CT"][0]))
             try:
@@ -252,15 +245,10 @@ class TumorInfoExtraction:
         # Perform connected component analysis
         labeled_tumors, num_lesions = cc3d.connected_components(petseg_array, connectivity=26, return_N=True)
 
-        # Compute each lesion inside a small padded bounding box instead of scanning the full volume once
-        # per lesion. Cost then scales with total lesion size rather than num_lesions * volume, so a
-        # highly multifocal mask (thousands of components) no longer takes hours. Padding keeps results
-        # identical to a full-volume computation: >=1 voxel so marching-cubes closes the surface, and
-        # >= the SUVpeak 1 cm^3 half-kernel so the peak neighbourhood is fully contained.
+        # Per-lesion bbox (cost scales with lesion size); pad >= SUVpeak kernel width + >=1 voxel for marching cubes
         pad = [max(1, _suvpeak_half_kernel(sp)) for sp in spacing]
         bboxes = ndimage.find_objects(labeled_tumors)
 
-        # Process each tumor
         results = []
         for i in range(1, num_lesions + 1):
             bbox = bboxes[i - 1]

@@ -49,7 +49,7 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
 
 6. **CT Segmentation with CADS v1.0.0**
    - Performs organ segmentation on CT images using the CADS model using the specified tasks and saves everything to a single file. The labels are set as the labelmap_all_structure  as shown here https://github.com/murong-xu/CADS/tree/main/cads/dataset_utils.
-   - Runs as a **staged pipeline** (CADS "Option 2"): preprocess (CPU) → inference (GPU) → restore+combine (CPU). The `cads` workflow task runs all three in sequence; for large cohorts the stages can be run as separate CPU/GPU jobs (see *Large-scale staged CADS* below). Intermediates live in a staging dir (default `<output>/cads_staging`) and are auto-removed once each `CTcads.nii.gz` is written.
+   - Runs as a **staged pipeline** (CADS "Option 2"): preprocess (CPU) → inference (GPU) → restore+combine (CPU). The `cads` workflow task runs all three in sequence; for large cohorts the stages can be run as separate CPU/GPU jobs (see [docs/staged-cads.md](docs/staged-cads.md)). Intermediates live in a staging dir (default `<output>/cads_staging`) and are auto-removed once each `CTcads.nii.gz` is written.
    - Output:
       - `CTcads.nii.gz`
       - Expands `patient_info.json` with CADS information
@@ -64,7 +64,7 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
 
 8. **Body Composition Analysis with BOA (BCA)**
    - Runs the UMEssen [Body-and-Organ-Analysis](https://github.com/UMEssen/Body-and-Organ-Analysis) BCA component on each `CT.nii.gz` via the `shipai/boa-cli` Docker image (no Python dependency added — BOA runs in its own container).
-   - Reuses MUSIQ's existing `CTseg.nii.gz` as BOA's `total` segmentation when present, so the 104-organ TotalSegmentator step is not recomputed. Run `totalsegmentator` before `boa`. (MUSIQ pins TotalSegmentator 2.9.0 while BOA targets 2.12.0, but the `total` task's 117-class label map is identical across those versions, so the reused segmentation is labeled correctly. Disable reuse with `--boa-no-reuse-total` if you ever align both to a version where the map differs.)
+   - Reuses MUSIQ's existing `CTseg.nii.gz` as BOA's `total` segmentation when present, so the 104-organ TotalSegmentator step is not recomputed. Run `totalsegmentator` before `boa`; disable reuse with `--boa-no-reuse-total`.
    - Outputs (next to the other NIfTIs):
      - `CTbca_tissues.nii.gz` – tissue (SAT/VAT/muscle/bone) segmentation
      - `CTbca_body_regions.nii.gz` – body-region segmentation
@@ -72,55 +72,15 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
      - Expands `patient_info.json` with a `BCA` block and the segmentation paths
 
 9. **Radiomics Extraction**
-   - Computes key radiomics metrics from SUV or SUL and CT scans.
-   - Output: Extension of `patient_info.json`
-      - SUV or SUL (mean, max, peak median, std)
-      - Lesion count
-      - Total Metabolic Tumor Volume (TMTV)
-      - Total Metabolic Tumor Volume (TMTV) with thresholds
-         - 0.3, 0.4, 0.41, 0.5, 2.5, 3.0, 3.5, 4.0
-      - Total Lesion Glycolysis (TLG)
-      - Tumor Dissemination (Dmax)
-      - Tumor Dissemination standardized by patient's height and weight(SDmax)
-      - Surface Area
-   - **Mask source** (`--mask-source`, see [Mask sources](#mask-sources-automated-vs-revised-labels)): `auto` uses the
-     automated `PETseg.nii.gz`/`PETsegSUL.nii.gz` and writes `TumorStats` (SUV) / `TumorStatsSUL` (SUL); `revised` uses
-     the physician label and writes `TumorStatsRevised`.
+   - Computes radiomics metrics from SUV or SUL and CT and adds them to `patient_info.json`: SUV/SUL stats (mean, max, peak, median, std), lesion count, TMTV (also at thresholds 0.3/0.4/0.41/0.5/2.5/3.0/3.5/4.0), TLG, tumor dissemination (Dmax) and its height/weight-standardized form (SDmax), and surface area.
+   - **Mask source** (`--mask-source`, see [docs/mask-sources.md](docs/mask-sources.md)): `auto` uses the automated `PETseg.nii.gz`/`PETsegSUL.nii.gz` and writes `TumorStats` (SUV) / `TumorStatsSUL` (SUL); `revised` uses the physician label and writes `TumorStatsRevised`.
 
 10. **Tumor Size Analysis**
-   - Quantifies tumor volume per organ based on segmentations.
-   - Output:
-      - `CTsegres.nii.gz` – Resampled segmentation mask to PT
-      - extension of `patient_info.json`
-         - Volume
-         - Organ overlap
-         - SUV or SUL (mean, max, peak median, std)
-         - Surface area
+   - Quantifies tumor volume per organ. Outputs `CTsegres.nii.gz` (segmentation resampled to PET) and extends `patient_info.json` with per-organ volume, organ overlap, SUV/SUL stats and surface area.
    - Same `--mask-source` behaviour as Radiomics (per-lesion results land under the matching `TumorStats*` key).
 
 11. **Optional Plotting**
    - Generates visualizations
-
----
-
-## Output
-Each patient folder includes:
-- `CT.nii.gz`
-- `CTcads.nii.gz`
-- `CTmoose_organs.nii.gz`
-- `CTres.nii.gz`
-- `CTseg.nii.gz`
-- `CTsegres.nii.gz`
-- `PET.nii.gz`
-- `SUV.nii.gz`
-- `SUL.nii.gz`
-- `PETseg.nii.gz`
-- `PETsegSUL.nii.gz`
-- `patient_info.json`
-
-Summary for the whole cohort:
-- `validation_results.csv`
-- `cohort_results.json`
 
 ---
 
@@ -213,11 +173,7 @@ docker pull shipai/boa-cli
 ```
   Optionally download the BOA/TotalSegmentator weights to a local directory and pass it via `--boa-weights-path` (otherwise BOA downloads them on first run). Run `totalsegmentator` before `boa` so the existing `CTseg.nii.gz` is reused as BOA's `total` segmentation (disable with `--boa-no-reuse-total`).
 
-- **On an HPC cluster (Apptainer/Singularity):** pass `--boa-runtime apptainer --boa-sif /path/to/boa-cli.sif`. Build the SIF once on a node that has `apptainer` (not the scheduler) from the provided **`boa-cli.def`** definition file:
-```bash
-apptainer build --fakeroot boa-cli.sif boa-cli.def   # build node needs internet to pull docker://shipai/boa-cli
-```
-  `boa-cli.def` bootstraps the stock `shipai/boa-cli` image and stubs out TotalSegmentator's `preview.py`. This is **required** on hosts with glibc ≥ 2.38: `--nv` binds the host's GL libraries (`libGLdispatch.so.0`) into the container, and the stock image (glibc 2.31) then fails at import time with `` ImportError: ... version `GLIBC_2.38' not found ``. MUSIQ never uses that preview image, so removing the `fury`/OpenGL import fixes it without touching BOA's pinned CUDA stack. (If the build node has no internet, edit the def's header to `Bootstrap: docker-archive` / `From: boa-cli-all.tar` and point it at a saved image archive.) Two more cluster-specific notes: (1) `apptainer exec` runs as your own user, so outputs come out owned by you and no `DOCKER_USER` chown is needed; (2) the SIF filesystem is **read-only**, so BOA cannot download weights at runtime — you **must** pass `--boa-weights-path` to a pre-populated, writable, shared directory (unless the image already bundles the weights). Request a GPU in your sbatch script (`--gres=gpu:1`); MUSIQ adds `--nv` automatically unless `--boa-device cpu`.
+- **On an HPC cluster (Apptainer/Singularity):** pass `--boa-runtime apptainer --boa-sif /path/to/boa-cli.sif`, built once from the provided `boa-cli.def`. See **[docs/cluster.md](docs/cluster.md)** for the build steps and the glibc/weights/GPU caveats.
 
 - To start the whole workflow run:
 ```bash
@@ -227,43 +183,12 @@ musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_
 - See `pyproject.toml` to see commands for running only parts of the pipeline in a modular way.
 
 ### Mask sources: automated vs. revised labels
-The `radiomics` and `tumor` stages compute on one or both mask sources, chosen with `--mask-source`:
-
-| `--mask-source` | Mask used | JSON keys | Metrics |
-| --- | --- | --- | --- |
-| `auto` (default) | automated `PETseg.nii.gz` / `PETsegSUL.nii.gz` | `TumorStats` / `TumorStatsSUL` | per `--pet-metric` (SUV and/or SUL) |
-| `revised` | physician label (see `--label-dirpath` / `--label-glob` below) | `TumorStatsRevised` | SUV only (the manual label is drawn once, independent of SUV/SUL) |
-
-Pass both to compute everything in a single call — the sources run **sequentially** so their distinct keys never collide, and the automated `TumorStats*` are left untouched by the revised pass:
-```bash
-musiq --input-dirpath /data/raw --output-dirpath /data/processed \
-  --tasks radiomics tumor \
-  --mask-source auto revised --pet-metric SUV SUL \
-  --label-dirpath /path/to/labels --label-glob '*segmentation_Tumor.nii' \
-  --radiomics-workers 30
-```
-The revised label's **filename and location vary by cohort**, so both are configurable:
-- `--label-glob` — filename pattern (wildcards allowed). Default `PETseg_revised.nii`; Scheurer uses `*segmentation_Tumor.nii`.
-- `--label-dirpath` — **omit** to look for the label *inside each study dir* (e.g. MULTIPRO's `<study>/PETseg_revised.nii`); **set** it to look under `<label-dirpath>/<PatientID>/` (e.g. Scheurer's parallel `labels/` tree). Only used for `--mask-source revised`.
-
-Notes:
-- The label must share the SUV/PET grid; studies whose label grid differs (e.g. the physician segmented a different reconstruction) are **skipped** and listed in `tumor_seg_radiomics_skipped.csv` / `tumor_seg_tumorinfo_skipped.csv` at the processed root.
-- `--radiomics-workers N` parallelises the `radiomics` and `tumor` stages across patients (`N` worker processes; default `1` = serial). Parallelism is patient-level, so each `patient_info.json` is only ever written by one worker. The standalone `musiq_extraction` (radiomics) / `musiq_tumor_info_extraction` scripts take the same `--mask-source`, `--label-dirpath` and `--workers` flags.
+The `radiomics` and `tumor` stages can compute on the automated PET segmentation (`auto`) and/or a physician label (`revised`), selected with `--mask-source`. See **[docs/mask-sources.md](docs/mask-sources.md)** for the key/metric mapping, the `--label-dirpath` / `--label-glob` options, and `--radiomics-workers`.
 
 ### Large-scale staged CADS
-For large cohorts (~100–1000+ scans) the three CADS stages can be run as **separate jobs** so CPU and GPU resources are used efficiently (e.g. CPU vs GPU SLURM partitions). All three must point at the same processed tree (the staging dir defaults to `<processed>/cads_staging`, so they agree automatically):
-```bash
-# 1. Preprocess (CPU only)
-musiq_cads_preprocess --input-dirpath-processed /data/processed --cads-tasks all
-# 2. Inference (GPU; add --cpu to force CPU)
-musiq_cads_inference  --input-dirpath-processed /data/processed --cads-tasks all
-# 3. Restore to original geometry + combine into CTcads.nii.gz (CPU only)
-musiq_cads_restore    --input-dirpath-processed /data/processed --cads-tasks all
-```
-Each stage is idempotent: a study is skipped once its `CTcads.nii.gz` exists. (Note: `musiq_cads_inference` now runs **only** the GPU inference stage — the full run-everything path is `musiq --tasks cads` or the three scripts in order.)
+For large cohorts the three CADS stages (preprocess → inference → restore) can be run as separate CPU/GPU jobs instead of the single `--tasks cads` run. See **[docs/staged-cads.md](docs/staged-cads.md)**.
 
-
-- For development also install pre-commit hooks via
+### For development also install pre-commit hooks via
 ```bash
 pip install pre-commit
 pre-commit install

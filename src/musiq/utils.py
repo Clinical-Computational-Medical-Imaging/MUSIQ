@@ -4,6 +4,7 @@ import pathlib as plb
 import re
 import subprocess
 import sys
+from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
@@ -313,6 +314,92 @@ def repair_ct_affine_from_dicom(
     return True
 
 
+def select_dominant_ct_acquisition(
+    dicom_dirpath: str | os.PathLike,
+    spacing_rtol: float = 0.1,
+) -> list[str] | None:
+    """Return the DICOM file paths of the dominant CT acquisition when a series directory
+    bundles several acquisitions with inconsistent slice spacing; otherwise ``None``.
+
+    A single CT ``SeriesInstanceUID`` sometimes contains more than one acquisition — e.g. a main
+    high-resolution whole-body stack plus coarser "end-cap" blocks that extend head/feet coverage
+    (observed in the anonymized whole-body cohorts, filed under one series with distinct
+    ``AcquisitionNumber``). Because the through-plane spacing differs between them, dcm2niix cannot
+    place all slices on one regular grid and emits a stretched, often head-for-feet-flipped volume
+    that ``repair_ct_affine_from_dicom`` cannot recover (both origin and sign end up wrong). This
+    returns the file paths of the acquisition(s) whose spacing matches the dominant (most-slices)
+    one, so the caller can convert just those.
+
+    Returns ``None`` — convert the directory as-is — when it holds a single acquisition, or several
+    acquisitions that already share one consistent slice spacing (a genuine multi-part volume).
+    Only mixed spacing triggers filtering, so uniformly-spaced multi-acquisition stacks are left
+    intact. Two overlapping same-spacing reconstructions are not handled here (dcm2niix splits
+    those into separate NIfTIs, resolved by ``_select_ct_volume``).
+    """
+    normal_lps = None
+    files: list[tuple[str, str, float]] = []  # (path, acquisition, projection onto slice normal)
+    for entry in os.scandir(dicom_dirpath):
+        if not entry.is_file():
+            continue
+        try:
+            ds = pydicom.dcmread(entry.path, stop_before_pixels=True)
+            ipp = np.asarray(ds.ImagePositionPatient, dtype=float)
+            iop = np.asarray(ds.ImageOrientationPatient, dtype=float)
+        except Exception:
+            continue
+        if normal_lps is None:
+            normal_lps = np.cross(iop[:3], iop[3:6])
+            norm = np.linalg.norm(normal_lps)
+            if norm == 0:
+                return None
+            normal_lps = normal_lps / norm
+        files.append(
+            (os.path.abspath(entry.path), str(getattr(ds, "AcquisitionNumber", None)), float(ipp @ normal_lps))
+        )
+
+    if not files:
+        return None
+    groups: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    for path, acq, proj in files:
+        groups[acq].append((path, proj))
+    if len(groups) < 2:
+        return None  # single acquisition — nothing to disambiguate
+
+    # Representative through-plane spacing per acquisition = median |Δposition| along the normal.
+    spacing = {}
+    for acq, items in groups.items():
+        projs = sorted(p for _, p in items)
+        if len(projs) >= 2:
+            spacing[acq] = float(np.median(np.diff(projs)))
+    if len(spacing) < 2:
+        return None  # not enough multi-slice acquisitions to compare
+    smin, smax = min(spacing.values()), max(spacing.values())
+    if smin <= 0 or smax / smin <= 1 + spacing_rtol:
+        return None  # one consistent spacing → coherent multi-part volume, convert whole dir
+
+    # Mixed spacing: keep only acquisitions whose spacing matches the dominant (most-slices) one.
+    dominant = max(groups, key=lambda a: len(groups[a]))
+    dom_sp = spacing.get(dominant)
+    if dom_sp is None:
+        return None
+    keep, dropped = [], []
+    for acq, items in groups.items():
+        sp = spacing.get(acq)
+        if sp is not None and abs(sp - dom_sp) <= spacing_rtol * dom_sp:
+            keep.extend(p for p, _ in items)
+        else:
+            projs = [p for _, p in items]
+            dropped.append((acq, len(items), round(min(projs), 1), round(max(projs), 1)))
+    if not keep or not dropped:
+        return None
+    logger.warning(
+        f"CT series {dicom_dirpath} bundles acquisitions with mixed slice spacing "
+        f"({sorted(round(s, 3) for s in spacing.values())} mm); converting only the dominant "
+        f"acquisition(s) at ~{dom_sp:.3f} mm ({len(keep)} slices), dropping (acq, n, z-min, z-max): {dropped}."
+    )
+    return keep
+
+
 def run_dcm2niix(input_folder: str | os.PathLike, output_folder: str | os.PathLike, merge: bool = False) -> None:
     """Run dcm2niix.
 
@@ -510,16 +597,92 @@ def get_modalities_in_dir(directory: str | os.PathLike) -> set:
     return modalities
 
 
-def extract_dicom_data(dirpath: plb.Path, tags: dict) -> dict[Any, Any]:
-    dicom_files = [
+# Suffixes that are never DICOM slices; skip them when picking a file to read tags from.
+_NON_DICOM_SUFFIXES = frozenset(
+    {".zip", ".inf", ".jar", ".icns", ".info", ".exe", ".pdf", ".txt", ".ini", ".xml", ".bmp", ".sh", ".json"}
+)
+
+
+def list_dicom_files(dirpath: str | os.PathLike) -> list[plb.Path]:
+    """Return candidate DICOM slice files in ``dirpath``, sorted for determinism.
+
+    Filters out DICOMDIR, obvious non-DICOM sidecars/artifacts (incl. dcm2niix ``.json``)
+    and dotfiles, so callers never read tags from a non-image file, and sorts with
+    :func:`natural_key` so the "first" file is stable across runs and filesystems — a bare
+    ``os.listdir()[0]`` is neither filtered nor ordered.
+    """
+    dirpath = plb.Path(dirpath)
+    files = [
         f
         for f in dirpath.iterdir()
         if f.is_file()
         and f.name.lower() != "dicomdir"
-        and f.suffix.lower()
-        not in [".zip", ".inf", ".jar", ".icns", ".info", ".exe", ".pdf", ".txt", ".ini", ".xml", ".bmp", ".sh"]
+        and f.suffix.lower() not in _NON_DICOM_SUFFIXES
         and f.name != ".DS_Store"
     ]
+    return sorted(files, key=lambda p: natural_key(p.name))
+
+
+def resolve_pet_decay_reference(dicom_dirpath: str | os.PathLike, ds=None) -> tuple[str, str | None]:
+    """Resolve the reference time PET pixels are decay-corrected to (for SUV/SUL).
+
+    Whole-body PET ``AcquisitionTime`` (0008,0032) varies per slice/bed position across the
+    ~10-20 min acquisition, so it must NOT be used directly as the decay reference — doing so
+    inflated SUV by up to ~25%. When ``DecayCorrection`` (0054,1102) is ``START`` (the Siemens
+    default) the pixels are corrected to the acquisition start, i.e. ``SeriesTime`` (0008,0031);
+    we use that. If ``SeriesTime`` is missing we fall back to the earliest ``AcquisitionTime``
+    across the series. Returns ``(reference_time, decay_flag)``.
+
+    ``ds`` may be a pre-read reference dataset (avoids a re-read); otherwise the first filtered
+    DICOM file is used for the series-level tags.
+    """
+    if ds is None:
+        files = list_dicom_files(dicom_dirpath)
+        if not files:
+            raise FileNotFoundError(f"No DICOM files found in {dicom_dirpath}")
+        ds = pydicom.dcmread(files[0], stop_before_pixels=True)
+
+    decay_flag = str(ds[(0x0054, 0x1102)].value) if (0x0054, 0x1102) in ds else None
+    series_time = getattr(ds, "SeriesTime", None)
+
+    # Earliest AcquisitionTime across the whole series = the slice actually acquired first, i.e. the
+    # true scan start. Computed up front so the SeriesTime sanity guard below compares against it
+    # rather than an arbitrary (filename-ordered) reference slice. (Time-only compare; no midnight wrap.)
+    earliest = None
+    for f in list_dicom_files(dicom_dirpath):
+        try:
+            d = pydicom.dcmread(f, stop_before_pixels=True, specific_tags=[(0x0008, 0x0032)])
+        except Exception:
+            continue
+        at = getattr(d, "AcquisitionTime", None)
+        if at is not None and (earliest is None or time_to_seconds(at) < time_to_seconds(earliest)):
+            earliest = str(at)
+
+    if decay_flag in (None, "START") and series_time:
+        # A series cannot start after its first slice was acquired, so SeriesTime must be <= the
+        # earliest AcquisitionTime. If a vendor sets SeriesTime to a later reconstruction time,
+        # trusting it would re-inflate SUV — use the earliest AcquisitionTime instead.
+        if earliest is None or time_to_seconds(series_time) <= time_to_seconds(earliest) + 1:
+            return str(series_time), decay_flag
+        logger.warning(
+            f"SeriesTime {series_time} is later than the earliest AcquisitionTime {earliest} in "
+            f"{dicom_dirpath}; SeriesTime looks unreliable — using the earliest AcquisitionTime instead."
+        )
+
+    if earliest is not None:
+        if decay_flag not in (None, "START"):
+            logger.warning(
+                f"DecayCorrection={decay_flag!r} (not 'START') in {dicom_dirpath}; using earliest "
+                "AcquisitionTime as the decay reference — verify SUV calibration for this scanner."
+            )
+        return earliest, decay_flag
+
+    logger.warning(f"Could not resolve SeriesTime/AcquisitionTime in {dicom_dirpath}; using reference-slice time.")
+    return str(getattr(ds, "AcquisitionTime", "")), decay_flag
+
+
+def extract_dicom_data(dirpath: plb.Path, tags: dict) -> dict[Any, Any]:
+    dicom_files = list_dicom_files(dirpath)
     if not dicom_files:
         return {}
 
