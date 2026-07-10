@@ -6,7 +6,13 @@ import pathlib as plb
 import nibabel as nib
 import pydicom
 
-from .utils import calculate_suv_factor, convert_pet, list_dicom_files, list_patient_dirs
+from .utils import (
+    calculate_suv_factor,
+    convert_pet,
+    list_dicom_files,
+    list_patient_dirs,
+    resolve_pet_decay_reference,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -140,48 +146,45 @@ class SulInference:
                 sul_corr_factor = None
 
         if sul_corr_factor is None:
-            # Fallback if SUVFactor wasn't recorded: recompute from DICOM timing
-            required = [
-                "InjectedRadioactivity",
-                "RadionuclideHalfLife",
-                "AcquisitionTime",
-                "RadiopharmaceuticalStartTime",
-            ]
+            # Fallback when SUVFactor wasn't recorded: recompute from DICOM timing, using the SAME
+            # scan-start decay reference as the SUV path (resolve_pet_decay_reference) — NOT the
+            # recorded AcquisitionTime, which is a per-bed-position slice time and would re-inflate SUL.
+            input_dir = pt_series.get("InputDirPath")
+            required = ["InjectedRadioactivity", "RadionuclideHalfLife", "RadiopharmaceuticalStartTime"]
+            ref_time = None
+            if input_dir and os.path.isdir(input_dir):
+                try:
+                    ds = pydicom.dcmread(list_dicom_files(input_dir)[0], stop_before_pixels=True)
+                    seq = ds.RadiopharmaceuticalInformationSequence[0]
+                    dicom_data.setdefault("RadiopharmaceuticalStartTime", str(seq.RadiopharmaceuticalStartTime))
+                    dicom_data.setdefault("InjectedRadioactivity", float(seq.RadionuclideTotalDose))
+                    dicom_data.setdefault("RadionuclideHalfLife", float(seq.RadionuclideHalfLife))
+                    ref_time, _ = resolve_pet_decay_reference(input_dir, ds)
+                except Exception as e:
+                    logger.error(f"Failed to recover PET decay fields from {input_dir}: {e}")
+                    return None
+            else:
+                # No raw DICOMs to resolve scan-start; use the recorded AcquisitionTime as a best
+                # effort (post-fix JSONs already store the resolved scan-start value there).
+                ref_time = dicom_data.get("AcquisitionTime")
+                logger.warning(
+                    f"{output_dirpath}: InputDirPath unavailable; using recorded AcquisitionTime "
+                    "as the SUL decay reference."
+                )
+
             missing = [k for k in required if k not in dicom_data]
-            if missing:
-                input_dir = pt_series.get("InputDirPath")
-                if input_dir and os.path.isdir(input_dir):
-                    logger.info(f"Missing DICOM fields {missing}, recovering from {input_dir}.")
-                    try:
-                        ds = pydicom.dcmread(list_dicom_files(input_dir)[0])
-                        seq = ds.RadiopharmaceuticalInformationSequence[0]
-                        recoverable = {
-                            "RadiopharmaceuticalStartTime": str(seq.RadiopharmaceuticalStartTime),
-                            "InjectedRadioactivity": float(seq.RadionuclideTotalDose),
-                            "RadionuclideHalfLife": float(seq.RadionuclideHalfLife),
-                        }
-                        for k in missing:
-                            if k in recoverable:
-                                dicom_data[k] = recoverable[k]
-                    except Exception as e:
-                        logger.error(f"Failed to recover DICOM fields from {input_dir}: {e}")
-                        return None
-                else:
-                    logger.error(
-                        f"Cannot compute SUL for {output_dirpath}: missing DICOM fields {missing} "
-                        "and InputDirPath is not accessible. Re-run series_selection to repopulate."
-                    )
-                    return None
-                still_missing = [k for k in required if k not in dicom_data]
-                if still_missing:
-                    logger.error(f"Could not recover fields {still_missing} from DICOM. Skipping SUL.")
-                    return None
+            if missing or not ref_time:
+                logger.error(
+                    f"Cannot compute SUL for {output_dirpath}: no SUVFactor and could not resolve "
+                    f"{missing or ['decay reference']}. Re-run series_selection to repopulate."
+                )
+                return None
 
             sul_corr_factor = calculate_suv_factor(
                 total_dose=dicom_data["InjectedRadioactivity"],
                 start_time=dicom_data["RadiopharmaceuticalStartTime"],
                 half_life=dicom_data["RadionuclideHalfLife"],
-                acq_time=dicom_data["AcquisitionTime"],
+                acq_time=ref_time,
                 weight=lean_body_mass,
             )
 

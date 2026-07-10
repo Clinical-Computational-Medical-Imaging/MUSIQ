@@ -644,20 +644,10 @@ def resolve_pet_decay_reference(dicom_dirpath: str | os.PathLike, ds=None) -> tu
 
     decay_flag = str(ds[(0x0054, 0x1102)].value) if (0x0054, 0x1102) in ds else None
     series_time = getattr(ds, "SeriesTime", None)
-    if decay_flag in (None, "START") and series_time:
-        # Sanity guard: a series cannot start after a slice was acquired, so SeriesTime must be
-        # <= the reference slice's own AcquisitionTime. If a vendor sets SeriesTime later than
-        # that (reconstruction time, etc.), trusting it would re-inflate SUV — fall back to the
-        # earliest-AcquisitionTime scan instead. (Time-only compare; assumes no midnight wrap.)
-        slice_acq = getattr(ds, "AcquisitionTime", None)
-        if slice_acq is None or time_to_seconds(series_time) <= time_to_seconds(slice_acq) + 1:
-            return str(series_time), decay_flag
-        logger.warning(
-            f"SeriesTime {series_time} is later than slice AcquisitionTime {slice_acq} in {dicom_dirpath}; "
-            "SeriesTime looks unreliable — scanning for the earliest AcquisitionTime instead."
-        )
 
-    # Fallback: scan the whole series for the earliest AcquisitionTime (the START reference).
+    # Earliest AcquisitionTime across the whole series = the slice actually acquired first, i.e. the
+    # true scan start. Computed up front so the SeriesTime sanity guard below compares against it
+    # rather than an arbitrary (filename-ordered) reference slice. (Time-only compare; no midnight wrap.)
     earliest = None
     for f in list_dicom_files(dicom_dirpath):
         try:
@@ -667,6 +657,18 @@ def resolve_pet_decay_reference(dicom_dirpath: str | os.PathLike, ds=None) -> tu
         at = getattr(d, "AcquisitionTime", None)
         if at is not None and (earliest is None or time_to_seconds(at) < time_to_seconds(earliest)):
             earliest = str(at)
+
+    if decay_flag in (None, "START") and series_time:
+        # A series cannot start after its first slice was acquired, so SeriesTime must be <= the
+        # earliest AcquisitionTime. If a vendor sets SeriesTime to a later reconstruction time,
+        # trusting it would re-inflate SUV — use the earliest AcquisitionTime instead.
+        if earliest is None or time_to_seconds(series_time) <= time_to_seconds(earliest) + 1:
+            return str(series_time), decay_flag
+        logger.warning(
+            f"SeriesTime {series_time} is later than the earliest AcquisitionTime {earliest} in "
+            f"{dicom_dirpath}; SeriesTime looks unreliable — using the earliest AcquisitionTime instead."
+        )
+
     if earliest is not None:
         if decay_flag not in (None, "START"):
             logger.warning(
