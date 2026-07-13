@@ -16,6 +16,11 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
      - `SUV.nii.gz` – Standardized Uptake Value image as NIfTI
      - `patient_info.json` - Dictionary with patient, study and serie information
      - `validation_results.csv` - List of studies flagged by user
+   - **Reference-consistent decay correction:** the SUV (and downstream SUL) factor decays the
+     injected activity to the *same* reference time the scanner corrected the PET pixels to, read
+     per series from the DICOM `DecayCorrection` tag (`START` / `ADMIN` / `NONE`). This avoids the
+     per–bed-position `AcquisitionTime` inflation (up to ~25%) and keeps SUV/SUL mutually
+     consistent. See [docs/suv-computation.md](docs/suv-computation.md).
 
 2. **CT Segmentation with TotalSegmentator**
    - Performs organ segmentation on CT images using TotalSegmentator.

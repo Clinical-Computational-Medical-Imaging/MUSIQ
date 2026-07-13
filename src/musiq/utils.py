@@ -626,12 +626,23 @@ def list_dicom_files(dirpath: str | os.PathLike) -> list[plb.Path]:
 def resolve_pet_decay_reference(dicom_dirpath: str | os.PathLike, ds=None) -> tuple[str, str | None]:
     """Resolve the reference time PET pixels are decay-corrected to (for SUV/SUL).
 
-    Whole-body PET ``AcquisitionTime`` (0008,0032) varies per slice/bed position across the
-    ~10-20 min acquisition, so it must NOT be used directly as the decay reference — doing so
-    inflated SUV by up to ~25%. When ``DecayCorrection`` (0054,1102) is ``START`` (the Siemens
-    default) the pixels are corrected to the acquisition start, i.e. ``SeriesTime`` (0008,0031);
-    we use that. If ``SeriesTime`` is missing we fall back to the earliest ``AcquisitionTime``
-    across the series. Returns ``(reference_time, decay_flag)``.
+    The reference must match ``DecayCorrection`` (0054,1102), i.e. the instant the scanner
+    decay-corrected the pixels to, so the injected dose is decayed to that same instant:
+
+    * ``START`` (the Siemens default) / absent: pixels are corrected to the acquisition start,
+      i.e. ``SeriesTime`` (0008,0031); we use that. Whole-body ``AcquisitionTime`` (0008,0032)
+      varies per slice/bed position over the ~10-20 min acquisition, so it must NOT be used
+      directly — doing so inflated SUV by up to ~25%. If ``SeriesTime`` is missing (or looks
+      unreliable) we fall back to the earliest ``AcquisitionTime`` across the series.
+    * ``ADMIN``: pixels are corrected to the radiopharmaceutical administration (injection)
+      time, so the dose is already referenced to that instant — we return
+      ``RadiopharmaceuticalStartTime`` (0018,1072) so the decay is a no-op (Δt = 0). Decaying
+      again would double-correct.
+    * ``NONE``: pixels are not decay-corrected at all. A single scalar factor cannot per-slice
+      correct a whole-body scan, so SUV/SUL is quantitatively unreliable — we warn loudly and
+      use the earliest ``AcquisitionTime`` as a best-effort reference.
+
+    Returns ``(reference_time, decay_flag)``.
 
     ``ds`` may be a pre-read reference dataset (avoids a re-read); otherwise the first filtered
     DICOM file is used for the series-level tags.
@@ -658,6 +669,18 @@ def resolve_pet_decay_reference(dicom_dirpath: str | os.PathLike, ds=None) -> tu
         if at is not None and (earliest is None or time_to_seconds(at) < time_to_seconds(earliest)):
             earliest = str(at)
 
+    # ADMIN: pixels are already referenced to the injection time, so decay the dose to that same
+    # instant (Δt = 0). Reference the RadiopharmaceuticalStartTime rather than any acquisition time.
+    if decay_flag == "ADMIN":
+        seq = getattr(ds, "RadiopharmaceuticalInformationSequence", None)
+        inj_time = getattr(seq[0], "RadiopharmaceuticalStartTime", None) if seq else None
+        if inj_time:
+            return str(inj_time), decay_flag
+        logger.warning(
+            f"DecayCorrection=ADMIN but no RadiopharmaceuticalStartTime in {dicom_dirpath}; "
+            "falling back to earliest AcquisitionTime — verify SUV calibration for this scanner."
+        )
+
     if decay_flag in (None, "START") and series_time:
         # A series cannot start after its first slice was acquired, so SeriesTime must be <= the
         # earliest AcquisitionTime. If a vendor sets SeriesTime to a later reconstruction time,
@@ -669,10 +692,20 @@ def resolve_pet_decay_reference(dicom_dirpath: str | os.PathLike, ds=None) -> tu
             f"{dicom_dirpath}; SeriesTime looks unreliable — using the earliest AcquisitionTime instead."
         )
 
+    # NONE: pixels are not decay-corrected, so no single scalar factor can produce a correct
+    # whole-body SUV — flag it. Still return a best-effort reference so downstream doesn't crash.
+    if decay_flag == "NONE":
+        logger.warning(
+            f"DecayCorrection=NONE in {dicom_dirpath}: PET pixels are not decay-corrected, so the "
+            "scalar SUV factor cannot per-slice correct the scan — SUV/SUL will be quantitatively "
+            "unreliable. Using earliest AcquisitionTime as a best-effort reference."
+        )
+
     if earliest is not None:
-        if decay_flag not in (None, "START"):
+        # Only warn for genuinely unrecognized flags; ADMIN/NONE already logged their own reason above.
+        if decay_flag not in (None, "START", "ADMIN", "NONE"):
             logger.warning(
-                f"DecayCorrection={decay_flag!r} (not 'START') in {dicom_dirpath}; using earliest "
+                f"DecayCorrection={decay_flag!r} (unrecognized) in {dicom_dirpath}; using earliest "
                 "AcquisitionTime as the decay reference — verify SUV calibration for this scanner."
             )
         return earliest, decay_flag
