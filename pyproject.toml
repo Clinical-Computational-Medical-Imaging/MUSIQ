@@ -105,8 +105,9 @@ dependencies= [
     "threadpoolctl==3.6.0",
     "tifffile==2025.6.11",
     "timm==1.0.15",
-    "torch==2.3.0",
-    "torchvision==0.18.0",
+    # torch/torchvision are installed separately from the CUDA 12.8 (cu128) index
+    # before this file's deps — see README. They are intentionally not pinned here
+    # because the cu128 wheels are not on PyPI. Keep the versions in sync with the README.
     "TotalSegmentator==2.9.0",
     "tqdm==4.67.1",
     "traceback2==1.4.0",
@@ -121,14 +122,19 @@ dependencies= [
 
 [project.scripts]
 musiq_autopet_inference = "musiq.autopet_inference:autopet_inference_entrypoint"
+musiq_cads_preprocess = "musiq.cads_inference:cads_preprocess_entrypoint"
+musiq_boa_inference = "musiq.boa_inference:boa_inference_entrypoint"
 musiq_cads_inference = "musiq.cads_inference:cads_inference_entrypoint"
+musiq_cads_restore = "musiq.cads_inference:cads_restore_entrypoint"
 musiq_moose_inference = "musiq.moose_inference:moose_inference_entrypoint"
 musiq_plot_summary = "musiq.plot_summary:plot_summary_entrypoint"
 musiq_extraction = "musiq.radiomics_extraction:radiomics_extraction_entrypoint"
 musiq_series_selection = "musiq.series_selection:series_selection_entrypoint"
 musiq_totalsegmentator_inference = "musiq.totalsegmentator_inference:totalsegmentator_inference_entrypoint"
-musiq_totalsegmentator_muscle_fat = "musiq.totalsegmentator_muscle_fat_sul:totalsegmentator_muscle_fat_entrypoint"
+musiq_totalsegmentator_muscle_fat = "musiq.totalsegmentator_muscle_fat:totalsegmentator_muscle_fat_entrypoint"
+musiq_sul = "musiq.sul_computation:sul_computation_entrypoint"
 musiq_tumor_info_extraction = "musiq.tumor_info_extraction:tumor_info_extraction_entrypoint"
+musiq_cohort_info = "musiq.workflow:cohort_info_entrypoint"
 musiq = "musiq.workflow:workflow_entrypoint"
 
 [tool.setuptools]

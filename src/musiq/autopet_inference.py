@@ -8,7 +8,7 @@ import tempfile
 
 import torch
 
-from .utils import natural_key, resample_image
+from .utils import list_patient_dirs, resample_image
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +20,9 @@ class AutopetInference:
         autopet_checkpoint_dirpath: str | os.PathLike,
         pet_metric: str | list[str] | None = None,
     ) -> None:
-        """Resamples CT.nii images to PT size and runs the AutoPET inference on all SUV.nii.gz or SUL.nii.gz
-        files in the input directory. Creates CTres.nii and PETseg.nii.
+        """Resample CT to PT size and run AutoPET inference on SUV/SUL files. Creates CTres.nii and PETseg.nii.gz
+        or PETsegSUL.nii.gz in the same directory as the input PET metric. Updates patient_info.json with the new paths.
         Expects exactly one PT and matching CT series per study date.
-
         Args:
             input_dirpath_processed (str | os.PathLike): Directory containing the PET metric files. Can be nested.
             autopet_checkpoint_dirpath (str | os.PathLike): Directory containing the nnUNet checkpoint for
@@ -42,8 +41,7 @@ class AutopetInference:
         self.pet_metrics = pet_metrics
 
     def run(self) -> None:
-        top_dirs = [d for d in os.listdir(self.input_dirpath) if os.path.isdir(os.path.join(self.input_dirpath, d))]
-        top_dirs.sort(key=natural_key)
+        top_dirs = list_patient_dirs(self.input_dirpath)
 
         for metric in self.pet_metrics:
             petseg_fname = "PETseg.nii.gz" if metric == "SUV" else "PETsegSUL.nii.gz"

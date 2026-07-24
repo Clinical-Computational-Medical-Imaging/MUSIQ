@@ -66,6 +66,9 @@ desktop.ini
 *.log
 *.sqlite3
 
+# Local analysis notebooks / scratch
+check_completeness.ipynb
+
 # Optional: ignore data and generated folders
 data/
 output/
