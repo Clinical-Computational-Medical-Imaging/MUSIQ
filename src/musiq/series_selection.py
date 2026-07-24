@@ -393,7 +393,9 @@ class SeriesSelection:
 
         desc_groups = defaultdict(list)
         for idx, s in enumerate(series_list):
-            desc_groups[s["SeriesDescription"]].append(idx)
+            if s["Modality"] not in self.series_keywords:
+                continue
+            desc_groups[(s["Modality"], s["SeriesDescription"])].append(idx)
 
         for _desc, entries in desc_groups.items():
             if len(entries) > 1:
@@ -444,8 +446,8 @@ class SeriesSelection:
                     else:
                         best_idx = max(entries, key=lambda x: series_list[x]["NumSlices"])
                         preselected_indices.append(best_idx)
-                        if match_type == "secondary":
-                            secondary_used = True
+                    if match_type == "secondary":
+                        secondary_used = True
 
         should_flag = not preselected_indices or secondary_used
         return preselected_indices, should_flag
