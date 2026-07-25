@@ -1,3 +1,4 @@
+import json
 import logging
 import pathlib as plb
 
@@ -198,14 +199,99 @@ def test_collect_series_skips_existing_mr_nifti(mocker, make_dummy_ds, tmp_path,
 def test_study_key_placeholder_fallback(collector, study_date, dir_name, expected):
     series_dir = plb.Path("/some/input") / dir_name
 
-    assert collector._study_key(series_dir, study_date) == expected
+    assert collector._study_key(series_dir, study_date, "/nonexistent/patient_info.json") == expected
 
 
 def test_study_key_warns_when_no_token_found(caplog, collector):
     series_dir = plb.Path("/some/input/series_without_token")
 
     with caplog.at_level(logging.WARNING):
-        result = collector._study_key(series_dir, "00000000")
+        result = collector._study_key(series_dir, "00000000", "/nonexistent/patient_info.json")
 
     assert result == "00000000"
     assert "no datetime token found" in caplog.text
+
+
+def _write_patient_info(path, studies):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"Studies": studies}))
+
+
+def test_study_key_reuses_recorded_key_over_dirname_token(tmp_path, collector):
+    """A previous run's recorded study key wins over the datetime-token fallback, so a series
+    already converted into a renamed/recovered study folder maps back to it instead of a new one."""
+    patient_info_path = tmp_path / "patient_info.json"
+    series_dir = plb.Path("/raw/P001/study1/1.2.840.113619.255564.20230406132841")
+    _write_patient_info(
+        patient_info_path,
+        {"recovered_study_date": {"Modalities": {"CT": [{"knochen ct": {"InputDirPath": str(series_dir)}}]}}},
+    )
+
+    result = collector._study_key(series_dir, "00000000", patient_info_path)
+
+    assert result == "recovered_study_date"
+
+
+def test_recorded_study_key_returns_none_when_patient_info_missing(tmp_path, collector):
+    missing_path = tmp_path / "patient_info.json"
+
+    assert collector._recorded_study_key(missing_path, plb.Path("/raw/series")) is None
+
+
+def test_recorded_study_key_returns_none_for_dangling_series(tmp_path, collector):
+    """A series not present in any recorded study (e.g. new, or never converted) falls through
+    to the datetime-token fallback rather than reusing an unrelated recorded key."""
+    patient_info_path = tmp_path / "patient_info.json"
+    _write_patient_info(
+        patient_info_path,
+        {"20230101": {"Modalities": {"CT": [{"other": {"InputDirPath": "/raw/other_series"}}]}}},
+    )
+
+    result = collector._recorded_study_key(patient_info_path, plb.Path("/raw/new_series"))
+
+    assert result is None
+
+
+def test_recorded_study_key_matches_on_basename_regardless_of_trailing_slash(tmp_path, collector):
+    patient_info_path = tmp_path / "patient_info.json"
+    _write_patient_info(
+        patient_info_path,
+        {"20230101": {"Modalities": {"CT": [{"a": {"InputDirPath": "/raw/P001/study1/series1/"}}]}}},
+    )
+
+    result = collector._recorded_study_key(patient_info_path, plb.Path("/different/root/series1"))
+
+    assert result == "20230101"
+
+
+def test_recorded_study_key_warns_and_returns_none_on_corrupt_json(caplog, tmp_path, collector):
+    patient_info_path = tmp_path / "patient_info.json"
+    patient_info_path.write_text("{not valid json")
+
+    with caplog.at_level(logging.WARNING):
+        result = collector._recorded_study_key(patient_info_path, plb.Path("/raw/series"))
+
+    assert result is None
+    assert "Could not read" in caplog.text
+
+
+def test_recorded_study_key_is_cached_per_patient_info_path(tmp_path, collector):
+    """Once read, the patient_info.json -> study-key table is cached on the collector instance,
+    so a later mutation of the file on disk must not change results within the same run."""
+    patient_info_path = tmp_path / "patient_info.json"
+    series_dir = plb.Path("/raw/seriesX")
+    _write_patient_info(
+        patient_info_path,
+        {"20230101": {"Modalities": {"CT": [{"a": {"InputDirPath": str(series_dir)}}]}}},
+    )
+
+    first = collector._recorded_study_key(patient_info_path, series_dir)
+    assert first == "20230101"
+
+    _write_patient_info(
+        patient_info_path,
+        {"20240101": {"Modalities": {"CT": [{"a": {"InputDirPath": str(series_dir)}}]}}},
+    )
+
+    second = collector._recorded_study_key(patient_info_path, series_dir)
+    assert second == "20230101"

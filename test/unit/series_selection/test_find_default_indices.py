@@ -89,7 +89,9 @@ def test_no_match_returns_empty_indices_and_is_flagged(collector):
 
 def test_exclusion_keyword_skips_series_entirely(collector):
     # "nac motion free" is both a PT exclusion keyword; ensure it never lands in preselected indices.
-    series_list = [_series("PT", "nac motion free"), _series("PT", "wb ctac")]
+    # The PT branch always ranks candidates by slice count (even a single match), so NumSlices
+    # must be present to avoid a real get_number_of_slices() filesystem lookup.
+    series_list = [_series("PT", "nac motion free"), _series("PT", "wb ctac", NumSlices=1)]
 
     indices, should_flag = collector.find_default_indices(series_list)
 
@@ -147,3 +149,54 @@ def test_duplicate_description_reuses_precomputed_num_slices(mocker, collector):
 
     count_calls.assert_called_once_with("path1")
     assert indices == [1]
+
+
+def test_pt_single_series_per_study_ranks_by_keyword_priority_then_slices(mocker, collector):
+    """Exactly one PT series is ever selected per study: among several PRIMARY matches, the
+    earliest keyword in PRIMARY order wins over a later one regardless of slice count, and ties
+    on keyword rank are broken by the most slices."""
+    series_list = [
+        _series("PT", "qc fx", SeriesPath="path0"),  # matches PRIMARY[1] -> lower priority
+        _series("PT", "pet gk ctac", SeriesPath="path1"),  # matches PRIMARY[0], fewer slices
+        _series("PT", "pet gk ctac", SeriesPath="path2"),  # matches PRIMARY[0], more slices -> wins
+    ]
+    mocker.patch.object(
+        collector, "get_number_of_slices", side_effect=lambda p: {"path0": 1, "path1": 5, "path2": 50}[p]
+    )
+
+    indices, should_flag = collector.find_default_indices(series_list)
+
+    assert indices == [2]
+    assert should_flag is False
+
+
+@pytest.fixture()
+def pt_primary_and_secondary_keywords():
+    return {"PT": {"PRIMARY": ["wb ctac"], "SECONDARY": ["delayed pet"], "EXCLUSION": []}}
+
+
+def test_pt_second_match_after_primary_resolved_is_skipped(mocker, make_collector, pt_primary_and_secondary_keywords):
+    """Once a study's single PT slot is filled from a PRIMARY match, a second PT series matching
+    only a SECONDARY keyword must not be appended as a further selection."""
+    collector = make_collector(series_keywords=pt_primary_and_secondary_keywords)
+    series_list = [
+        _series("PT", "wb ctac", NumSlices=1),
+        _series("PT", "delayed pet", NumSlices=1),
+    ]
+
+    indices, should_flag = collector.find_default_indices(series_list)
+
+    assert indices == [0]
+    assert should_flag is False
+
+
+def test_pt_secondary_only_match_flags_study(mocker, make_collector, pt_primary_and_secondary_keywords):
+    """A study whose only PT series matches a SECONDARY (not PRIMARY) keyword is still selected,
+    but marks secondary_used so the study gets flagged for review."""
+    collector = make_collector(series_keywords=pt_primary_and_secondary_keywords)
+    series_list = [_series("PT", "delayed pet", NumSlices=1)]
+
+    indices, should_flag = collector.find_default_indices(series_list)
+
+    assert indices == [0]
+    assert should_flag is True
