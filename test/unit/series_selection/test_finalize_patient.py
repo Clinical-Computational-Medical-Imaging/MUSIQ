@@ -1,5 +1,6 @@
 import json
 
+
 def test_unknown_patient_is_a_no_op(mocker, tmp_path, make_collector):
     collector = make_collector(output_dirpath=tmp_path)
     validate_output = mocker.patch.object(collector, "validate_output")

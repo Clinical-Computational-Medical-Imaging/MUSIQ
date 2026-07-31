@@ -106,9 +106,7 @@ def test_collect_series_skips_unsupported_modality(mocker, make_dummy_ds, tmp_pa
 
 
 @pytest.mark.parametrize("missing_field", ["patient_id", "study_date", "modality"])
-def test_collect_series_skips_missing_required_fields(
-    mocker, make_dummy_ds, tmp_path, make_collector, missing_field
-):
+def test_collect_series_skips_missing_required_fields(mocker, make_dummy_ds, tmp_path, make_collector, missing_field):
     """A series missing PatientID, StudyDate or Modality can't be grouped and must be skipped."""
     input_dir, output_dir = _make_single_series_input(tmp_path)
 
@@ -169,7 +167,7 @@ def test_collect_series_does_not_skip_when_patient_info_missing(mocker, make_dum
 
 
 def test_collect_series_skips_existing_mr_nifti(mocker, make_dummy_ds, tmp_path, make_collector):
-    """MR series are skipped via mr_nifti_exists (matched by ProtocolName/SeriesDescription), not by CT/PET/SUV paths."""
+    """MR series are skipped via mr_nifti_exists (ProtocolName/SeriesDescription match), not the CT/PET/SUV paths."""
     patient_id, study_date = "P999", "20240101"
     input_dir, output_dir = _make_single_series_input(tmp_path, patient_id=patient_id)
 

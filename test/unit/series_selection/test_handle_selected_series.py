@@ -26,9 +26,7 @@ def test_single_series_populates_study_and_modality(mocker, collector):
     patient_id = "P999"
     _seed_patient_results(collector, patient_id)
     mocker.patch("musiq.series_selection.extract_dicom_data", return_value={"PatientAge": "050Y"})
-    mocker.patch.object(
-        collector, "start_dcm2nii", return_value=(False, {"knochen ct": {"CTPath": "/out/CT.nii.gz"}})
-    )
+    mocker.patch.object(collector, "start_dcm2nii", return_value=(False, {"knochen ct": {"CTPath": "/out/CT.nii.gz"}}))
 
     selected_series = {patient_id: [_series_entry()]}
     flags = collector.handle_selected_series(selected_series)
@@ -159,6 +157,28 @@ def test_series_weight_used_directly_without_fallback_lookup(mocker, tmp_path, m
 
     _, kwargs = start_dcm2nii.call_args
     assert kwargs["fallback_weight"] == 80.0
+
+
+def test_unparseable_series_weight_is_skipped_and_falls_back_to_recorded(mocker, tmp_path, make_collector):
+    """A series whose extracted PatientWeight can't be converted to float (e.g. a malformed DICOM
+    DS value) must not crash the loop; it is skipped and the search continues to the recorded
+    patient_info.json fallback instead."""
+    patient_id = "P999"
+    collector = make_collector(output_dirpath=tmp_path)
+    _seed_patient_results(collector, patient_id)
+    patient_dir = tmp_path / patient_id
+    patient_dir.mkdir()
+    with open(patient_dir / "patient_info.json", "w") as f:
+        json.dump({"Studies": {"20240101": {"PatientWeight": 65.0}}}, f)
+
+    mocker.patch("musiq.series_selection.extract_dicom_data", return_value={"PatientWeight": "not-a-number"})
+    start_dcm2nii = mocker.patch.object(collector, "start_dcm2nii", return_value=(False, {}))
+
+    selected_series = {patient_id: [_series_entry()]}
+    collector.handle_selected_series(selected_series)
+
+    _, kwargs = start_dcm2nii.call_args
+    assert kwargs["fallback_weight"] == 65.0
 
 
 def test_corrupt_recorded_patient_info_is_ignored_during_weight_fallback(mocker, tmp_path, make_collector):
