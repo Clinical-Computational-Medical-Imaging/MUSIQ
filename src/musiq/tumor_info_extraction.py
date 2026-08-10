@@ -347,7 +347,6 @@ class TumorInfoExtraction:
                         and resolve_mask(subdirpath, metric, self.mask_source, self.label_dirpath, self.label_glob)[0]
                     ):
                         study_dirs.append(subdirpath)
-                        break  # Stop after first matching subdirectory
 
             if not study_dirs:
                 label_loc = "the study dir" if not self.label_dirpath else self.label_dirpath
@@ -516,7 +515,7 @@ class TumorInfoExtraction:
             organ_labels = {}
 
         # Perform connected component analysis
-        labeled_tumors, num_lesions = cc3d.connected_components(petseg_array, connectivity=26, return_N=True)
+        labeled_tumors, num_lesions = cc3d.connected_components(petseg_array, connectivity=18, return_N=True)
 
         # Per-lesion bbox (cost scales with lesion size); pad >= SUVpeak kernel width + >=1 voxel for marching cubes
         pad = [max(1, _suvpeak_half_kernel(sp)) for sp in spacing]
