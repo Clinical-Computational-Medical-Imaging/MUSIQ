@@ -4,6 +4,7 @@ import logging
 import os
 from concurrent.futures import ProcessPoolExecutor
 
+import nibabel as nib
 import numpy as np
 import pandas as pd
 from nilearn.image.resampling import BoundingBoxError
@@ -80,16 +81,44 @@ def resolve_tumor_label(
     """Locate the physician Tumor segmentation for a processed study directory. Returns None if absent.
 
     When ``label_dirpath`` is None the label is looked up inside the study dir itself; otherwise it is
-    looked up under ``<label_dirpath>/<PatientID>/`` (PatientID = the study dir's parent). ``label_glob``
-    is the filename pattern (may contain wildcards); the first match wins.
+    looked up under ``<label_dirpath>/<PatientID>/`` using three strategies in order:
+
+    1. Exact ``<study_date>/`` subdir (e.g. ``20200430/``).
+    2. Any subdir matching ``*_<study_date>`` (e.g. ``tp1_20200430/``).
+    3. Flat ``<label_dirpath>/<PatientID>/`` (single-label-per-patient layout, e.g. Scheurer).
+
+    ``label_glob`` is the filename pattern (may contain wildcards); the first match wins.
     """
     if label_dirpath:
         patient_id = os.path.basename(os.path.dirname(study_dirpath))
-        search_dir = os.path.join(label_dirpath, patient_id)
+        study_date = os.path.basename(study_dirpath)
+        patient_dir = os.path.join(label_dirpath, patient_id)
+        exact_dir = os.path.join(patient_dir, study_date)
+        if os.path.isdir(exact_dir):
+            search_dirs = [exact_dir, patient_dir]
+        else:
+            date_suffixed = [
+                d for d in sorted(glob.glob(os.path.join(patient_dir, f"*_{study_date}"))) if os.path.isdir(d)
+            ]
+            if date_suffixed:
+                search_dirs = date_suffixed + [patient_dir]
+            else:
+                # If the patient dir contains subdirectories, this is a multi-timepoint layout and
+                # this study simply has no matching timepoint — return None rather than picking the
+                # wrong label via a flat fallback.
+                has_subdirs = os.path.isdir(patient_dir) and any(
+                    os.path.isdir(os.path.join(patient_dir, e))
+                    for e in os.listdir(patient_dir)
+                    if not e.startswith(".")
+                )
+                search_dirs = [] if has_subdirs else [patient_dir]
     else:
-        search_dir = study_dirpath
-    matches = sorted(glob.glob(os.path.join(search_dir, label_glob)))
-    return matches[0] if matches else None
+        search_dirs = [study_dirpath]
+    for search_dir in search_dirs:
+        matches = sorted(glob.glob(os.path.join(search_dir, label_glob)))
+        if matches:
+            return matches[0]
+    return None
 
 
 class RadiomicsExtractor:
@@ -238,8 +267,12 @@ class RadiomicsExtractor:
 
         ptarray = metrics.get_3darray_from_niftipath(suv_fpath)
         gtarray = metrics.get_3darray_from_niftipath(petseg_fpath)
-        # Revised label must align in world-space; resample if shape differs, skip if disjoint
-        if self.mask_source == "revised" and gtarray.shape != ptarray.shape:
+        # Revised label must align in world-space; resample if shape or affine differs (same shape
+        # with a flipped y-axis is a common mismatch between externally-drawn masks and MUSIQ SUV).
+        if self.mask_source == "revised" and (
+            gtarray.shape != ptarray.shape
+            or not np.allclose(nib.load(petseg_fpath).affine, nib.load(suv_fpath).affine, atol=1e-3)
+        ):
             resampled = resample_label_to_image_grid(petseg_fpath, suv_fpath, dirpath)
             if resampled is None or ((gtarray > 0).any() and not (resampled > 0).any()):
                 logger.warning(
@@ -376,7 +409,8 @@ def radiomics_extraction_entrypoint() -> None:
         default=None,
         help="Used with --mask-source revised. Omit to look for the label inside each study dir "
         "(e.g. MULTIPRO PETseg_revised.nii); set to a parallel labels root to look under "
-        "<label_dirpath>/<PatientID>/ (e.g. Scheurer labels tree).",
+        "<label_dirpath>/<PatientID>/<study_date>/ (multi-timepoint, e.g. mHSPC) "
+        "or <label_dirpath>/<PatientID>/ (single-label-per-patient, e.g. Scheurer).",
     )
     parser.add_argument(
         "--label-glob",

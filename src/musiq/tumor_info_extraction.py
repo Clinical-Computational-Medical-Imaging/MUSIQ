@@ -4,6 +4,7 @@ import os
 from concurrent.futures import ProcessPoolExecutor
 
 import cc3d
+import nibabel as nib
 import numpy as np
 import pandas as pd
 from scipy import ndimage
@@ -310,7 +311,8 @@ class TumorInfoExtraction:
             mask_source (str): "auto" (PETseg/PETsegSUL -> TumorStats/TumorStatsSUL) or
                 "revised" (physician Tumor label -> TumorStatsRevised/TumorStatsRevisedSUL).
             label_dirpath (str | os.PathLike | None): used when mask_source="revised". None looks for the
-                label inside each study dir; a path looks under <label_dirpath>/<PatientID>/.
+                label inside each study dir; a path looks under <label_dirpath>/<PatientID>/<study_date>/
+                first (multi-timepoint) then <label_dirpath>/<PatientID>/ (single-label-per-patient).
             label_glob (str): filename pattern of the revised label (may contain wildcards), e.g.
                 "PETseg_revised.nii" or "*segmentation_Tumor.nii".
             workers (int): number of parallel worker processes. 1 (default) runs serially. Patients are
@@ -464,8 +466,12 @@ class TumorInfoExtraction:
 
         petseg_array = metrics.get_3darray_from_niftipath(petseg_fpath)
         suv_array = metrics.get_3darray_from_niftipath(suv_fpath)
-        # Revised label must align in world-space; resample if shape differs, skip if disjoint
-        if self.mask_source == "revised" and petseg_array.shape != suv_array.shape:
+        # Revised label must align in world-space; resample if shape or affine differs (same shape
+        # with a flipped y-axis is a common mismatch between externally-drawn masks and MUSIQ SUV).
+        if self.mask_source == "revised" and (
+            petseg_array.shape != suv_array.shape
+            or not np.allclose(nib.load(petseg_fpath).affine, nib.load(suv_fpath).affine, atol=1e-3)
+        ):
             resampled = resample_label_to_image_grid(petseg_fpath, suv_fpath, study_dirpath)
             if resampled is None or ((petseg_array > 0).any() and not (resampled > 0).any()):
                 logger.warning(
@@ -627,7 +633,8 @@ def tumor_info_extraction_entrypoint() -> None:
         default=None,
         help="Used with --mask-source revised. Omit to look for the label inside each study dir "
         "(e.g. MULTIPRO PETseg_revised.nii); set to a parallel labels root to look under "
-        "<label_dirpath>/<PatientID>/ (e.g. Scheurer labels tree).",
+        "<label_dirpath>/<PatientID>/<study_date>/ (multi-timepoint, e.g. mHSPC) "
+        "or <label_dirpath>/<PatientID>/ (single-label-per-patient, e.g. Scheurer).",
     )
     parser.add_argument(
         "--label-glob",
