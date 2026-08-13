@@ -274,7 +274,9 @@ class TotalSegmentatorMuscleFat:
                             )
                             continue
                         fat_in_percent = (
-                            series_data.get("body_composition_analysis", {}).get("glut_to_c6", {}).get("total_fat_in_%")
+                            series_data.get("body_composition_analysis", {})
+                            .get("full_picture", {})
+                            .get("total_fat_in_%")
                         )
                         if fat_in_percent is None:
                             seg_path = total_seg_path(input_fpath)
@@ -384,7 +386,7 @@ class TotalSegmentatorMuscleFat:
             return
         if weight <= 0:
             return
-        fat_in_percent = series_data.get("body_composition_analysis", {}).get("glut_to_c6", {}).get("total_fat_in_%")
+        fat_in_percent = series_data.get("body_composition_analysis", {}).get("full_picture", {}).get("total_fat_in_%")
         if fat_in_percent is None:
             return
 

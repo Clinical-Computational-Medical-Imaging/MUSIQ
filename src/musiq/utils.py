@@ -8,7 +8,6 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
-import dicom2nifti
 import nibabel as nib
 import nilearn.image
 import numpy as np
@@ -18,7 +17,6 @@ import yaml
 from pydicom.multival import MultiValue
 from pydicom.uid import UID
 from pydicom.valuerep import IS, DSdecimal, DSfloat, PersonName
-from skimage.measure import label
 
 from . import metrics
 
@@ -149,11 +147,6 @@ def is_mr_filename(filename: str, mr_keywords: dict[str, list[str]]) -> bool:
     return any(kw in fname_lower for kw in inclusion) and not any(kw in fname_lower for kw in mr_keywords["EXCLUSION"])
 
 
-def conv_time(time_str: str) -> float:
-    # function for time conversion in DICOM tag
-    return float(time_str[:2]) * 3600 + float(time_str[2:4]) * 60 + float(time_str[4:13])
-
-
 def time_to_seconds(t: str | float | int) -> float:
     """
     Converts time as str to float to seconds after 00:00,
@@ -208,21 +201,6 @@ def agnostic_path(*args) -> plb.Path:
     """Create a path that is agnostic to the operating system."""
     raw_path = os.path.join(*map(str, args)).replace("\\", "/")
     return plb.Path(raw_path)
-
-
-def run_dicom2nifti(input_folder: str | os.PathLike, output_folder: str | os.PathLike) -> None:
-    """Convert DICOM files in a directory to NIfTI format using dicom2nifti.
-
-    Args:
-        input_folder (str | os.PathLike): Input directory containing DICOM files.
-        output_folder (str | os.PathLike): Output directory for NIfTI files.
-    """
-    ## If dcm2niix fails can try with this library
-    try:
-        dicom2nifti.convert_directory(input_folder, str(output_folder), compression=True, reorient=True)
-        logger.info(f"Converted {input_folder} to {output_folder}")
-    except Exception as e:
-        logger.error(f"Error converting {input_folder}: {e}")
 
 
 def repair_ct_affine_from_dicom(
@@ -471,42 +449,6 @@ def mr_nifti_exists(study_dir: plb.Path, protocol_name: str | None, series_descr
     return bool(find_mr_niftis(study_dir, protocol_name, series_description))
 
 
-def is_preselected(series) -> bool:
-    """Check if the series is preselected based on its description and modality."""
-    desc = series["SeriesDescription"]
-    modality = series["Modality"]
-    return (modality == "CT" and "knochen" in desc) or (
-        modality == "PT" and any(x in desc for x in ["pet gk ctac", "qc fx"])
-    )
-
-
-def dcm2nii_mask(mask_dcm_path: str | os.PathLike, nii_output_dirpath: str | os.PathLike) -> None:
-    """Convert a DICOM mask file to NIfTI format.
-
-    Args:
-        mask_dcm_path (str | os.PathLike): Path to the directory containing the mask DICOM files.
-        nii_output_dirpath (str | os.PathLike): Path to the output directory where the NIfTI mask will be saved.
-    """
-    # conversion of the mask dicom file to nifti (not directly possible with dicom2nifti)
-    mask_dcm = list(mask_dcm_path.glob("*.dcm"))[0]
-    mask = pydicom.read_file(str(mask_dcm))
-    mask_array = mask.pixel_array
-
-    # get mask array to correct orientation (this procedure is dataset specific)
-    mask_array = np.transpose(mask_array, (2, 1, 0))
-    mask_orientation = mask[0x5200, 0x9229][0].PlaneOrientationSequence[0].ImageOrientationPatient
-    if mask_orientation[4] == 1:
-        mask_array = np.flip(mask_array, 1)
-
-    # get affine matrix from the corresponding pet
-    pet = nib.load(os.path.join(nii_output_dirpath, "PET.nii.gz"))
-    pet_affine = pet.affine
-
-    # return mask as nifti object
-    mask_out = nib.Nifti1Image(mask_array, pet_affine)
-    nib.save(mask_out, os.path.join(nii_output_dirpath, "SEG.nii.gz"))
-
-
 def resample_image(
     source_img: str | os.PathLike,
     target_img: str | os.PathLike,
@@ -537,19 +479,6 @@ def resample_image(
     nib.save(resampled, os.path.join(nii_output_dirpath, output_fname))
 
 
-def load_nifti_as_array(path: str) -> tuple[np.ndarray, sitk.Image]:
-    """Load a NIfTI file as a numpy array."""
-    image = sitk.ReadImage(path)
-    array = sitk.GetArrayFromImage(image)
-    return array, image
-
-
-def compute_connected_components(mask: np.ndarray) -> tuple[np.ndarray, int]:
-    """Perform connected component analysis on a binary mask."""
-    labeled_mask = label(mask, connectivity=3)
-    return labeled_mask
-
-
 def compute_tumor_organ_overlap(tumor_mask: np.ndarray, organ_mask: np.ndarray, organ_labels: dict) -> dict:
     """Determine which organs the tumor overlaps with."""
     overlap = {}
@@ -558,6 +487,38 @@ def compute_tumor_organ_overlap(tumor_mask: np.ndarray, organ_mask: np.ndarray, 
         if np.any(np.logical_and(tumor_mask, organ_region)):
             overlap[organ_name] = True
     return overlap
+
+
+def compute_lesion_compartment_fractions(
+    tumor_mask: np.ndarray,
+    ctcadsres_crop: np.ndarray,
+    bone_labels: frozenset[int],
+    organ_labels: frozenset[int],
+    label_names: dict[int, str],
+) -> tuple[dict[str, float], str | None]:
+    """Classify lesion voxels into Bone/Organs/Outside using resampled CTcads.
+
+    Returns (fractions_dict, top_cads_label_name).
+    fractions_dict keys: "Bone", "Organs", "Outside" — sum to 1.0.
+    top_cads_label_name: most-frequent non-zero CADS label within the lesion (None if all background).
+    """
+    total = int(tumor_mask.sum())
+    if total == 0:
+        return {"Bone": 0.0, "Organs": 0.0, "Outside": 1.0}, None
+    labels_in = ctcadsres_crop[tumor_mask > 0]
+    bone_vox = int(np.isin(labels_in, sorted(bone_labels)).sum())
+    organ_vox = int(np.isin(labels_in, sorted(organ_labels)).sum())
+    fracs = {
+        "Bone": bone_vox / total,
+        "Organs": organ_vox / total,
+        "Outside": (total - bone_vox - organ_vox) / total,
+    }
+    nonzero = labels_in[labels_in > 0]
+    top_label_name: str | None = None
+    if nonzero.size > 0:
+        unique, counts = np.unique(nonzero, return_counts=True)
+        top_label_name = label_names.get(int(unique[np.argmax(counts)]))
+    return fracs, top_label_name
 
 
 def compute_pet_metrics(tumor_mask: np.ndarray, pet_array: np.ndarray, spacing: tuple[float]) -> dict:
@@ -572,29 +533,6 @@ def compute_pet_metrics(tumor_mask: np.ndarray, pet_array: np.ndarray, spacing: 
         "SUVpeak": metrics.calculate_suvpeak_median(pet_array, tumor_mask, spacing),
         "SurfaceArea_mm2": metrics.calculate_patient_level_surface_area(tumor_mask, spacing),
     }
-
-
-def get_modalities_in_dir(directory: str | os.PathLike) -> set:
-    """
-    Scans the specified directory (and its subdirectories) for DICOM files and
-    collects the modalities found. It stops searching early if both "CT" and "PT" are found.
-    """
-    modalities = set()
-    directory = plb.Path(directory)
-    for root, _dirs, files in os.walk(directory):
-        for file in files:
-            file_path = plb.Path(root) / file
-            try:
-                ds = pydicom.dcmread(str(file_path), stop_before_pixels=True)
-                mod = getattr(ds, "Modality", None)
-                if mod:
-                    modalities.add(mod)
-                # If both CT and PT are found, we can stop early.
-                if "CT" in modalities and "PT" in modalities:
-                    return modalities
-            except Exception:
-                continue
-    return modalities
 
 
 # Suffixes that are never DICOM slices; skip them when picking a file to read tags from.
