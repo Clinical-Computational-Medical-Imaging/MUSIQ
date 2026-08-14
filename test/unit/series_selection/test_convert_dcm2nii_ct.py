@@ -95,15 +95,3 @@ def test_sidecar_lookup_falls_back_to_any_json_when_stem_does_not_match(mocker, 
     dicom_tags = collector.convert_dcm2nii_CT(CT_dcm_dirpath="/dicom/ct", output_dirpath=out_dir)
 
     assert dicom_tags["Modality"] == "CT"
-
-    # Sidecare Fallback (line 742 & 743) nimmt Random andere json file wenn eigene nicht vorhanden.
-    # Kann bei Primary & Secondary match (also 2 Serien) dazu führen das eine falsche json
-    # gewählt wird.
-    # (PT wählt einfach alphabetisch ie erstbeste json ohne check ob die eigene vorhanden ist)
-    # (MR gleich wie beim CT)
-
-    # Ranking in _select_ct_volume ist vermutlich verdreht. Sollte nicht in erster line das
-    # Primary Image type (rohbild) gewählt werden, dann das affine Korrigierte, slice anzahl, Bild größe?
-    # (Für PT nicht vorhanden sollte aber der gleichen logik folgen) (Bei MR nicht vorhanden braucht
-    # ein primary secondary check) (Affine Korektur für MR und PT nicht unbedingt nötig. Bei MR können
-    # vermutlich fehler ausgeglichen werden)
