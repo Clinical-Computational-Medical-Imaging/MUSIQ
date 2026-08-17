@@ -104,7 +104,7 @@ _DOWNLOAD_TARGETS = [
     },
     {
         # One irregular interslice gap among otherwise-uniform spacing; reproduces dcm2niix's
-        # "Interslice distance varies" warning and its _Eq_1 output's wrong affine. z_window
+        # "Interslice distance varies" warning and exercises its _Eq_1 resampling path. z_window
         # keeps only the slices around the gap instead of the full 770-slice series.
         "collection": "ACRIN-NSCLC-FDG-PET",
         "patient_id": "ACRIN-NSCLC-FDG-PET-114",

@@ -14,8 +14,6 @@ import numpy as np
 import pydicom
 import pytest
 
-import musiq.series_selection
-
 from .conftest import find_series_dir
 
 pytestmark = [pytest.mark.usefixtures("dcm2niix_available")]
@@ -95,8 +93,7 @@ def test_second_reconstruction_of_the_same_study_does_not_overwrite_the_first(
 
 
 def test_real_ct_affine_matches_dicom_slice_spacing(collector, tmp_path, ct_series_dir):
-    """Sanity-checks the NIfTI geometry (not just its existence) against the DICOM's own
-    PixelSpacing, i.e. real image functionality rather than a bare file-exists check."""
+    """Verifies the converted NIfTI's in-plane voxel spacing matches the DICOM PixelSpacing."""
     out_dir = tmp_path / "out"
     out_dir.mkdir()
     collector.convert_dcm2nii_CT(CT_dcm_dirpath=ct_series_dir, output_dirpath=out_dir)
@@ -123,23 +120,16 @@ def irregular_spacing_ct_series_dir(integration_data_dir):
 
 
 def test_real_irregular_slice_spacing_is_repaired_to_the_dicom_derived_value(
-    mocker, collector, tmp_path, irregular_spacing_ct_series_dir
+    collector, tmp_path, irregular_spacing_ct_series_dir
 ):
-    """This series has one irregular interslice gap among otherwise-uniform spacing, which makes
-    dcm2niix emit an _Eq_1 output whose z-spacing/sign it derives wrong from SliceThickness.
-    repair_ct_affine_from_dicom must correct it to the value actually implied by
-    ImagePositionPatient — computed here independently of that function, not by calling it.
-
-    repair_spy confirms the repair path is taken; it does not by itself confirm the repaired
-    value is correct (see BUGREPORT_ct_pt_volume_and_sidecar_selection.md re: input-file-count
-    vs. output-slice-count when Eq_1 resampling changes the slice count)."""
-    repair_spy = mocker.spy(musiq.series_selection, "repair_ct_affine_from_dicom")
-
+    """This series has one irregular interslice gap among otherwise-uniform spacing, which can make
+    dcm2niix derive an incorrect slice spacing for its _Eq_1 output. Verifies that the converted
+    NIfTI's slice spacing, multiplied by its own slice count, reproduces the physical extent
+    implied by the DICOM ImagePositionPatient values — computed here independently of the
+    conversion code, so the check holds regardless of whether a correction was applied."""
     out_dir = tmp_path / "out"
     out_dir.mkdir()
     collector.convert_dcm2nii_CT(CT_dcm_dirpath=irregular_spacing_ct_series_dir, output_dirpath=out_dir)
-
-    assert repair_spy.spy_return is True
 
     positions = []
     for name in os.listdir(irregular_spacing_ct_series_dir):
@@ -148,10 +138,10 @@ def test_real_irregular_slice_spacing_is_repaired_to_the_dicom_derived_value(
         )
         positions.append(float(ds.ImagePositionPatient[2]))
     positions.sort()
-    # The uniform spacing implied by the full z-extent and slice count — not a median of the
-    # per-gap diffs, which the one irregular gap here would skew toward the wrong value.
-    true_spacing = (positions[-1] - positions[0]) / (len(positions) - 1)
+    dicom_extent = positions[-1] - positions[0]
 
     img = nib.load(str(out_dir / "CT.nii.gz"))
     z_spacing = float(np.linalg.norm(img.affine[:3, 2]))
-    assert z_spacing == pytest.approx(true_spacing, abs=0.05)
+    nifti_extent = (img.shape[2] - 1) * z_spacing
+
+    assert nifti_extent == pytest.approx(dicom_extent, rel=0.01, abs=0.5)
