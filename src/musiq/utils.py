@@ -369,25 +369,6 @@ def repair_slice_spacing_from_dicom(
     return True
 
 
-def repair_ct_affine_from_dicom(
-    nifti_path: str | os.PathLike,
-    dicom_dirpath: str | os.PathLike,
-    rel_tol: float = 0.01,
-) -> bool:
-    """Correct a CT NIfTI's slice-axis affine (direction and spacing) from the DICOM geometry.
-
-    Combines ``repair_slice_direction_from_dicom`` (sign) and ``repair_slice_spacing_from_dicom``
-    (magnitude) — see those for what each one corrects. Both independently re-derive the slice
-    axis from the DICOM ``ImagePositionPatient`` values and leave the file untouched wherever it
-    already agrees, so calling this on an already-correct file is a no-op.
-
-    Returns True if either correction was applied, False otherwise.
-    """
-    direction_fixed = repair_slice_direction_from_dicom(nifti_path, dicom_dirpath)
-    spacing_fixed = repair_slice_spacing_from_dicom(nifti_path, dicom_dirpath, rel_tol=rel_tol)
-    return direction_fixed or spacing_fixed
-
-
 def select_dominant_ct_acquisition(
     dicom_dirpath: str | os.PathLike,
     spacing_rtol: float = 0.1,
@@ -400,9 +381,9 @@ def select_dominant_ct_acquisition(
     (observed in the anonymized whole-body cohorts, filed under one series with distinct
     ``AcquisitionNumber``). Because the through-plane spacing differs between them, dcm2niix cannot
     place all slices on one regular grid and emits a stretched, often head-for-feet-flipped volume
-    that ``repair_ct_affine_from_dicom`` cannot recover (both origin and sign end up wrong). This
-    returns the file paths of the acquisition(s) whose spacing matches the dominant (most-slices)
-    one, so the caller can convert just those.
+    that ``repair_slice_direction_from_dicom``/``repair_slice_spacing_from_dicom`` cannot recover
+    (both origin and sign end up wrong). This returns the file paths of the acquisition(s) whose
+    spacing matches the dominant (most-slices) one, so the caller can convert just those.
 
     Returns ``None`` — convert the directory as-is — when it holds a single acquisition, or several
     acquisitions that already share one consistent slice spacing (a genuine multi-part volume).

@@ -1,5 +1,6 @@
 """Fixtures for real-DICOM integration tests against a locally downloaded TCIA cohort.
 
+
 These tests exercise the real dcm2niix conversion path against genuine DICOM data (not
 mocked), so they need the actual images on disk. Two ways to provide them:
 

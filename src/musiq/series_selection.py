@@ -22,7 +22,8 @@ from .utils import (
     list_dicom_files,
     make_json_safe,
     mr_nifti_exists,
-    repair_ct_affine_from_dicom,
+    repair_slice_direction_from_dicom,
+    repair_slice_spacing_from_dicom,
     resolve_pet_decay_reference,
     run_dcm2niix,
     select_dominant_ct_acquisition,
@@ -731,9 +732,11 @@ class SeriesSelection:
                 shutil.copy(nii, out_fpath)
                 # dcm2niix mis-derives the slice axis for series missing SpacingBetweenSlices
                 # (e.g. Siemens NAEOTOM Alpha VMI), producing an upside-down/stretched volume;
-                # repair the affine from the DICOM positions when it disagrees.
+                # repair the affine's direction and spacing from the DICOM positions when either
+                # disagrees.
                 try:
-                    repair_ct_affine_from_dicom(out_fpath, conv_dcm_dirpath)
+                    repair_slice_direction_from_dicom(out_fpath, conv_dcm_dirpath)
+                    repair_slice_spacing_from_dicom(out_fpath, conv_dcm_dirpath)
                 except Exception as e:
                     logger.error(f"CT affine sanity-check failed for {out_fpath}: {e}")
                 # read the sidecar matching the chosen volume (same stem)

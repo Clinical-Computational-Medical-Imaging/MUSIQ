@@ -1,7 +1,8 @@
 """Unit tests for convert_dcm2nii_CT's rarer branches: the mixed-spacing dominant-acquisition
 filter, a failing affine repair, and the sidecar-fallback lookup.
 
-These mock run_dcm2niix/select_dominant_ct_acquisition/repair_ct_affine_from_dicom rather than
+These mock run_dcm2niix/select_dominant_ct_acquisition/repair_slice_direction_from_dicom/
+repair_slice_spacing_from_dicom rather than
 driving them with a real dcm2niix conversion: symlink-based dominant-acquisition filtering isn't
 reliably provokable through real DICOM data (it needs two mixed-spacing acquisitions bundled
 under one SeriesInstanceUID), and os.symlink itself requires elevated privileges on Windows
@@ -37,7 +38,8 @@ def test_dominant_acquisition_files_are_symlinked_into_a_filtered_conversion_dir
         _write_nii_and_sidecar(output_folder)
 
     mocker.patch("musiq.series_selection.run_dcm2niix", side_effect=fake_run_dcm2niix)
-    mocker.patch("musiq.series_selection.repair_ct_affine_from_dicom", return_value=False)
+    mocker.patch("musiq.series_selection.repair_slice_direction_from_dicom", return_value=False)
+    mocker.patch("musiq.series_selection.repair_slice_spacing_from_dicom", return_value=False)
 
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -60,7 +62,7 @@ def test_affine_repair_failure_is_logged_but_does_not_abort_conversion(mocker, c
         _write_nii_and_sidecar(output_folder)
 
     mocker.patch("musiq.series_selection.run_dcm2niix", side_effect=fake_run_dcm2niix)
-    mocker.patch("musiq.series_selection.repair_ct_affine_from_dicom", side_effect=RuntimeError("boom"))
+    mocker.patch("musiq.series_selection.repair_slice_direction_from_dicom", side_effect=RuntimeError("boom"))
 
     out_dir = tmp_path / "out"
     out_dir.mkdir()
@@ -87,7 +89,8 @@ def test_sidecar_lookup_falls_back_to_any_json_when_stem_does_not_match(mocker, 
             json.dump({"Modality": "CT"}, f)
 
     mocker.patch("musiq.series_selection.run_dcm2niix", side_effect=fake_run_dcm2niix)
-    mocker.patch("musiq.series_selection.repair_ct_affine_from_dicom", return_value=False)
+    mocker.patch("musiq.series_selection.repair_slice_direction_from_dicom", return_value=False)
+    mocker.patch("musiq.series_selection.repair_slice_spacing_from_dicom", return_value=False)
 
     out_dir = tmp_path / "out"
     out_dir.mkdir()
