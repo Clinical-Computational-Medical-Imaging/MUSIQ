@@ -19,17 +19,23 @@ mocked), so they need the actual images on disk. Two ways to provide them:
      - ``manifest-1773751814915.tcia`` — TCGA-PRAD series (CT/MR/PET conversion tests).
      - ``manifest-acrin-nsclc-fdg-pet.tcia`` — one ACRIN-NSCLC-FDG-PET CT series, used only by
        the irregular-slice-spacing affine-repair test.
+     - ``manifest-flair-tracew-dixon.tcia`` — one series each from ReMIND (FLAIR), ACRIN-6698
+       (TRACEW diffusion trace) and ISPY2 (GE IDEAL water/fat, the DIXON-equivalent technique) —
+       MR contrast types the TCGA-PRAD series above don't cover.
 
-   Download both into the same root directory (so it ends up containing both a ``TCGA-PRAD/``
-   and an ``ACRIN-NSCLC-FDG-PET/`` subfolder), then point pytest at that root:
+   Download all three into the same root directory (so it ends up containing ``TCGA-PRAD/``,
+   ``ACRIN-NSCLC-FDG-PET/``, ``ReMIND/``, ``ACRIN-6698/`` and ``ISPY2/`` subfolders), then point
+   pytest at that root:
 
        pytest test/integration --integration-data-dir "C:\\path\\to\\that\\root"
        MUSIQ_INTEGRATION_DATA_DIR="/path/to/that/root" pytest test/integration
 
-   Downloading only manifest-1773751814915.tcia still works — tests needing the ACRIN series
-   just skip.
+   This never hits the network: a series missing from your manual download (e.g. one added to
+   ``_DOWNLOAD_TARGETS`` after you downloaded the manifests) just makes that one test skip, same
+   as an outdated/partial manifest always has — use ``--download-integration-data`` instead if
+   you want every needed series fetched for you.
 
-Tests in this directory skip automatically when none of the above is set.
+Tests in this directory skip automatically when neither of the above is set.
 """
 
 import io
@@ -41,8 +47,6 @@ import zipfile
 
 import pydicom
 import pytest
-
-from musiq.series_selection import SeriesSelection
 
 _TCIA_GET_IMAGE_URL = "https://services.cancerimagingarchive.net/nbia-api/services/v1/getImage"
 
@@ -88,11 +92,38 @@ _DOWNLOAD_TARGETS = [
         "uid": "1.3.6.1.4.1.14519.5.2.1.6450.4006.157052036872186731652264278303",
     },
     {
+        # Same patient/study as T1/T2 AXIAL and T2 CORONAL above — the sagittal view of the same
+        # exam, used to cover all three MR planes without pulling in a new collection.
+        "collection": "TCGA-PRAD",
+        "patient_id": "TCGA-EJ-5495",
+        "study_dir": "MRI PELVIS",
+        "series_dir": "T2 SAGITTAL",
+        "uid": "1.3.6.1.4.1.14519.5.2.1.6450.4006.261324998916156824775658618938",
+    },
+    {
         "collection": "TCGA-PRAD",
         "patient_id": "TCGA-J4-A67O",
         "study_dir": "MRI PELVIS WWO C",
         "series_dir": "DYNAMIC SCAN",
         "uid": "1.3.6.1.4.1.14519.5.2.1.3983.4006.123592663440526734445424125161",
+    },
+    {
+        # Same patient/study as DYNAMIC SCAN above — a diffusion-weighted series, covering an MR
+        # contrast/sequence type (DWI) distinct from the T1/T2 anatomical series used elsewhere.
+        "collection": "TCGA-PRAD",
+        "patient_id": "TCGA-J4-A67O",
+        "study_dir": "MRI PELVIS WWO C",
+        "series_dir": "Ax DWI B400",
+        "uid": "1.3.6.1.4.1.14519.5.2.1.3983.4006.182072139554628872740091514717",
+    },
+    {
+        # Same patient/study as DWI above — the scanner-derived ADC map (a distinct, quantitative
+        # MR contrast computed from the DWI b-values, not acquired directly).
+        "collection": "TCGA-PRAD",
+        "patient_id": "TCGA-J4-A67O",
+        "study_dir": "MRI PELVIS WWO C",
+        "series_dir": "Apparent Diffusion Coefficient",
+        "uid": "1.3.6.1.4.1.14519.5.2.1.3983.4006.135787483360102124477071322175",
     },
     {
         # Real ORIGINAL/PRIMARY whole-body PET reconstruction with full dosimetry tags —
@@ -113,6 +144,41 @@ _DOWNLOAD_TARGETS = [
         "series_dir": "Recon 3",
         "uid": "1.3.6.1.4.1.14519.5.2.1.7009.2403.200599078995439563089201126426",
         "z_window": (41, 71),
+    },
+    {
+        # A brain MR contrast type (FLAIR) none of the TCGA-PRAD (pelvis) series above have.
+        "collection": "ReMIND",
+        "patient_id": "ReMIND-048",
+        "study_dir": "Preop",
+        "series_dir": "2D_AX_T2_FLAIR",
+        "uid": "1.3.6.1.4.1.14519.5.2.1.259548065524134509044482163487949780551",
+    },
+    {
+        # Trace-weighted DWI (TRACEW) -- bundles 4 b-values under one SeriesInstanceUID, so
+        # dcm2niix itself produces a 4D volume here (same ranking case as the DWI B400 series
+        # above, from a different collection/vendor).
+        "collection": "ACRIN-6698",
+        "patient_id": "ACRIN-6698-207837",
+        "study_dir": "ACRIN-6698_ISPY2_MRI_T0",
+        "series_dir": "TRACEW_DFC",
+        "uid": "1.3.6.1.4.1.14519.5.2.1.7695.4164.118908027726671791995201196830",
+    },
+    {
+        # GE's IDEAL water-fat separation -- the vendor-specific name for the same underlying
+        # technique as Siemens' DIXON. Paired with the WATER series below: same
+        # patient/study/timepoint, the other half of the same water-fat decomposition.
+        "collection": "ISPY2",
+        "patient_id": "ISPY2-100899",
+        "study_dir": "ISPY2_MRI_T0",
+        "series_dir": "FAT",
+        "uid": "1.3.6.1.4.1.14519.5.2.1.2647355698869417812524932280893489028",
+    },
+    {
+        "collection": "ISPY2",
+        "patient_id": "ISPY2-100899",
+        "study_dir": "ISPY2_MRI_T0",
+        "series_dir": "WATER",
+        "uid": "1.3.6.1.4.1.14519.5.2.1.279614487823636499235940907104792611414",
     },
 ]
 
@@ -218,8 +284,3 @@ def find_series_dir(root, collection, patient_id, study_glob, series_glob):
 def dcm2niix_available():
     if shutil.which("dcm2niix") is None:
         pytest.skip("dcm2niix binary not found on PATH; install the 'dcm2niix' package to run this test.")
-
-
-@pytest.fixture()
-def collector():
-    return SeriesSelection(input_dirpath=".", output_dirpath=".", series_keywords={})

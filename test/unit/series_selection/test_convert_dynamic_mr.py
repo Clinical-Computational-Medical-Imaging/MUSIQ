@@ -51,6 +51,38 @@ def test_stacks_timepoints_in_given_order_with_real_conversion(collector, tmp_pa
     assert dicom_tags["Modality"] == "MR"
 
 
+@pytest.mark.usefixtures("dcm2niix_available")
+def test_second_run_of_dynamic_mr_series_skips_reconversion(mocker, collector, tmp_path, dicom_series_factory):
+    """A rerun of a dynamic (multi-timepoint, stacked-to-4D) MR series must be recognized as
+    already converted -- by convert_dcm2nii_MR's existing_niftis check, *before* dynamic
+    stacking is attempted again -- not just for single-volume MR series (covered by
+    test_convert_dcm2nii_mr.py's equivalent test)."""
+    sibling_dirs = _make_timepoint_dirs(dicom_series_factory, n_timepoints=3, pixel_values=[10, 20, 30])
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    first_path, _ = collector.convert_dcm2nii_MR(
+        MR_dcm_dirpath=sibling_dirs[0], output_dirpath=out_dir, dynamic_sibling_dirs=sibling_dirs
+    )
+    assert nib.load(str(first_path)).ndim == 4
+    with open(first_path, "rb") as f:
+        original_bytes = f.read()
+
+    convert_dynamic = mocker.patch.object(collector, "_convert_dynamic_mr")
+    run_dcm2niix = mocker.patch("musiq.series_selection.run_dcm2niix")
+
+    second_path, second_tags = collector.convert_dcm2nii_MR(
+        MR_dcm_dirpath=sibling_dirs[0], output_dirpath=out_dir, dynamic_sibling_dirs=sibling_dirs
+    )
+
+    convert_dynamic.assert_not_called()
+    run_dcm2niix.assert_not_called()
+    assert str(second_path) == str(first_path)
+    with open(second_path, "rb") as f:
+        assert f.read() == original_bytes
+    assert second_tags["Modality"] == "MR"
+
+
 def _write_fake_nii(out_folder, shape, affine=None):
     import os
 

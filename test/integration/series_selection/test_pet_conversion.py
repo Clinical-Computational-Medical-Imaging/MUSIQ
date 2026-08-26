@@ -5,7 +5,7 @@ PET reconstruction downloaded from TCIA (see conftest.py for how to point pytest
 import nibabel as nib
 import pytest
 
-from .conftest import find_series_dir
+from ..conftest import find_series_dir
 
 pytestmark = [pytest.mark.usefixtures("dcm2niix_available")]
 

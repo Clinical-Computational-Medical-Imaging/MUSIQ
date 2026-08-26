@@ -14,7 +14,7 @@ import numpy as np
 import pydicom
 import pytest
 
-from .conftest import find_series_dir
+from ..conftest import find_series_dir
 
 pytestmark = [pytest.mark.usefixtures("dcm2niix_available")]
 

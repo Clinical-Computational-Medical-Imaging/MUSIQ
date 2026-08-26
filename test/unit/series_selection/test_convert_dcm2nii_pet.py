@@ -14,7 +14,7 @@ import pytest
 
 from musiq.utils import calculate_suv_factor
 
-from ._dicom_builder import pet_radiopharm_tags
+from .._dicom_builder import pet_radiopharm_tags
 
 pytestmark = pytest.mark.usefixtures("dcm2niix_available")
 
@@ -126,6 +126,49 @@ def test_convert_pet_skips_suv_regeneration_when_suv_already_exists(collector, t
 
     assert suv_path.stat().st_mtime_ns == original_mtime
     assert (nib.load(str(suv_path)).get_fdata() == original_values).all()
+
+
+def test_convert_pet_uses_series_time_not_varying_bed_acquisition_time_for_suv(
+    collector, tmp_path, dicom_series_factory
+):
+    """Regression test for a real, previously observed bug: whole-body PET's AcquisitionTime
+    varies per bed position over the scan, and naively using it (instead of SeriesTime) for the
+    decay-correction reference inflated SUV by up to ~25% (see resolve_pet_decay_reference's
+    docstring). Simulates that per-bed timing directly through the full convert_dcm2nii_PET path,
+    not just the isolated resolve_pet_decay_reference unit -- the SUV factor must come out
+    identical to using SeriesTime alone, regardless of the (deliberately later and varying)
+    per-slice AcquisitionTime values."""
+    tags = pet_radiopharm_tags()
+    pet_dir = dicom_series_factory(
+        "PT",
+        subdir="pet_series_timing",
+        n_slices=3,
+        rows=8,
+        cols=8,
+        pixel_value=lambda i: 100,
+        pixel_representation=0,
+        extra_tags={
+            "PatientWeight": 80.0,
+            "SeriesTime": "120000",
+            "DecayCorrection": "START",
+            **tags,
+        },
+        # Later than SeriesTime and different per slice/bed position -- if this leaked into the
+        # SUV factor instead of SeriesTime, the assertion below would fail.
+        per_slice_tags=lambda i: {"AcquisitionTime": ["121500", "123000", "124500"][i]},
+    )
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    dicom_tags = collector.convert_dcm2nii_PET(PET_dcm_dirpath=pet_dir, output_dirpath=out_dir)
+
+    expected_factor = calculate_suv_factor(
+        total_dose=3e8, start_time="113000", half_life=6588.0, acq_time="120000", weight=80.0
+    )
+    assert dicom_tags["SUVFactor"] == pytest.approx(expected_factor)
+
+    suv = nib.load(str(out_dir / "SUV.nii.gz"))
+    assert suv.get_fdata() == pytest.approx(100 * expected_factor, rel=1e-4)
 
 
 def test_convert_pet_raises_when_no_dicom_files_found(collector, tmp_path):
