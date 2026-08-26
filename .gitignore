@@ -11,7 +11,8 @@ moose_venv/
 .venv_moose/
 
 #SLURM
-*SLURM.sh
+*SLURM*.sh
+*[Ss]lurm*.sh
 
 # Distribution / packaging
 build/
