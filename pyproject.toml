@@ -131,6 +131,7 @@ musiq_totalsegmentator_inference = "musiq.totalsegmentator_inference:totalsegmen
 musiq_totalsegmentator_muscle_fat = "musiq.totalsegmentator_muscle_fat:totalsegmentator_muscle_fat_entrypoint"
 musiq_sul = "musiq.sul_computation:sul_computation_entrypoint"
 musiq_tumor_info_extraction = "musiq.tumor_info_extraction:tumor_info_extraction_entrypoint"
+musiq_promise_staging = "musiq.promise_staging:promise_staging_entrypoint"
 musiq_cohort_info = "musiq.workflow:cohort_info_entrypoint"
 musiq = "musiq.workflow:workflow_entrypoint"
 

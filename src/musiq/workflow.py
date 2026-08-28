@@ -127,6 +127,7 @@ class Workflow:
                         "autopet",
                         "totalsegmentator",
                         "tumor",
+                        "promise",
                         "plot",
                         "moose",
                         "muscle_fat",
@@ -141,7 +142,7 @@ class Workflow:
                 raise ValueError(
                     "Invalid tasks specified. Possible values are: "
                     "'series_selection', 'radiomics', 'autopet', "
-                    "'totalsegmentator', 'tumor', 'plot', 'moose', "
+                    "'totalsegmentator', 'tumor', 'promise', 'plot', 'moose', "
                     "'muscle_fat', 'sul', 'cads', 'boa'."
                 )
 
@@ -154,6 +155,7 @@ class Workflow:
         self.moose = "moose" in (tasks or [])
         self.radiomics = "radiomics" in (tasks or [])
         self.tumor = "tumor" in (tasks or [])
+        self.promise = "promise" in (tasks or [])
         self.plot = "plot" in (tasks or [])
         self.boa = "boa" in (tasks or [])
 
@@ -352,6 +354,19 @@ class Workflow:
                     **self._revised_label_kwargs(source),
                 ).run()
 
+        if self.promise:
+            from .promise_staging import PromiseStaging
+
+            logger.info("\n" + "#" * 50 + "\nStarting PROMISE V2 Staging\n" + "#" * 50)
+            for source in self.mask_sources:
+                metric_list = self.pet_metric if source == "auto" else ["SUV"]
+                for m in [metric_list] if isinstance(metric_list, str) else metric_list:
+                    PromiseStaging(
+                        input_dirpath_processed=self.output_dirpath,
+                        pet_metric=m,
+                        mask_source=source,
+                    ).run()
+
         logger.info("\n" + "#" * 50 + "\nStarting Cohort Info Creation\n" + "#" * 50)
         build_cohort_info(self.output_dirpath)
 
@@ -383,7 +398,7 @@ def workflow_entrypoint():
         "--tasks",
         nargs="+",
         help="List of tasks to run. Possible values: series_selection, "
-        "radiomics, autopet, totalsegmentator, tumor, plot, moose, muscle_fat, sul, cads, boa.",
+        "radiomics, autopet, totalsegmentator, tumor, promise, plot, moose, muscle_fat, sul, cads, boa.",
         default=None,
     )
     parser.add_argument(
