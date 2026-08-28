@@ -203,32 +203,16 @@ def agnostic_path(*args) -> plb.Path:
     return plb.Path(raw_path)
 
 
-def repair_ct_affine_from_dicom(
-    nifti_path: str | os.PathLike,
-    dicom_dirpath: str | os.PathLike,
-    rel_tol: float = 0.01,
-) -> bool:
-    """Fix a CT NIfTI whose through-plane (slice) geometry was mis-derived by dcm2niix.
+def _slice_normal_and_extent(dicom_dirpath: str | os.PathLike) -> tuple[np.ndarray, float, float] | None:
+    """Derive the unit slice-normal and the physical extent it spans, in DICOM LPS space.
 
-    Some CT series omit ``SpacingBetweenSlices`` (0018,0088) — observed on Siemens NAEOTOM
-    Alpha photon-counting VMI reconstructions. dcm2niix then falls back to ``SliceThickness``
-    (0018,0050) for the slice spacing and can also pick the wrong superior-inferior sign,
-    producing a volume that is both stretched and flipped head-for-feet ("upside down").
+    Reads ``ImagePositionPatient``/``ImageOrientationPatient`` from every file in
+    ``dicom_dirpath``, computes the slice normal from the first file's ``ImageOrientationPatient``,
+    and projects every slice's position onto it.
 
-    The DICOM ``ImagePositionPatient`` values are reliable, so this recomputes the slice-axis
-    column of the affine directly from them, leaves the (correct) in-plane axes and the voxel
-    data untouched, and rewrites the file only when the existing affine actually disagrees —
-    wrong sign or spacing off by more than ``rel_tol``. Oblique / gantry-tilted series (where
-    dcm2niix's slice vector is legitimately not along the pure slice normal) are left alone.
-
-    Returns True if the file was repaired, False if it was already consistent or unverifiable.
+    Returns ``(normal_lps, proj_min, proj_max)``, or ``None`` if the geometry can't be determined
+    (fewer than two readable slices, or a degenerate orientation).
     """
-    nifti_path = str(nifti_path)
-    img = nib.load(nifti_path)
-    if img.ndim < 3 or img.shape[2] < 2:
-        return False  # nothing to verify for a single slice
-
-    # Collect each slice's position projected onto the slice normal (in DICOM LPS space).
     normal_lps = None
     projections = []
     for entry in os.scandir(dicom_dirpath):
@@ -244,51 +228,144 @@ def repair_ct_affine_from_dicom(
             normal_lps = np.cross(iop[:3], iop[3:6])
             norm = np.linalg.norm(normal_lps)
             if norm == 0:
-                return False
+                return None
             normal_lps = normal_lps / norm
         projections.append(float(ipp @ normal_lps))
 
     if normal_lps is None or len(projections) < 2:
-        return False
+        return None
+    return normal_lps, min(projections), max(projections)
 
-    proj_min, proj_max = min(projections), max(projections)
-    spacing_geom = (proj_max - proj_min) / (len(projections) - 1)
-    if spacing_geom <= 0:
+
+def _is_axial_along_normal(column: np.ndarray, normal_ras: np.ndarray) -> bool:
+    """Whether an affine column runs (anti-)parallel to the slice normal, within a tight tolerance.
+
+    True for plain axial series where the slice axis is the pure slice normal; false for
+    oblique/gantry-tilted geometry, which the DICOM-derived repairs below must leave untouched
+    (dcm2niix's slice vector there is legitimately not along the pure slice normal).
+    """
+    norm = np.linalg.norm(column)
+    if norm == 0:
         return False
+    return abs(float(column @ normal_ras) / norm) >= 0.999
+
+
+def _save_with_new_affine(img: nib.Nifti1Image, nifti_path: str, new_affine: np.ndarray) -> None:
+    """Rewrite ``nifti_path`` with ``new_affine`` in place of ``img``'s current affine.
+
+    Reads the raw on-disk voxel array via ``get_unscaled()`` and keeps ``img``'s original header
+    (and thus its scl_slope/scl_inter) unchanged, so the effective voxel values are preserved
+    without upcasting the whole array to float64 — only the affine moves.
+    """
+    raw_data = img.dataobj.get_unscaled()
+    repaired = nib.Nifti1Image(raw_data, new_affine, img.header)
+    repaired.set_sform(new_affine, code=1)
+    repaired.set_qform(new_affine, code=1)
+    nib.save(repaired, nifti_path)
+
+
+def repair_slice_direction_from_dicom(nifti_path: str | os.PathLike, dicom_dirpath: str | os.PathLike) -> bool:
+    """Correct the sign of a CT NIfTI's slice-axis affine column from the DICOM slice order.
+
+    Some CT series — e.g. those missing ``SpacingBetweenSlices`` (0018,0088), where dcm2niix
+    falls back to ``SliceThickness`` (0018,0050) — can end up with the wrong superior-inferior
+    sign in the affine, which flips the volume head-for-feet. The correct sign is derived from
+    the order of the DICOM ``ImagePositionPatient`` values and applied here.
+
+    Only the sign of the slice-axis column is changed; its magnitude (see
+    ``repair_slice_spacing_from_dicom``) and the affine origin are left as-is. Oblique or
+    gantry-tilted series, where the slice axis is not the pure slice normal, are left unmodified.
+
+    Returns True if the sign was corrected, False if it was already correct or could not be
+    determined.
+    """
+    nifti_path = str(nifti_path)
+    img = nib.load(nifti_path)
+    if img.ndim < 3 or img.shape[2] < 2:
+        return False  # nothing to verify for a single slice
+
+    geometry = _slice_normal_and_extent(dicom_dirpath)
+    if geometry is None:
+        return False
+    normal_lps, proj_min, proj_max = geometry
 
     # dcm2niix stores LPS as RAS by negating x and y; the slice normal transforms the same way.
     normal_ras = np.array([-normal_lps[0], -normal_lps[1], normal_lps[2]])
     current_col = np.asarray(img.affine[:3, 2], dtype=float)
-    current_norm = np.linalg.norm(current_col)
-    if current_norm == 0:
-        return False
-    # Only touch plain axial-along-normal series; skip oblique/sheared geometry.
-    if abs(float(current_col @ normal_ras) / current_norm) < 0.999:
+    if not _is_axial_along_normal(current_col, normal_ras):
         return False
 
     # The affine origin is voxel (0,0,0) = the slice at array index 0. Whichever geometric
-    # end it sits at tells us which way the slice axis runs.
+    # end it sits at tells us which way the slice axis should run.
     origin_ras = np.asarray(img.affine[:3, 3], dtype=float)
     proj0 = float(np.array([-origin_ras[0], -origin_ras[1], origin_ras[2]]) @ normal_lps)
-    direction = 1.0 if abs(proj0 - proj_min) <= abs(proj0 - proj_max) else -1.0
-
-    slice_vec_lps = direction * spacing_geom * normal_lps
-    slice_vec_ras = np.array([-slice_vec_lps[0], -slice_vec_lps[1], slice_vec_lps[2]])
-
-    if np.allclose(current_col, slice_vec_ras, rtol=rel_tol, atol=1e-3):
-        return False  # geometry already correct
+    expected_sign = 1.0 if abs(proj0 - proj_min) <= abs(proj0 - proj_max) else -1.0
+    current_sign = 1.0 if float(current_col @ normal_ras) >= 0 else -1.0
+    if expected_sign == current_sign:
+        return False  # already correct
 
     new_affine = np.array(img.affine, dtype=float)
-    new_affine[:3, 2] = slice_vec_ras
+    new_affine[:3, 2] = -current_col
     logger.warning(
-        f"Repairing CT affine for {nifti_path}: slice axis {current_col.round(3).tolist()} "
-        f"-> {slice_vec_ras.round(3).tolist()} (dcm2niix used SliceThickness/wrong sign; "
-        f"true slice spacing {spacing_geom:.3f} mm derived from ImagePositionPatient)."
+        f"Repairing CT slice-axis sign for {nifti_path}: {current_col.round(3).tolist()} "
+        f"-> {new_affine[:3, 2].round(3).tolist()} (dcm2niix picked the wrong superior-inferior "
+        f"sign; expected direction derived from ImagePositionPatient)."
     )
-    repaired = nib.Nifti1Image(np.asanyarray(img.dataobj), new_affine, img.header)
-    repaired.set_sform(new_affine, code=1)
-    repaired.set_qform(new_affine, code=1)
-    nib.save(repaired, nifti_path)
+    _save_with_new_affine(img, nifti_path, new_affine)
+    return True
+
+
+def repair_slice_spacing_from_dicom(
+    nifti_path: str | os.PathLike,
+    dicom_dirpath: str | os.PathLike,
+    rel_tol: float = 0.01,
+) -> bool:
+    """Correct a CT NIfTI's slice spacing from the physical extent of the DICOM slice positions.
+
+    Some CT series — e.g. those missing ``SpacingBetweenSlices`` (0018,0088), where dcm2niix
+    falls back to ``SliceThickness`` (0018,0050) — can end up with an incorrect slice spacing,
+    stretching or compressing the volume along the slice axis. The correct spacing is derived as
+    the physical extent spanned by the DICOM ``ImagePositionPatient`` values, divided by the
+    NIfTI's own slice count (``img.shape[2] - 1``) rather than the number of source DICOM files,
+    since dcm2niix's equal-spacing resampling can change the slice count relative to the input.
+
+    Leaves the sign of the existing slice-axis column (see ``repair_slice_direction_from_dicom``)
+    and the affine origin as-is, and does nothing to oblique/gantry-tilted series.
+
+    Returns True if the spacing was corrected, False if it was already within ``rel_tol`` or
+    could not be determined.
+    """
+    nifti_path = str(nifti_path)
+    img = nib.load(nifti_path)
+    if img.ndim < 3 or img.shape[2] < 2:
+        return False  # nothing to verify for a single slice
+
+    geometry = _slice_normal_and_extent(dicom_dirpath)
+    if geometry is None:
+        return False
+    normal_lps, proj_min, proj_max = geometry
+    true_spacing = (proj_max - proj_min) / (img.shape[2] - 1)
+    if true_spacing <= 0:
+        return False
+
+    normal_ras = np.array([-normal_lps[0], -normal_lps[1], normal_lps[2]])
+    current_col = np.asarray(img.affine[:3, 2], dtype=float)
+    current_spacing = np.linalg.norm(current_col)
+    if current_spacing == 0 or not _is_axial_along_normal(current_col, normal_ras):
+        return False
+
+    if abs(current_spacing - true_spacing) <= rel_tol * true_spacing:
+        return False  # already correct
+
+    new_col = (current_col / current_spacing) * true_spacing  # keep direction, fix magnitude
+    new_affine = np.array(img.affine, dtype=float)
+    new_affine[:3, 2] = new_col
+    logger.warning(
+        f"Repairing CT slice spacing for {nifti_path}: {current_spacing:.3f} mm -> {true_spacing:.3f} mm "
+        f"(derived from the ImagePositionPatient extent over {img.shape[2]} slices; "
+        f"dcm2niix likely used SliceThickness instead)."
+    )
+    _save_with_new_affine(img, nifti_path, new_affine)
     return True
 
 
@@ -304,9 +381,9 @@ def select_dominant_ct_acquisition(
     (observed in the anonymized whole-body cohorts, filed under one series with distinct
     ``AcquisitionNumber``). Because the through-plane spacing differs between them, dcm2niix cannot
     place all slices on one regular grid and emits a stretched, often head-for-feet-flipped volume
-    that ``repair_ct_affine_from_dicom`` cannot recover (both origin and sign end up wrong). This
-    returns the file paths of the acquisition(s) whose spacing matches the dominant (most-slices)
-    one, so the caller can convert just those.
+    that ``repair_slice_direction_from_dicom``/``repair_slice_spacing_from_dicom`` cannot recover
+    (both origin and sign end up wrong). This returns the file paths of the acquisition(s) whose
+    spacing matches the dominant (most-slices) one, so the caller can convert just those.
 
     Returns ``None`` — convert the directory as-is — when it holds a single acquisition, or several
     acquisitions that already share one consistent slice spacing (a genuine multi-part volume).
@@ -727,3 +804,4 @@ def make_json_safe(obj: Any) -> Any:
         return obj.tolist()
     else:
         return obj  # basic type
+    
