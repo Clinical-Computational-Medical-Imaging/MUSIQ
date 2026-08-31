@@ -15,6 +15,7 @@ whatever a real download happens to contain.
 import pathlib as plb
 
 import nibabel as nib
+import numpy as np
 import pytest
 
 from musiq.utils import repair_slice_direction_from_dicom
@@ -75,5 +76,36 @@ def test_undeterminable_dicom_geometry_is_left_untouched(tmp_path, ct_nifti_fact
     nifti_path = ct_nifti_factory(slice_col=(0.0, 0.0, -10.0))
 
     corrected = repair_slice_direction_from_dicom(nifti_path, empty_dicom_dir)
+
+    assert corrected is False
+
+
+def test_non_file_and_unreadable_dicom_dir_entries_are_skipped(ct_dicom_dir, ct_nifti_factory):
+    """A stray subdirectory and a non-DICOM file living alongside the series must not break the
+    slice-normal/extent scan or change its result."""
+    plb.Path(ct_dicom_dir, "subdir").mkdir()
+    plb.Path(ct_dicom_dir, "garbage.dcm").write_bytes(b"not a real dicom file at all")
+    nifti_path = ct_nifti_factory(slice_col=(0.0, 0.0, -10.0), origin=(0.0, 0.0, 0.0))
+
+    corrected = repair_slice_direction_from_dicom(nifti_path, ct_dicom_dir)
+
+    assert corrected is True
+    new_col = nib.load(nifti_path).affine[:3, 2]
+    assert new_col == pytest.approx([0.0, 0.0, 10.0])
+
+
+def test_zero_length_slice_column_is_left_untouched(mocker, ct_dicom_dir):
+    """A zero-length slice-axis affine column is degenerate enough that nibabel itself refuses to
+    write such a NIfTI to disk (its own affine decomposition fails) -- so, like the analogous
+    guard in repair_slice_spacing_from_dicom, this is exercised by mocking the loaded image
+    directly instead of round-tripping through a real file. Unlike repair_slice_spacing_from_dicom
+    (which checks the column's own magnitude first), this function relies entirely on
+    _is_axial_along_normal's internal zero-norm guard to catch it."""
+    fake_img = mocker.Mock(ndim=3, shape=(4, 4, 4))
+    fake_img.affine = np.eye(4)
+    fake_img.affine[:3, 2] = (0.0, 0.0, 0.0)
+    mocker.patch("musiq.utils.nib.load", return_value=fake_img)
+
+    corrected = repair_slice_direction_from_dicom("unused/path.nii.gz", ct_dicom_dir)
 
     assert corrected is False

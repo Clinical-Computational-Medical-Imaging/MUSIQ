@@ -92,3 +92,32 @@ def test_single_slice_nifti_is_left_untouched(ct_dicom_dir, ct_nifti_factory):
     corrected = repair_slice_spacing_from_dicom(nifti_path, ct_dicom_dir)
 
     assert corrected is False
+
+
+def test_undeterminable_dicom_geometry_is_left_untouched(dicom_series_factory, ct_nifti_factory):
+    """A degenerate DICOM orientation (_slice_normal_and_extent returns None) means the true
+    spacing can't be derived at all -- must be a no-op, not raise."""
+    degenerate_dir = dicom_series_factory(
+        "CT",
+        subdir="degenerate_orientation",
+        n_slices=4,
+        rows=4,
+        cols=4,
+        extra_tags={"ImageOrientationPatient": [1, 0, 0, 1, 0, 0]},
+    )
+    nifti_path = ct_nifti_factory(slice_col=(0.0, 0.0, 15.0))
+
+    corrected = repair_slice_spacing_from_dicom(nifti_path, degenerate_dir)
+
+    assert corrected is False
+
+
+def test_zero_physical_extent_is_left_untouched(dicom_series_factory, ct_nifti_factory):
+    """All DICOM slices sharing the same ImagePositionPatient (proj_max == proj_min) derives a
+    true_spacing of exactly 0 -- undefined, must not be applied."""
+    zero_extent_dir = dicom_series_factory("CT", subdir="zero_extent", n_slices=4, rows=4, cols=4, slice_spacing=0.0)
+    nifti_path = ct_nifti_factory(slice_col=(0.0, 0.0, 15.0))
+
+    corrected = repair_slice_spacing_from_dicom(nifti_path, zero_extent_dir)
+
+    assert corrected is False

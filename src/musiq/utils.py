@@ -215,22 +215,23 @@ def _slice_normal_and_extent(dicom_dirpath: str | os.PathLike) -> tuple[np.ndarr
     """
     normal_lps = None
     projections = []
-    for entry in os.scandir(dicom_dirpath):
-        if not entry.is_file():
-            continue
-        try:
-            ds = pydicom.dcmread(entry.path, stop_before_pixels=True)
-            ipp = np.asarray(ds.ImagePositionPatient, dtype=float)
-            iop = np.asarray(ds.ImageOrientationPatient, dtype=float)
-        except Exception:
-            continue
-        if normal_lps is None:
-            normal_lps = np.cross(iop[:3], iop[3:6])
-            norm = np.linalg.norm(normal_lps)
-            if norm == 0:
-                return None
-            normal_lps = normal_lps / norm
-        projections.append(float(ipp @ normal_lps))
+    with os.scandir(dicom_dirpath) as entries:
+        for entry in entries:
+            if not entry.is_file():
+                continue
+            try:
+                ds = pydicom.dcmread(entry.path, stop_before_pixels=True)
+                ipp = np.asarray(ds.ImagePositionPatient, dtype=float)
+                iop = np.asarray(ds.ImageOrientationPatient, dtype=float)
+            except Exception:
+                continue
+            if normal_lps is None:
+                normal_lps = np.cross(iop[:3], iop[3:6])
+                norm = np.linalg.norm(normal_lps)
+                if norm == 0:
+                    return None
+                normal_lps = normal_lps / norm
+            projections.append(float(ipp @ normal_lps))
 
     if normal_lps is None or len(projections) < 2:
         return None
@@ -393,24 +394,25 @@ def select_dominant_ct_acquisition(
     """
     normal_lps = None
     files: list[tuple[str, str, float]] = []  # (path, acquisition, projection onto slice normal)
-    for entry in os.scandir(dicom_dirpath):
-        if not entry.is_file():
-            continue
-        try:
-            ds = pydicom.dcmread(entry.path, stop_before_pixels=True)
-            ipp = np.asarray(ds.ImagePositionPatient, dtype=float)
-            iop = np.asarray(ds.ImageOrientationPatient, dtype=float)
-        except Exception:
-            continue
-        if normal_lps is None:
-            normal_lps = np.cross(iop[:3], iop[3:6])
-            norm = np.linalg.norm(normal_lps)
-            if norm == 0:
-                return None
-            normal_lps = normal_lps / norm
-        files.append(
-            (os.path.abspath(entry.path), str(getattr(ds, "AcquisitionNumber", None)), float(ipp @ normal_lps))
-        )
+    with os.scandir(dicom_dirpath) as entries:
+        for entry in entries:
+            if not entry.is_file():
+                continue
+            try:
+                ds = pydicom.dcmread(entry.path, stop_before_pixels=True)
+                ipp = np.asarray(ds.ImagePositionPatient, dtype=float)
+                iop = np.asarray(ds.ImageOrientationPatient, dtype=float)
+            except Exception:
+                continue
+            if normal_lps is None:
+                normal_lps = np.cross(iop[:3], iop[3:6])
+                norm = np.linalg.norm(normal_lps)
+                if norm == 0:
+                    return None
+                normal_lps = normal_lps / norm
+            files.append(
+                (os.path.abspath(entry.path), str(getattr(ds, "AcquisitionNumber", None)), float(ipp @ normal_lps))
+            )
 
     if not files:
         return None

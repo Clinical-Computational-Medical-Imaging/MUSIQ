@@ -11,6 +11,7 @@ build synthetic series with genuinely varying per-slice AcquisitionTime (via
 """
 
 import logging
+import pathlib as plb
 
 import pytest
 from pydicom.dataset import Dataset
@@ -170,3 +171,29 @@ def test_final_fallback_when_neither_series_time_nor_acquisition_time_present(pe
     assert ref_time == ""
     assert decay_flag == "START"
     assert "Could not resolve" in caplog.text
+
+
+def test_no_dicom_files_raises_file_not_found(tmp_path):
+    """With ds=None (the default, real-usage path), the reference dataset is read from the
+    directory itself -- an empty/wrong directory must raise immediately rather than proceed with
+    no dataset at all."""
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+
+    with pytest.raises(FileNotFoundError):
+        resolve_pet_decay_reference(empty_dir)
+
+
+def test_unreadable_file_among_the_series_is_skipped_when_scanning_for_the_earliest_time(pet_series):
+    """The earliest-AcquisitionTime scan reads every file in the series; one that fails to parse
+    (e.g. a stray non-DICOM sidecar) must be skipped, not crash the whole resolution."""
+    pet_dir = pet_series(
+        extra_tags={"DecayCorrection": "START"},
+        per_slice_tags=_acq_times(["113000", "110500", "114500"]),
+    )
+    (plb.Path(pet_dir) / "zzz_garbage.dcm").write_bytes(b"not a real dicom file at all")
+
+    ref_time, decay_flag = resolve_pet_decay_reference(pet_dir)
+
+    assert ref_time == "110500"  # the garbage file is skipped, real earliest is still found
+    assert decay_flag == "START"

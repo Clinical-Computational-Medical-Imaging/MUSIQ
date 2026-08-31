@@ -65,3 +65,105 @@ def test_empty_directory_returns_none(tmp_path):
     empty_dir.mkdir()
 
     assert select_dominant_ct_acquisition(empty_dir) is None
+
+
+def test_non_file_directory_entries_are_skipped(dicom_series_factory):
+    """os.scandir also yields subdirectories -- a stray one (e.g. a DICOMDIR-adjacent folder)
+    must not break the tag-reading loop or affect the result."""
+    dcm_dir = dicom_series_factory(
+        "CT", subdir="mixed_with_subdir", n_slices=6, rows=4, cols=4, per_slice_tags=_mixed_spacing_tags
+    )
+    (plb.Path(dcm_dir) / "subdir").mkdir()
+
+    kept = select_dominant_ct_acquisition(dcm_dir)
+
+    assert kept is not None
+    assert sorted(plb.Path(p).name for p in kept) == [
+        "slice_000.dcm",
+        "slice_001.dcm",
+        "slice_002.dcm",
+        "slice_003.dcm",
+    ]
+
+
+def test_unreadable_file_in_the_directory_is_skipped(dicom_series_factory):
+    """A non-DICOM file living alongside the series (dcmread raises) must be skipped, not crash
+    the whole scan or get counted into either acquisition."""
+    dcm_dir = dicom_series_factory(
+        "CT", subdir="mixed_with_garbage", n_slices=6, rows=4, cols=4, per_slice_tags=_mixed_spacing_tags
+    )
+    (plb.Path(dcm_dir) / "garbage.dcm").write_bytes(b"not a real dicom file at all")
+
+    kept = select_dominant_ct_acquisition(dcm_dir)
+
+    assert kept is not None
+    assert sorted(plb.Path(p).name for p in kept) == [
+        "slice_000.dcm",
+        "slice_001.dcm",
+        "slice_002.dcm",
+        "slice_003.dcm",
+    ]
+
+
+def test_degenerate_orientation_returns_none(dicom_series_factory):
+    """A zero-length cross product of the row/column direction cosines (e.g. both pointing the
+    same way) means the slice normal can't be determined at all -- must bail out immediately
+    rather than dividing by a zero norm."""
+    dcm_dir = dicom_series_factory(
+        "CT",
+        subdir="degenerate_orientation",
+        n_slices=4,
+        rows=4,
+        cols=4,
+        extra_tags={"ImageOrientationPatient": [1, 0, 0, 1, 0, 0]},
+    )
+
+    assert select_dominant_ct_acquisition(dcm_dir) is None
+
+
+def _one_multi_slice_and_one_single_slice_acquisition(i):
+    """2 acquisitions (so the "single acquisition" short-circuit doesn't apply), but only one of
+    them has >=2 slices -- there's nothing to compare its spacing against."""
+    if i < 4:
+        return {"AcquisitionNumber": 1, "ImagePositionPatient": [0.0, 0.0, float(i * 10)]}
+    return {"AcquisitionNumber": 2, "ImagePositionPatient": [0.0, 0.0, 100.0]}
+
+
+def test_fewer_than_two_multi_slice_acquisitions_returns_none(dicom_series_factory):
+    dcm_dir = dicom_series_factory(
+        "CT",
+        subdir="one_single_slice_acq",
+        n_slices=5,
+        rows=4,
+        cols=4,
+        per_slice_tags=_one_multi_slice_and_one_single_slice_acquisition,
+    )
+
+    assert select_dominant_ct_acquisition(dcm_dir) is None
+
+
+def _globally_spread_but_individually_within_tolerance_tags(i):
+    """3 acquisitions whose spacings (10, 10.9, 9.1) span a >10% global min/max ratio -- so the
+    "one consistent spacing" short-circuit does NOT apply -- yet every single one of them is
+    individually within the default 10% tolerance of the dominant (5-slice) acquisition's 10mm
+    spacing. Nothing ends up actually dropped despite the series looking "mixed" at a glance."""
+    if i < 5:
+        return {"AcquisitionNumber": 1, "ImagePositionPatient": [0.0, 0.0, float(i * 10.0)]}
+    if i < 8:
+        j = i - 5
+        return {"AcquisitionNumber": 2, "ImagePositionPatient": [0.0, 0.0, 100.0 + j * 10.9]}
+    j = i - 8
+    return {"AcquisitionNumber": 3, "ImagePositionPatient": [0.0, 0.0, 200.0 + j * 9.1]}
+
+
+def test_nothing_actually_dropped_despite_mixed_spacing_returns_none(dicom_series_factory):
+    dcm_dir = dicom_series_factory(
+        "CT",
+        subdir="all_within_tolerance",
+        n_slices=10,
+        rows=4,
+        cols=4,
+        per_slice_tags=_globally_spread_but_individually_within_tolerance_tags,
+    )
+
+    assert select_dominant_ct_acquisition(dcm_dir) is None
