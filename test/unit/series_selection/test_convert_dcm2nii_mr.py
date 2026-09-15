@@ -84,7 +84,9 @@ def test_multiple_niftis_picks_most_dimensions_and_logs_discarded(mocker, collec
     assert "water.nii.gz" in caplog.text
 
 
-def test_sidecar_lookup_falls_back_to_any_json_when_stem_does_not_match(mocker, collector, tmp_path, mr_series_dir):
+def test_sidecar_lookup_falls_back_to_any_json_when_stem_does_not_match(
+    mocker, collector, tmp_path, mr_series_dir, caplog
+):
     def fake_run_dcm2niix(input_folder, output_folder, merge=False):
         nib.save(nib.Nifti1Image(np.zeros((4, 4, 4), dtype=np.int16), np.eye(4)), f"{output_folder}/series_1.nii.gz")
         with open(f"{output_folder}/series.json", "w") as f:
@@ -94,6 +96,8 @@ def test_sidecar_lookup_falls_back_to_any_json_when_stem_does_not_match(mocker, 
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
-    _, dicom_tags = collector.convert_dcm2nii_MR(MR_dcm_dirpath=mr_series_dir, output_dirpath=out_dir)
+    with caplog.at_level(logging.WARNING):
+        _, dicom_tags = collector.convert_dcm2nii_MR(MR_dcm_dirpath=mr_series_dir, output_dirpath=out_dir)
 
     assert dicom_tags["Modality"] == "MR"
+    assert "No JSON sidecar matching" in caplog.text

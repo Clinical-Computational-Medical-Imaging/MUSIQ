@@ -158,19 +158,12 @@ def test_real_axial_coronal_and_sagittal_mr_all_convert_correctly(
     assert data.std() > 0
 
 
-@pytest.mark.xfail(
-    reason=(
-        "BUG: find_mr_niftis (utils.py) matches an existing NIfTI by ProtocolName + 'any digit' "
-        "suffix, not the exact SeriesNumber. TCGA-EJ-5495 sets the same ProtocolName for every "
-        "series in the study, so after T1 AXIAL converts, T2 AXIAL matches T1's file via the same "
-        "regex and is wrongly treated as already converted — its tags end up attached to T1's "
-        "image data. Remove once find_mr_niftis checks the exact SeriesNumber."
-    ),
-    strict=True,
-)
 def test_mr_series_sharing_a_protocol_name_are_not_confused_with_each_other(
     collector, tmp_path, t1_axial_series_dir, t2_axial_series_dir
 ):
+    """Regression test: TCGA-EJ-5495 sets the same ProtocolName for every series in the study, so
+    find_mr_niftis needs the exact SeriesNumber -- not just "any trailing digit" -- to avoid
+    treating T2 AXIAL as an already-converted T1 AXIAL once T1 AXIAL has been converted."""
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
@@ -179,7 +172,6 @@ def test_mr_series_sharing_a_protocol_name_are_not_confused_with_each_other(
 
     assert t1_tags["SeriesDescription"] == "T1 AXIAL"
     assert t2_tags["SeriesDescription"] == "T2 AXIAL"
-    # The actual bug: without the fix, t2_path == t1_path (T2's tags end up pointing at T1's file).
     assert t2_path != t1_path
 
 

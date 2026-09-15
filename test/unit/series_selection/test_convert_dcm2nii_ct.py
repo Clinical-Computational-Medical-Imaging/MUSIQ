@@ -75,7 +75,7 @@ def test_affine_repair_failure_is_logged_but_does_not_abort_conversion(mocker, c
     assert "CT affine sanity-check failed" in caplog.text
 
 
-def test_sidecar_lookup_falls_back_to_any_json_when_stem_does_not_match(mocker, collector, tmp_path):
+def test_sidecar_lookup_falls_back_to_any_json_when_stem_does_not_match(mocker, collector, tmp_path, caplog):
     """dcm2niix's Eq_1 (gantry-tilt-corrected) output sometimes shares the original's sidecar
     instead of getting its own matching-stem one; the code falls back to any json in the tmp
     conversion dir when the exact-stem sidecar is missing."""
@@ -95,6 +95,8 @@ def test_sidecar_lookup_falls_back_to_any_json_when_stem_does_not_match(mocker, 
     out_dir = tmp_path / "out"
     out_dir.mkdir()
 
-    dicom_tags = collector.convert_dcm2nii_CT(CT_dcm_dirpath="/dicom/ct", output_dirpath=out_dir)
+    with caplog.at_level(logging.WARNING):
+        dicom_tags = collector.convert_dcm2nii_CT(CT_dcm_dirpath="/dicom/ct", output_dirpath=out_dir)
 
     assert dicom_tags["Modality"] == "CT"
+    assert "No JSON sidecar matching" in caplog.text

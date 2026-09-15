@@ -493,16 +493,20 @@ def normalize_dcm2niix_name(name: str | None) -> str:
 
 
 def find_mr_niftis(
-    study_dir: plb.Path, protocol_name: str | None, series_description: str | None = None
+    study_dir: plb.Path,
+    protocol_name: str | None,
+    series_description: str | None = None,
+    series_number: int | str | None = None,
 ) -> list[plb.Path]:
     """Find NIfTIs already produced from an MR series by dcm2niix.
 
     dcm2niix is run with `-f %p_%s` (see run_dcm2niix), so an MR series is written as
-    ``{%p}_{SeriesNumber}.nii.gz``. The `%p` token is ProtocolName, but dcm2niix falls back
+    ``{%p}_{SeriesNumber}.nii.gz``, and SeriesNumber needs to be used to find the right MR
+    file. The `%p` token is ProtocolName, but dcm2niix falls back
     to SeriesDescription when ProtocolName is absent/empty — which is the case for our MR
     DICOMs (the 0018,1030 tag is not present, yet filenames clearly track SeriesDescription).
     So the source stem is ``ProtocolName if non-empty else SeriesDescription``. We match that
-    normalized stem followed by the series-number token (``_<digits>``).
+    normalized stem followed by the series-number token.
 
     Side-project artifacts that share these study dirs (NIfTIs whose name starts with the
     patient_id, e.g. ``mp_0008_ttp.nii.gz``) are excluded — real dcm2niix MR outputs are
@@ -514,18 +518,25 @@ def find_mr_niftis(
     if not stem:
         return []
     patient_id = study_dir.parent.name
+    number_pattern = rf"{re.escape(str(series_number))}(?!\d)" if series_number is not None else r"\d"
+    pattern = rf"^{re.escape(stem)}_{number_pattern}"
     matches = [
         f
         for f in study_dir.glob("*.nii.gz")
         if not f.name.startswith(patient_id)
-        and re.match(rf"^{re.escape(stem)}_\d", normalize_dcm2niix_name(f.name.removesuffix(".nii.gz")))
+        and re.match(pattern, normalize_dcm2niix_name(f.name.removesuffix(".nii.gz")))
     ]
     return sorted(matches, key=lambda f: len(f.name))
 
 
-def mr_nifti_exists(study_dir: plb.Path, protocol_name: str | None, series_description: str | None = None) -> bool:
+def mr_nifti_exists(
+    study_dir: plb.Path,
+    protocol_name: str | None,
+    series_description: str | None = None,
+    series_number: int | str | None = None,
+) -> bool:
     """Return True if an MR NIfTI for this series already exists in study_dir."""
-    return bool(find_mr_niftis(study_dir, protocol_name, series_description))
+    return bool(find_mr_niftis(study_dir, protocol_name, series_description, series_number))
 
 
 def resample_image(

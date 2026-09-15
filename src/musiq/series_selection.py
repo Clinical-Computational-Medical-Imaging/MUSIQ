@@ -150,6 +150,7 @@ class SeriesSelection:
                 study_desc = getattr(ds, "StudyDescription", "N/A")
                 manufacturer = getattr(ds, "Manufacturer", "Unknown")
                 protocol_name = getattr(ds, "ProtocolName", None)
+                series_number = getattr(ds, "SeriesNumber", None)
 
                 if not (patient_id and study_date and modality):
                     continue
@@ -166,8 +167,12 @@ class SeriesSelection:
                 out_path_SUV = os.path.join(self.output_dirpath, patient_id, study_key, "SUV.nii.gz")
                 mr_study_dir = plb.Path(self.output_dirpath) / patient_id / study_key
                 # dcm2niix names MR NIfTIs from `%p` (ProtocolName, falling back to
-                # SeriesDescription when absent), so match on that to detect an already-converted series.
-                mr_series_nii_exists = modality == "MR" and mr_nifti_exists(mr_study_dir, protocol_name, series_desc)
+                # SeriesDescription when absent), so match on that (plus the exact SeriesNumber,
+                # so series sharing a ProtocolName aren't confused with each other) to detect an
+                # already-converted series.
+                mr_series_nii_exists = modality == "MR" and mr_nifti_exists(
+                    mr_study_dir, protocol_name, series_desc, series_number
+                )
                 if (
                     (
                         modality in ["CT", "PT"]
@@ -662,8 +667,8 @@ class SeriesSelection:
         kernels, or an ORIGINAL/PRIMARY plus an ORIGINAL/SECONDARY series, as in the anonymized
         whole-body cohorts) — one NIfTI per reconstruction. Preference order:
 
-        1. the gantry-tilt-corrected ``*_Eq_1`` output, if present;
-        2. ORIGINAL/PRIMARY over SECONDARY (read from each volume's JSON sidecar ``ImageType``);
+        1. ORIGINAL/PRIMARY over SECONDARY (read from each volume's JSON sidecar ``ImageType``);
+        2. the gantry-tilt-corrected ``*_Eq_1`` output, if present, *within* that ImageType tier;
         3. the volume with the most slices (largest anatomical coverage);
         4. largest file, then name — purely for determinism.
 
@@ -673,9 +678,58 @@ class SeriesSelection:
         nii_files = sorted(tmp.glob("*.nii.gz"))
         if not nii_files:
             raise ValueError(f"CT conversion produced no NIfTI files for {ct_dcm_dirpath}")
-        eq = [f for f in nii_files if f.name.endswith("_Eq_1.nii.gz")]
-        if eq:
-            return eq[0]
+        if len(nii_files) == 1:
+            return nii_files[0]
+
+        def _rank(f: plb.Path):
+            image_type = []
+            sidecar = f.with_suffix("").with_suffix(".json")
+            if sidecar.is_file():
+                with open(sidecar) as jf:
+                    image_type = [str(x).upper() for x in json.load(jf).get("ImageType", [])]
+            primary = "PRIMARY" in image_type and "SECONDARY" not in image_type
+            is_eq1 = f.name.endswith("_Eq_1.nii.gz")
+            shape = nib.load(str(f)).shape
+            n_slices = shape[2] if len(shape) >= 3 else 0
+            return (primary, is_eq1, len(shape) < 4, n_slices, f.stat().st_size)
+
+        nii = max(nii_files, key=_rank)
+        discarded = sorted(f.name for f in nii_files if f != nii)
+        logger.warning(
+            f"dcm2niix produced {len(nii_files)} CT volumes for {ct_dcm_dirpath}; "
+            f"kept {nii.name} (shape {nib.load(str(nii)).shape}), discarded: {discarded}"
+        )
+        return nii
+
+    @staticmethod
+    def _find_sidecar(nii: plb.Path, tmp: plb.Path) -> plb.Path:
+        """Return the JSON sidecar matching ``nii``'s stem, or the last-resort fallback."""
+        jsn = nii.with_suffix("").with_suffix(".json")
+        if jsn.is_file():
+            return jsn
+        fallback = next(tmp.glob("*.json"))
+        logger.warning(
+            f"No JSON sidecar matching {nii.name}'s stem in {tmp}; falling back to "
+            f"{fallback.name} — its DICOM tags may not actually belong to the chosen volume."
+        )
+        return fallback
+
+    def _select_pet_volume(self, tmp: plb.Path, pet_dcm_dirpath: str | os.PathLike) -> plb.Path:
+        """Pick which PET volume to keep from dcm2niix's output.
+
+        Mirrors ``_select_ct_volume`` (minus the CT-only Eq_1 case): when dcm2niix emits more
+        than one NIfTI for one input directory (e.g. a bundled NAC/CTAC pair, or a derived MIP
+        alongside the whole-body series), prefer ORIGINAL/PRIMARY over SECONDARY (from each
+        volume's JSON sidecar ``ImageType``), then the most slices, then the largest file.
+        Previously this picked ``next(tmp.glob("*.nii.gz"))`` — the first by (unspecified) glob
+        order.
+
+        Never silently drops the rest: discarded volumes are logged. Raises if dcm2niix produced
+        no NIfTI.
+        """
+        nii_files = sorted(tmp.glob("*.nii.gz"))
+        if not nii_files:
+            raise ValueError(f"PET conversion produced no NIfTI files for {pet_dcm_dirpath}")
         if len(nii_files) == 1:
             return nii_files[0]
 
@@ -688,12 +742,12 @@ class SeriesSelection:
             primary = "PRIMARY" in image_type and "SECONDARY" not in image_type
             shape = nib.load(str(f)).shape
             n_slices = shape[2] if len(shape) >= 3 else 0
-            return (primary, len(shape) < 4, n_slices, f.stat().st_size)
+            return (primary, n_slices, f.stat().st_size)
 
         nii = max(nii_files, key=_rank)
         discarded = sorted(f.name for f in nii_files if f != nii)
         logger.warning(
-            f"dcm2niix produced {len(nii_files)} CT volumes for {ct_dcm_dirpath}; "
+            f"dcm2niix produced {len(nii_files)} PET volumes for {pet_dcm_dirpath}; "
             f"kept {nii.name} (shape {nib.load(str(nii)).shape}), discarded: {discarded}"
         )
         return nii
@@ -740,9 +794,7 @@ class SeriesSelection:
                 except Exception as e:
                     logger.error(f"CT affine sanity-check failed for {out_fpath}: {e}")
                 # read the sidecar matching the chosen volume (same stem)
-                jsn = nii.with_suffix("").with_suffix(".json")
-                if not jsn.is_file():
-                    jsn = next(tmp.glob("*json"))
+                jsn = self._find_sidecar(nii, tmp)
                 with open(jsn) as json_file:
                     dicom_tags = json.load(json_file)
         else:
@@ -813,10 +865,11 @@ class SeriesSelection:
                 tmp = plb.Path(str(tmp))
                 # convert dicom directory to nifti (store results in temp directory)
                 run_dcm2niix(PET_dcm_dirpath, plb.Path(tmp))
-                nii = next(tmp.glob("*nii.gz"))
+                nii = self._select_pet_volume(tmp, PET_dcm_dirpath)
                 # copy nifti to output folder with consistent naming (copyfile: data only, no chmod)
                 shutil.copyfile(nii, out_pet_fpath)
-                sidecar = next(tmp.glob("*json"))
+                # read the sidecar matching the chosen volume (same stem) before falling back
+                sidecar = self._find_sidecar(nii, tmp)
                 with open(sidecar) as json_file:
                     dicom_tags = json.load(json_file)
 
@@ -934,9 +987,13 @@ class SeriesSelection:
         first_dcm = os.listdir(MR_dcm_dirpath)[0]
         ds = pydicom.dcmread(str(str(MR_dcm_dirpath) + "/" + first_dcm), stop_before_pixels=True)
         # dcm2niix names MR NIfTIs from `%p` (ProtocolName, falling back to SeriesDescription);
-        # match on that to detect existing output.
+        # match on that plus the exact SeriesNumber (so series sharing a ProtocolName aren't
+        # confused with each other) to detect existing output.
         existing_niftis = find_mr_niftis(
-            plb.Path(output_dirpath), getattr(ds, "ProtocolName", None), getattr(ds, "SeriesDescription", None)
+            plb.Path(output_dirpath),
+            getattr(ds, "ProtocolName", None),
+            getattr(ds, "SeriesDescription", None),
+            getattr(ds, "SeriesNumber", None),
         )
         if existing_niftis:
             logger.info(f"MRI NIfTI already exist at {output_dirpath}.")
@@ -981,9 +1038,7 @@ class SeriesSelection:
             # copy chosen nifti out and read its matching sidecar (same stem)
             nii_path = os.path.join(output_dirpath, nii.name)
             shutil.copy(nii, nii_path)
-            jsn = nii.with_suffix("").with_suffix(".json")
-            if not jsn.is_file():
-                jsn = next(tmp.glob("*.json"))
+            jsn = self._find_sidecar(nii, tmp)
             with open(jsn) as json_file:
                 dicom_tags = json.load(json_file)
         return nii_path, dicom_tags

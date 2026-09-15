@@ -31,7 +31,9 @@ def test_single_nifti_is_returned_without_ranking(collector, tmp_path):
     assert result == nii
 
 
-def test_eq_1_volume_is_preferred_regardless_of_other_candidates(collector, tmp_path):
+def test_eq_1_volume_is_preferred_when_image_type_ties(collector, tmp_path):
+    """Neither candidate has a sidecar here (dcm2niix commonly writes none for its own Eq_1
+    output), so both are in the same (non-primary) ImageType tier -- Eq_1 wins that tier."""
     plain = tmp_path / "series_1.nii.gz"
     eq = tmp_path / "series_1_Eq_1.nii.gz"
     _write_nii(plain, shape=(8, 8, 8))
@@ -40,6 +42,24 @@ def test_eq_1_volume_is_preferred_regardless_of_other_candidates(collector, tmp_
     result = collector._select_ct_volume(tmp_path, "/dicom/ct")
 
     assert result == eq
+
+
+def test_primary_image_type_beats_eq_1_when_eq_1_is_secondary(collector, tmp_path):
+    """Regression test: the Eq_1 preference used to be checked before ImageType, short-circuiting
+    the ranking entirely -- a SECONDARY
+    reconstruction (e.g. a localizer) that happens to be the one dcm2niix gantry-corrects would
+    be picked over an untilted PRIMARY volume. Fixed by folding Eq_1 into the ranking as a
+    same-tier tiebreak instead of a preference that bypasses ImageType altogether."""
+    primary = tmp_path / "series_a.nii.gz"
+    secondary_eq1 = tmp_path / "series_b_Eq_1.nii.gz"
+    _write_nii(primary, shape=(8, 8, 8))
+    _write_nii(secondary_eq1, shape=(4, 4, 4))
+    _write_sidecar(primary, ["ORIGINAL", "PRIMARY", "AXIAL"])
+    _write_sidecar(secondary_eq1, ["ORIGINAL", "SECONDARY", "AXIAL"])
+
+    result = collector._select_ct_volume(tmp_path, "/dicom/ct")
+
+    assert result == primary
 
 
 def test_primary_image_type_is_preferred_over_secondary(collector, tmp_path, caplog):

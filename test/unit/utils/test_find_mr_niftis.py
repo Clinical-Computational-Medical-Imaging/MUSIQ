@@ -3,16 +3,7 @@ series' ProtocolName (falling back to SeriesDescription), so convert_dcm2nii_MR 
 reconversion. Pure filename matching against files already on disk -- no dcm2niix/DICOM
 required -- so every branch is reachable directly with empty placeholder ``.nii.gz`` files.
 
-Includes a regression test for the known bug documented in
-test/integration/BUGREPORT_find_mr_niftis.md: the match regex only requires *some* trailing
-digit, not the current series' own SeriesNumber, so two series sharing one ProtocolName (common;
-several scanners set it at the exam level, not per series) get confused with each other. That bug
-report's own reproduction is an xfail(strict=True) integration test going through a full
-convert_dcm2nii_MR + real dcm2niix conversion; here the same ambiguity is pinned directly at the
-find_mr_niftis level, without needing dcm2niix at all.
 """
-
-import pytest
 
 from musiq.utils import find_mr_niftis
 
@@ -94,21 +85,39 @@ def test_returns_shortest_matching_name_first(tmp_path):
     assert [f.name for f in matches] == ["flair_2.nii.gz", "flair_2_derived.nii.gz"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known bug (test/integration/BUGREPORT_find_mr_niftis.md): find_mr_niftis has no "
-        "SeriesNumber parameter, so the regex `^{stem}_\\d` accepts *any* trailing digit -- when "
-        "two series share a ProtocolName, a lookup for one wrongly also matches the other's "
-        "NIfTI. Flip to a plain assertion (and delete this marker) once SeriesNumber is threaded "
-        "through, per the bug report's suggested fix."
-    ),
-)
 def test_series_sharing_a_protocol_name_are_not_confused_with_each_other(tmp_path):
     study_dir = _study_dir(tmp_path)
     (study_dir / "female_pelvis_5.nii.gz").touch()  # T1 AXIAL, SeriesNumber 5
     (study_dir / "female_pelvis_4.nii.gz").touch()  # T2 AXIAL, SeriesNumber 4 -- same ProtocolName
 
-    t2_matches = find_mr_niftis(study_dir, protocol_name="female Pelvis/", series_description="T2 AXIAL")
+    t1_matches = find_mr_niftis(
+        study_dir, protocol_name="female Pelvis/", series_description="T1 AXIAL", series_number=5
+    )
+    t2_matches = find_mr_niftis(
+        study_dir, protocol_name="female Pelvis/", series_description="T2 AXIAL", series_number=4
+    )
 
+    assert [f.name for f in t1_matches] == ["female_pelvis_5.nii.gz"]
     assert [f.name for f in t2_matches] == ["female_pelvis_4.nii.gz"]
+
+
+def test_without_series_number_any_trailing_digit_still_matches(tmp_path):
+    """Backward-compatible fallback for callers that don't have SeriesNumber on hand: without it,
+    matching reverts to the old (bug-prone) "any trailing digit" behavior."""
+    study_dir = _study_dir(tmp_path)
+    (study_dir / "female_pelvis_4.nii.gz").touch()
+
+    matches = find_mr_niftis(study_dir, protocol_name="female Pelvis/", series_description="T2 AXIAL")
+
+    assert [f.name for f in matches] == ["female_pelvis_4.nii.gz"]
+
+
+def test_series_number_does_not_match_as_a_prefix_of_a_longer_number(tmp_path):
+    """SeriesNumber 4 must not match a file actually numbered 40 -- the exact-match anchor needs
+    a negative lookahead, not just a literal digit prefix."""
+    study_dir = _study_dir(tmp_path)
+    (study_dir / "female_pelvis_40.nii.gz").touch()
+
+    matches = find_mr_niftis(study_dir, protocol_name="female Pelvis/", series_description="T2 AXIAL", series_number=4)
+
+    assert matches == []

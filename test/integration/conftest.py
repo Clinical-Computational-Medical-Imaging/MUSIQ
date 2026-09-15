@@ -1,41 +1,12 @@
 """Fixtures for real-DICOM integration tests against a locally downloaded TCIA cohort.
 
-
-These tests exercise the real dcm2niix conversion path against genuine DICOM data (not
-mocked), so they need the actual images on disk. Two ways to provide them:
-
-1. Auto-download just the series these tests need, straight from the public TCIA REST API
-   (no login, no Java NBIA Data Retriever), into a temp dir that is deleted again once the test
-   session ends:
-
-       pytest test/integration --download-integration-data
-
-   Opt-in only: it hits an external network service and fetches real (de-identified) patient
-   imaging data on every run, so it's never on by default.
-
-2. Point at a cohort you already downloaded yourself via the NBIA Data Retriever, using the
-   manifest files in this directory:
-
-     - ``manifest-1773751814915.tcia`` — TCGA-PRAD series (CT/MR/PET conversion tests).
-     - ``manifest-acrin-nsclc-fdg-pet.tcia`` — one ACRIN-NSCLC-FDG-PET CT series, used only by
-       the irregular-slice-spacing affine-repair test.
-     - ``manifest-flair-tracew-dixon.tcia`` — one series each from ReMIND (FLAIR), ACRIN-6698
-       (TRACEW diffusion trace) and ISPY2 (GE IDEAL water/fat, the DIXON-equivalent technique) —
-       MR contrast types the TCGA-PRAD series above don't cover.
-
-   Download all three into the same root directory (so it ends up containing ``TCGA-PRAD/``,
-   ``ACRIN-NSCLC-FDG-PET/``, ``ReMIND/``, ``ACRIN-6698/`` and ``ISPY2/`` subfolders), then point
-   pytest at that root:
-
-       pytest test/integration --integration-data-dir "C:\\path\\to\\that\\root"
-       MUSIQ_INTEGRATION_DATA_DIR="/path/to/that/root" pytest test/integration
-
-   This never hits the network: a series missing from your manual download (e.g. one added to
-   ``_DOWNLOAD_TARGETS`` after you downloaded the manifests) just makes that one test skip, same
-   as an outdated/partial manifest always has — use ``--download-integration-data`` instead if
-   you want every needed series fetched for you.
-
-Tests in this directory skip automatically when neither of the above is set.
+These tests exercise the real dcm2niix conversion path against genuine DICOM data (not mocked),
+so they need the actual images on disk — either auto-downloaded (``--download-integration-data``)
+or pointed at a manual NBIA Data Retriever download (``--integration-data-dir`` /
+``MUSIQ_INTEGRATION_DATA_DIR``, using the ``manifest-*.tcia`` files in this directory). See
+``../README.md`` for the full explanation of both options, the dataset citations, and which
+collections each manifest covers. Tests in this directory skip automatically when neither option
+is set.
 """
 
 import io
