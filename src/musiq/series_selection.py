@@ -744,7 +744,9 @@ class SeriesSelection:
                 if not jsn.is_file():
                     jsn = next(tmp.glob("*json"))
                 with open(jsn) as json_file:
-                    dicom_tags = json.load(json_file)
+                    # strict=False tolerates control characters that some scanners embed in
+                    # DICOM tags (e.g. ConvolutionKernel on Siemens NAEOTOM / LowD CT series).
+                    dicom_tags = json.loads(json_file.read(), strict=False)
         else:
             logger.info(f"CT NIfTI already exists at {out_fpath}")
             dicom_tags = extract_dicom_data(plb.Path(CT_dcm_dirpath), self.dicom_tags)
@@ -1240,4 +1242,3 @@ def series_selection_entrypoint():
 
 if __name__ == "__main__":
     series_selection_entrypoint()
-    
