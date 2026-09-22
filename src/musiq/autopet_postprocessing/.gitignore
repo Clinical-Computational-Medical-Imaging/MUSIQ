@@ -1,0 +1,13 @@
+*.csv
+*.xlsx
+*.sh
+*.png
+see_slurm.sh
+# Python
+__pycache__/
+*.pyc
+
+# Logs and job output
+*.log
+*.out
+*.err
