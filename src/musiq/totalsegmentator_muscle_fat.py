@@ -3,6 +3,7 @@ import logging
 import os
 import pathlib as plb
 
+import cc3d
 import nibabel as nib
 import numpy as np
 from totalsegmentator.nifti_ext_header import load_multilabel_nifti
@@ -431,22 +432,10 @@ class TotalSegmentatorMuscleFat:
         if z_axis is None:
             raise ValueError("No head-to-toe axis found")
 
-        humerus = np.isin(seg_data, [name_to_label["humerus_left"], name_to_label["humerus_right"]])
-        coords = np.argwhere(humerus)
-        if coords.size == 0:
-            logger.error("No humerus found")
-        else:
-            coords_h = np.c_[coords, np.ones(len(coords))]
-            hum_z_min = np.percentile((coords_h @ affine.T)[:, z_axis], 5)
-
-            t4_coords = np.argwhere(seg_data == name_to_label["vertebrae_T4"])
-            coords_h_t4 = np.c_[t4_coords, np.ones(len(t4_coords))]
-            t4_z_max = np.percentile((coords_h_t4 @ affine.T)[:, z_axis], 95)
-
-            if hum_z_min < t4_z_max - 100:
-                logger.warning("Arms are beside the body, removing arms before measuring.")
-                fat_img = self.remove_arms(fat_img, seg_data, name_to_label, affine, z_axis, path)
-                nib.save(fat_img, os.path.join(os.path.dirname(path), "CTbody_masked.nii.gz"))
+        if self._arms_down(seg_data, name_to_label, affine):
+            logger.warning("Arms are beside the body, removing arms before measuring.")
+            fat_img = self.remove_arms(fat_img, seg_data, name_to_label, affine, z_axis, path)
+            nib.save(fat_img, os.path.join(os.path.dirname(path), "CTbody_masked.nii.gz"))
 
         voxel_volume = np.prod(fat_img.header.get_zooms())
         fat_full = np.asanyarray(fat_img.dataobj)
@@ -522,6 +511,52 @@ class TotalSegmentatorMuscleFat:
             results[layer] = result_dict
 
         return results
+
+    @staticmethod
+    def _arms_down(seg_data: np.ndarray, name_to_label: dict[str, int], affine: np.ndarray) -> bool:
+        """Decide whether the arms lie beside the body. Deliberately biased towards True.
+
+        Checked per side; one arm down is enough. A side counts as "down" if either
+          1) the humerus median lies below the scapula top — with raised arms the shaft runs up
+             alongside the head, so most of the bone sits above the scapula; a humerus that leaves
+             the FOV early still hangs downwards, so this also works for truncated arms, or
+          2) the humerus reaches below the bottom of T4.
+        Each bone is reduced to its largest connected component to ignore stray mislabelled voxels.
+        If no humerus is found at all, arms are assumed down.
+        """
+
+        def world_z(label_name: str) -> np.ndarray:
+            """World z (mm, increasing superiorly) of the largest component of a label; empty if absent."""
+            mask = seg_data == name_to_label[label_name]
+            if not mask.any():
+                return np.empty(0)
+            components = cc3d.connected_components(mask, connectivity=26)
+            largest = np.argmax(np.bincount(components.ravel())[1:]) + 1
+            coords = np.argwhere(components == largest)
+            # NIfTI world space is RAS+, so index 2 is always the S/I axis regardless of voxel orientation.
+            return (np.c_[coords, np.ones(len(coords))] @ affine.T)[:, 2]
+
+        t4_z = world_z("vertebrae_T4")
+        humerus_found = False
+        for side in ("left", "right"):
+            hum_z = world_z(f"humerus_{side}")
+            if hum_z.size == 0:
+                continue
+            humerus_found = True
+
+            scap_z = world_z(f"scapula_{side}")
+            if scap_z.size and np.median(hum_z) < scap_z.max():
+                logger.info(f"humerus_{side} median below scapula_{side} top -> arms down.")
+                return True
+
+            if t4_z.size and hum_z.min() < t4_z.min():
+                logger.info(f"humerus_{side} reaches below vertebrae_T4 -> arms down.")
+                return True
+
+        if not humerus_found:
+            logger.warning("No humerus found; assuming arms beside the body.")
+            return True
+        return False
 
     def remove_arms(
         self, tissue_img: nib.Nifti1Image, organ_img, labels, affine, z_axis, input_fpath: os.PathLike
