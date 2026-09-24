@@ -796,7 +796,9 @@ class SeriesSelection:
                 # read the sidecar matching the chosen volume (same stem)
                 jsn = self._find_sidecar(nii, tmp)
                 with open(jsn) as json_file:
-                    dicom_tags = json.load(json_file)
+                    # strict=False tolerates control characters that some scanners embed in
+                    # DICOM tags (e.g. ConvolutionKernel on Siemens NAEOTOM / LowD CT series).
+                    dicom_tags = json.loads(json_file.read(), strict=False)
         else:
             logger.info(f"CT NIfTI already exists at {out_fpath}")
             dicom_tags = extract_dicom_data(plb.Path(CT_dcm_dirpath), self.dicom_tags)
