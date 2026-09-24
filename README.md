@@ -202,7 +202,7 @@ pre-commit install
 ---
 ## Docker Usage
 - Clone this repository and `cd` into it.
-- Make sure **Docker ≤ 19.03** is installed and running.
+- Make sure **Docker >= 19.03** is installed and running.
   - For **Windows**, use Docker Desktop 4.37.1 or later and enable WSL integration.
 - An **NVIDIA GPU** is required.
 - **NVIDIA Container Toolkit** must be installed and configured for Docker (not required on Windows).
