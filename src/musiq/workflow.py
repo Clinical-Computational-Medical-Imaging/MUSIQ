@@ -373,7 +373,7 @@ class Workflow:
 
             logger.info("\n" + "#" * 50 + "\nStarting Tumor Info Extraction\n" + "#" * 50)
             for source in self.mask_sources:
-                metric = self.pet_metric if source == "auto" else ["SUV"]
+                metric = self.pet_metric if source in ("auto", "lion") else ["SUV"]
                 TumorInfoExtraction(
                     input_dirpath_processed=self.output_dirpath,
                     pet_metric=metric,
