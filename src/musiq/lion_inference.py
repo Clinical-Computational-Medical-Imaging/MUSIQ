@@ -1,6 +1,5 @@
 """LION lesion segmentation stage — runs under .venv_lion (no musiq imports)."""
 
-import glob
 import json
 import logging
 import os
@@ -92,17 +91,15 @@ class LionInference:
 
                 input_fpath = os.path.join(dirpath, f"{metric}.nii.gz")
                 with tempfile.TemporaryDirectory() as tmp:
-                    # LION expects PT_-prefixed files.
+                    # LION Python API takes a file path (PT_-prefixed) and returns the output path.
                     pt_copy = os.path.join(tmp, "PT_input.nii.gz")
                     shutil.copy(input_fpath, pt_copy)
                     try:
-                        lionz.lion(pt_copy, self.lion_model, output_dir=tmp, accelerator=accelerator)
-                        # Output lands at <tmp>/lionz-<timestamp>/segmentations/PT_input_tumor_seg.nii.gz
-                        matches = glob.glob(os.path.join(tmp, "**", "*tumor_seg.nii.gz"), recursive=True)
-                        if not matches:
-                            logger.error(f"LION produced no tumor_seg output for {patient_series}.")
+                        seg_fpath = lionz.lion(pt_copy, self.lion_model, output_dir=tmp, accelerator=accelerator)
+                        if not seg_fpath or not os.path.exists(seg_fpath):
+                            logger.error(f"LION produced no output for {patient_series}.")
                             continue
-                        shutil.copy(matches[0], os.path.join(dirpath, petseg_fname))
+                        shutil.copy(seg_fpath, os.path.join(dirpath, petseg_fname))
                         logger.info(f"Saved {petseg_fname} for {patient_series}.")
 
                         if flag_json_exists:
