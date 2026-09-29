@@ -296,12 +296,14 @@ class Workflow:
 
         if self.lion:
             logger.info("\n" + "#" * 50 + "\nStarting LION Inference\n" + "#" * 50)
-            lion_venv_python = os.path.join(os.getcwd(), ".venv_lion", "bin", "python")
-            lion_script = os.path.join(os.getcwd(), "src", "musiq", "lion_inference.py")
             metrics = self.pet_metric if isinstance(self.pet_metric, list) else [self.pet_metric]
             cmd = [
-                lion_venv_python,
-                lion_script,
+                "conda",
+                "run",
+                "--no-capture-output",
+                "-n",
+                "lion",
+                "musiq_lion_inference",
                 "--input-dirpath-processed",
                 self.output_dirpath,
                 "--lion-model",

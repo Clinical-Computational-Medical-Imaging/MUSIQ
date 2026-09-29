@@ -54,7 +54,7 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
 
 6. **PET Segmentation with LION**
    - Segments PET scans using [LION](https://github.com/ENHANCE-PET/LION) — a PET-only segmentation model (no CT required) trained on FDG (5,235 pts) and PSMA (2,046 pts) cohorts.
-   - Runs under a separate `.venv_lion` (like Moose) due to dependency conflicts. Models download automatically on first run.
+   - Runs in a separate `lion` conda environment due to dependency conflicts. Models download automatically on first run.
    - Activated via `--tasks lion --lion-model fdg|psma`. The LION mask can be fed into radiomics/tumor via `--mask-source lion`.
    - Output:
       - `PETseg_LION.nii.gz` – SUV lesion segmentation by LION
@@ -184,15 +184,14 @@ pip install -r requirements_moose.txt
 pip install moosez --no-deps
 ```
 
-- In order to use the pipeline with the LION extension we need a third virtual environment:
+- In order to use the pipeline with the LION extension, create a separate conda environment and install both lionz and the musiq package into it:
 
 ```bash
-deactivate
-python3.12 -m venv .venv_lion
-source .venv_lion/bin/activate
+conda create -n lion python=3.12 -y
+conda activate lion
 pip install -r requirements_lion.txt
 ```
-  LION downloads model weights automatically on first run (no manual checkpoint download needed).
+  `requirements_lion.txt` installs `lionz` and `musiq` (editable, via `-e .`) so the `musiq_lion_inference` console script is available in the lion env. LION downloads model weights automatically on first run (no manual checkpoint download needed).
 
 - The `boa` task runs in Docker, so it needs no virtual environment — just pull the image once (an NVIDIA GPU + Container Toolkit are required):
 ```bash
