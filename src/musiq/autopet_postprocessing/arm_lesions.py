@@ -49,32 +49,36 @@ import os
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-import numpy as np
-import nibabel as nib
 import cc3d  # pip install connected-components-3d
+import nibabel as nib
+import numpy as np
 from scipy.ndimage import distance_transform_edt
 
 # data discovery / config / helpers shared with the lacrimal step
-from lacrimalRemoval import (
-    DATA_DIR, MASK_CHOICES, DEFAULT_MASKS, OUT_SUFFIX, REMOVED_SUFFIX,
-    NAMES, resample_cads_to_grid,
+from musiq.autopet_postprocessing.lacrimalRemoval import (
+    DEFAULT_MASKS,
+    MASK_CHOICES,
+    NAMES,
+    OUT_SUFFIX,
+    REMOVED_SUFFIX,
+    resample_cads_to_grid,
 )
 
 # --------------------------------------------------------------------------- #
 # Config
 # --------------------------------------------------------------------------- #
-HUMERUS_LABELS      = [60, 61]        # CADS: Humerus L / R  (arm reference)
-CSF_LABEL           = [122]           # CADS: Cerebrospinal fluid -- head-position anchor AND skull-ignore
-                                       # reference. Large structure (unlike the lacrimal gland), so it
-                                       # survives resampling reliably -- no native-resolution work needed.
-GRAY_MATTER_FALLBACK = [121]          # CADS: Gray matter (used if CSF absent)
-SUBCUTANEOUS_LABEL  = 158             # CADS: Subcutaneous tissue
-ALLOWED_DOMINANT    = {0, SUBCUTANEOUS_LABEL}   # background(0) / subcutaneous -> flaggable when above humerus
-CONNECTIVITY        = 18              # keep consistent with your metrics/compare stage
+HUMERUS_LABELS = [60, 61]  # CADS: Humerus L / R  (arm reference)
+CSF_LABEL = [122]  # CADS: Cerebrospinal fluid -- head-position anchor AND skull-ignore
+# reference. Large structure (unlike the lacrimal gland), so it
+# survives resampling reliably -- no native-resolution work needed.
+GRAY_MATTER_FALLBACK = [121]  # CADS: Gray matter (used if CSF absent)
+SUBCUTANEOUS_LABEL = 158  # CADS: Subcutaneous tissue
+ALLOWED_DOMINANT = {0, SUBCUTANEOUS_LABEL}  # background(0) / subcutaneous -> flaggable when above humerus
+CONNECTIVITY = 18  # keep consistent with your metrics/compare stage
 
-SKULL_IGNORE_NEAR_MM = 24.0   # ignore a lesion inside OR within this many mm of CSF_LABEL
-                               # (distance-based, not voxel dilation -- real lesions can sit just outside
-                               # the skull in the outer subcutaneous/scalp layer and must not be suppressed)
+SKULL_IGNORE_NEAR_MM = 24.0  # ignore a lesion inside OR within this many mm of CSF_LABEL
+# (distance-based, not voxel dilation -- real lesions can sit just outside
+# the skull in the outer subcutaneous/scalp layer and must not be suppressed)
 
 # Patients to SKIP for arm processing (folder names). Add up to 8 here.
 ARM_EXCLUDED_PATIENTS = {
@@ -86,10 +90,10 @@ ARM_EXCLUDED_PATIENTS = {
     "mp_0086",
     "mp_0088",
     "mp_0093",
-    "mp_0115"
+    "mp_0115",
 }
 
-CADS_FILENAME   = "CTcadsres.nii.gz"   # already resampled to match the PET grid -- no native-res work needed
+CADS_FILENAME = "CTcadsres.nii.gz"  # already resampled to match the PET grid -- no native-res work needed
 
 
 def head_direction(cads_arr):
@@ -109,10 +113,10 @@ def head_direction(cads_arr):
     if not (hum.any() and head.any()):
         return None, None, None, False, "none"
 
-    hum_idx  = np.argwhere(hum)
+    hum_idx = np.argwhere(hum)
     head_idx = np.argwhere(head)
-    diff = head_idx.mean(axis=0) - hum_idx.mean(axis=0)   # head_centroid - hum_centroid
-    si_axis = int(np.argmax(np.abs(diff)))                # most-separated axis = SI
+    diff = head_idx.mean(axis=0) - hum_idx.mean(axis=0)  # head_centroid - hum_centroid
+    si_axis = int(np.argmax(np.abs(diff)))  # most-separated axis = SI
     head_dir = 1 if diff[si_axis] > 0 else -1
     hum_coords = hum_idx[:, si_axis]
     hum_edge = int(hum_coords.max()) if head_dir > 0 else int(hum_coords.min())
@@ -127,8 +131,16 @@ def save_atomic(arr, ref_img, out_file):
 
 
 class ArmLesionRemover:
-    def __init__(self, input_dirpath, multiprocessing=False, max_workers=30,
-                 limit=None, patient_id=None, save_mask=True, masks=None):
+    def __init__(
+        self,
+        input_dirpath,
+        multiprocessing=False,
+        max_workers=30,
+        limit=None,
+        patient_id=None,
+        save_mask=True,
+        masks=None,
+    ):
         self.input_dirpath = input_dirpath
         self.multiprocessing = multiprocessing
         self.max_workers = max_workers
@@ -142,23 +154,26 @@ class ArmLesionRemover:
         sub_dirs = sorted(
             dirpath
             for dirpath, _, filenames in os.walk(self.input_dirpath)
-            if CADS_FILENAME in filenames
-            and any(f"{m}{OUT_SUFFIX}.nii.gz" in filenames for m in self.masks)
+            if CADS_FILENAME in filenames and any(f"{m}{OUT_SUFFIX}.nii.gz" in filenames for m in self.masks)
         )
-        print(f"Found {len(sub_dirs)} session(s) with {CADS_FILENAME} + <mask>{OUT_SUFFIX} for {self.masks}",
-              flush=True)
+        print(
+            f"Found {len(sub_dirs)} session(s) with {CADS_FILENAME} + <mask>{OUT_SUFFIX} for {self.masks}", flush=True
+        )
 
         if ARM_EXCLUDED_PATIENTS:
             before = len(sub_dirs)
             sub_dirs = [d for d in sub_dirs if Path(d).parent.name not in ARM_EXCLUDED_PATIENTS]
-            print(f"Arm processing: excluded {before - len(sub_dirs)} session(s) "
-                  f"for {len(ARM_EXCLUDED_PATIENTS)} listed patient(s)", flush=True)
+            print(
+                f"Arm processing: excluded {before - len(sub_dirs)} session(s) "
+                f"for {len(ARM_EXCLUDED_PATIENTS)} listed patient(s)",
+                flush=True,
+            )
 
         if self.patient_id is not None:
             sub_dirs = [d for d in sub_dirs if Path(d).parent.name == self.patient_id]
             print(f"Filtering to patient_id={self.patient_id}: {len(sub_dirs)} session(s)", flush=True)
         if self.limit is not None:
-            sub_dirs = sub_dirs[:self.limit]
+            sub_dirs = sub_dirs[: self.limit]
             print(f"Limiting to first {len(sub_dirs)} session(s)", flush=True)
         if not sub_dirs:
             return
@@ -176,9 +191,12 @@ class ArmLesionRemover:
         verb = "Removed" if self.save_mask else "Flagged (--no-save)"
         print(f"\n{verb} {len(rows)} arm lesion(s) across {len(sub_dirs)} session(s):", flush=True)
         for r in rows:
-            print(f"  {r['session']} [{r['mask_name']}] lesion {r['component_id']}: {r['voxels']} vox, "
-                  f"SI {r['centroid_si']} (humerus edge {r['humerus_edge_si']}), "
-                  f"bg {r['background_fraction']:.0%}, organs {r['organs']}", flush=True)
+            print(
+                f"  {r['session']} [{r['mask_name']}] lesion {r['component_id']}: {r['voxels']} vox, "
+                f"SI {r['centroid_si']} (humerus edge {r['humerus_edge_si']}), "
+                f"bg {r['background_fraction']:.0%}, organs {r['organs']}",
+                flush=True,
+            )
         print("\nArm lesion processing done.", flush=True)
 
     def process_wrapper(self, dirpath):
@@ -227,11 +245,13 @@ class ArmLesionRemover:
         if not ok:
             print(f"  [{mask_name}] humerus and/or head anchor missing - skipping arm rule", flush=True)
             return []
-        print(f"  [{mask_name}] input {in_path.name} | anchor={anchor} | SI axis={si_axis} | "
-              f"head_dir={'+' if head_dir > 0 else '-'} | humerus edge={hum_edge}", flush=True)
+        print(
+            f"  [{mask_name}] input {in_path.name} | anchor={anchor} | SI axis={si_axis} | "
+            f"head_dir={'+' if head_dir > 0 else '-'} | humerus edge={hum_edge}",
+            flush=True,
+        )
 
-        cc, n = cc3d.connected_components((data > 0).astype(np.int32),
-                                          connectivity=CONNECTIVITY, return_N=True)
+        cc, n = cc3d.connected_components((data > 0).astype(np.int32), connectivity=CONNECTIVITY, return_N=True)
         stats = cc3d.statistics(cc)
         voxel_counts = stats["voxel_counts"]
         bboxes = stats["bounding_boxes"]
@@ -249,7 +269,7 @@ class ArmLesionRemover:
             bbox = bboxes[lid]
             local = cc[bbox] == lid
             vals, counts = np.unique(cads_arr[bbox][local], return_counts=True)
-            frac_by_label = {int(v): int(c) / vox for v, c in zip(vals, counts)}
+            frac_by_label = {int(v): int(c) / vox for v, c in zip(vals, counts, strict=False)}
             background_fraction = frac_by_label.pop(0, 0.0)
             dom = max(frac_by_label, key=frac_by_label.get) if frac_by_label else 0
 
@@ -260,34 +280,39 @@ class ArmLesionRemover:
             would_flag = above and is_subcut
             flag = would_flag and not near_skull_ignore
 
-            touches = {NAMES.get(int(v), int(v)): int(c)
-                       for v, c in zip(vals, counts) if v != 0}
+            touches = {NAMES.get(int(v), int(v)): int(c) for v, c in zip(vals, counts, strict=False) if v != 0}
             if flag:
                 mark = "  <-- FLAG (above-humerus subcutaneous)"
             elif would_flag and near_skull_ignore:
                 mark = f"  <-- SUPPRESSED (CSF dist {skull_ignore_min_dist:.1f}mm - skull region)"
             else:
                 mark = ""
-            print(f"    [{tag}] lesion {lid:>2}: {vox:>6} vox | SI {centroid_si:6.1f} "
-                  f"(edge {hum_edge}) | above={str(above):5} | bg {background_fraction:4.0%} "
-                  f"| CSF dist {skull_ignore_min_dist:5.1f}mm | touches {touches}{mark}", flush=True)
+            print(
+                f"    [{tag}] lesion {lid:>2}: {vox:>6} vox | SI {centroid_si:6.1f} "
+                f"(edge {hum_edge}) | above={str(above):5} | bg {background_fraction:4.0%} "
+                f"| CSF dist {skull_ignore_min_dist:5.1f}mm | touches {touches}{mark}",
+                flush=True,
+            )
 
             if not flag:
                 continue
 
             drop_ids.append(lid)
             ranked = sorted(frac_by_label.items(), key=lambda kv: -kv[1])[:3]
-            rows.append({
-                "session": tag,
-                "mask_name": mask_name,
-                "component_id": lid,
-                "voxels": vox,
-                "centroid_si": round(centroid_si, 1),
-                "humerus_edge_si": hum_edge,
-                "background_fraction": round(background_fraction, 2),
-                "organs": [{"name": NAMES.get(label, str(label)), "fraction": round(frac, 2)}
-                           for label, frac in ranked],
-            })
+            rows.append(
+                {
+                    "session": tag,
+                    "mask_name": mask_name,
+                    "component_id": lid,
+                    "voxels": vox,
+                    "centroid_si": round(centroid_si, 1),
+                    "humerus_edge_si": hum_edge,
+                    "background_fraction": round(background_fraction, 2),
+                    "organs": [
+                        {"name": NAMES.get(label, str(label)), "fraction": round(frac, 2)} for label, frac in ranked
+                    ],
+                }
+            )
 
         # update _postPro in place + save the removed lesions (skipped with --no-save)
         if not self.save_mask:
@@ -313,29 +338,52 @@ class ArmLesionRemover:
         # rerun finds them again and merges them again (no lesion can end up in neither file)
         save_atomic(removed_arr.astype(dtype), model_img, removed_file)
         save_atomic(np.where(removed, 0, data).astype(dtype), model_img, in_path)
-        print(f"  [{mask_name}] removed {len(drop_ids)} -> updated {in_path.name} (in place), "
-              f"added to {removed_file.name}", flush=True)
+        print(
+            f"  [{mask_name}] removed {len(drop_ids)} -> updated {in_path.name} (in place), "
+            f"added to {removed_file.name}",
+            flush=True,
+        )
         return rows
 
 
 def arm_lesion_removal_entrypoint():
     parser = argparse.ArgumentParser(
-        description="Flag/remove above-shoulder arm lesions from the lacrimal-cleaned masks (<mask>_postPro) using CADS."
+        description=(
+            "Flag/remove above-shoulder arm lesions from the lacrimal-cleaned masks (<mask>_postPro) using CADS."
+        ),
     )
-    parser.add_argument("--input-dirpath", type=str, default=str(DATA_DIR),
-                        help="Processed data root; searched recursively for sessions with CTcadsres + <mask>_postPro.")
-    parser.add_argument("--masks", nargs="+", choices=MASK_CHOICES, default=DEFAULT_MASKS,
-                        help="Which mask(s): PETseg (SUV), PETsegSUL (SUL), PETseg_revised (doctors' annotation).")
-    parser.add_argument("--no-save", action="store_true",
-                        help="Do not write files: by default the flagged lesions are removed from <mask>_postPro "
-                             "in place and added to <mask>_postProRemoved.nii.gz (calibration/dry run).")
-    parser.add_argument("--multiprocessing", action="store_true",
-                        help="Process sessions in parallel with a process pool.")
+    parser.add_argument(
+        "--input-dirpath",
+        type=str,
+        required=True,
+        help="Processed data root; searched recursively for sessions with CTcadsres + <mask>_postPro.",
+    )
+    parser.add_argument(
+        "--masks",
+        nargs="+",
+        choices=MASK_CHOICES,
+        default=DEFAULT_MASKS,
+        help="Which mask(s): PETseg (SUV), PETsegSUL (SUL), PETseg_revised (doctors' annotation).",
+    )
+    parser.add_argument(
+        "--no-save",
+        action="store_true",
+        help="Do not write files: by default the flagged lesions are removed from <mask>_postPro "
+        "in place and added to <mask>_postProRemoved.nii.gz (calibration/dry run).",
+    )
+    parser.add_argument(
+        "--multiprocessing", action="store_true", help="Process sessions in parallel with a process pool."
+    )
     parser.add_argument("--max-workers", type=int, default=30)
-    parser.add_argument("--limit", type=int, default=None,
-                        help="Only process the first N sessions found (for test runs).")
-    parser.add_argument("--patient-id", type=str, default=None,
-                        help="Only process sessions for this patient_id (folder name), for debugging.")
+    parser.add_argument(
+        "--limit", type=int, default=None, help="Only process the first N sessions found (for test runs)."
+    )
+    parser.add_argument(
+        "--patient-id",
+        type=str,
+        default=None,
+        help="Only process sessions for this patient_id (folder name), for debugging.",
+    )
     args = parser.parse_args()
 
     ArmLesionRemover(

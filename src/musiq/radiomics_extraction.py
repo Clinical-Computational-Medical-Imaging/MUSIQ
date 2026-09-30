@@ -49,7 +49,7 @@ def resample_label_to_image_grid(label_fpath: str, target_fpath: str, work_dirpa
 
 # Mask sources (``mask_source``): "auto" = pipeline PETseg/PETsegSUL mask, "revised" = physician
 # Tumor label (must share the SUV/PET grid).
-MASK_SOURCES = ("auto", "revised")
+MASK_SOURCES = ("auto", "revised", "post_processed")  # add post processed
 DEFAULT_LABEL_GLOB = "PETseg_revised.nii"
 
 

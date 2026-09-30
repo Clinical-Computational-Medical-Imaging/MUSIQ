@@ -69,6 +69,7 @@ class Workflow:
             tasks (list[str] | None): List of tasks to run. If None, all tasks are run. Possible values are:
                 - "series_selection": Select series based on keywords.
                 - "autopet": Run autopet3 on PET images.
+                - "autopet_postprocessing": Run autopet postprocessing on PETseg masks.
                 - "totalsegmentator": Run TotalSegmentator on CT images.
                 - "moose": Run Moose on CT images.
                 - "radiomics": Extract radiomics features from selected series.
@@ -108,6 +109,7 @@ class Workflow:
                 "series_selection",
                 "radiomics",
                 "autopet",
+                "autopet_postprocessing",
                 "totalsegmentator",
                 "tumor",
                 "plot",
@@ -125,6 +127,7 @@ class Workflow:
                         "series_selection",
                         "radiomics",
                         "autopet",
+                        "autopet_postprocessing",
                         "totalsegmentator",
                         "tumor",
                         "plot",
@@ -141,12 +144,14 @@ class Workflow:
                 raise ValueError(
                     "Invalid tasks specified. Possible values are: "
                     "'series_selection', 'radiomics', 'autopet', "
-                    "'totalsegmentator', 'tumor', 'plot', 'moose', "
-                    "'muscle_fat', 'sul', 'cads', 'boa'."
+                    "'autopet_postprocessing', 'totalsegmentator', "
+                    "'tumor', 'plot', 'moose', 'muscle_fat', 'sul', "
+                    "'cads', 'boa'."
                 )
 
         self.series_selection = "series_selection" in (tasks or [])
         self.autopet = "autopet" in (tasks or [])
+        self.autopet_postprocessing = "autopet_postprocessing" in (tasks or [])
         self.cads = "cads" in (tasks or [])
         self.totalsegmentator = "totalsegmentator" in (tasks or [])
         self.muscle_fat = "muscle_fat" in (tasks or [])
@@ -298,6 +303,47 @@ class Workflow:
                 use_cpu=self.cads_cpu,
             ).run()
 
+        # needs PETseg from autopet and CTcads from cads, so it must run after both
+        if self.autopet_postprocessing:
+            from .autopet_postprocessing.arm_lesions import ArmLesionRemover
+            from .autopet_postprocessing.lacrimalRemoval import LacrimalRemover
+            from .autopet_postprocessing.smallVoxRemoval import SmallVoxRemover
+
+            logger.info("\n" + "#" * 50 + "\nStarting Autopet Lacrimal Removal\n" + "#" * 50)
+            LacrimalRemover(
+                input_dirpath=self.output_dirpath,
+                near_mm=15.0,  # "near lacrimal" radius for the fat/spill-out rule
+                multiprocessing=False,  # Testing and then set True
+                max_workers=30,  # is the number of sessions processed at the same time
+                limit=None,  # if wanna limit the number of patients to process
+                patient_id=None,  # if wanna check for a specific patient
+                masks=None,  # PETseg PETsegSUL or PETseg_revised which u wanna check
+                save_mask=True,  # decides whether to save the mask or not
+            ).run()
+
+            logger.info("\n" + "#" * 50 + "\nStarting Autopet Arm Lesion Removal\n" + "#" * 50)
+            ArmLesionRemover(
+                input_dirpath=self.output_dirpath,
+                multiprocessing=False,
+                max_workers=30,
+                limit=None,
+                patient_id=None,
+                save_mask=True,
+                masks=None,
+            ).run()
+
+            logger.info("\n" + "#" * 50 + "\nStarting Autopet Small Voxel Removal\n" + "#" * 50)
+            SmallVoxRemover(
+                input_dirpath=self.output_dirpath,
+                max_vox=2,  # Voxelsize threshold for removing small voxels
+                multiprocessing=False,
+                max_workers=5,
+                limit=None,
+                patient_id=None,
+                masks=None,
+                save_mask=True,
+            ).run()
+
         if self.moose:
             logger.info("\n" + "#" * 50 + "\nStarting Moose Inference\n" + "#" * 50)
             # Run Moosez with the Python interpreter from another venv:
@@ -383,7 +429,7 @@ def workflow_entrypoint():
         "--tasks",
         nargs="+",
         help="List of tasks to run. Possible values: series_selection, "
-        "radiomics, autopet, totalsegmentator, tumor, plot, moose, muscle_fat, sul, cads, boa.",
+        "radiomics, autopet, autopet_postprocessing, totalsegmentator, tumor, plot, moose, muscle_fat, sul, cads, boa.",
         default=None,
     )
     parser.add_argument(

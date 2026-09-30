@@ -6,8 +6,6 @@ Choose which mask(s) to process by passing --masks when running the code:
   --masks PETseg PETsegSUL PETseg_revised   # all three
 If --masks is not given, it defaults to PETseg PETsegSUL (SUV + SUL).
 
-for runing from the terminal:LacrimalRemover("/path/to/processed", multiprocessing=True, max_workers=5).run()
-for runing from SLURM: python3 /path/to/processed/lacrimalRemoval.py --multiprocessing --max-workers 5
 Remove lacrimal-gland FP from masks, using CADS labels.
 
 A PET lesion is removed if:
@@ -19,40 +17,47 @@ A PET lesion is removed if:
 import argparse
 import json
 import os
+import sys
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-import numpy as np
-import nibabel as nib
-import cc3d  # pip install connected-components-3d
-from nibabel.processing import resample_from_to
-from scipy.ndimage import distance_transform_edt, binary_dilation
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "CADS"))
 
-from labelMap import labelmap_cads
+import cc3d  # pip install connected-components-3d
+import nibabel as nib
+import numpy as np
+from cads.dataset_utils.bodyparts_labelmaps import (  # noqa: E402
+    labelmap_all_structure as labelmap_cads,
+)
+from nibabel.processing import resample_from_to
+from scipy.ndimage import binary_dilation, distance_transform_edt
 
 # --------------------------------------------------------------------------- #
 # Config
 # --------------------------------------------------------------------------- #
-DATA_DIR            = Path("/data/Data2/MULTIPRO/processed/") #/home/amka26/Documents/test_data
-LACRIMAL_LABELS     = [144, 145]          # CADS: Lacrimal gland L / R
-SUBCUTANEOUS_LABEL  = 158                 # CADS: Subcutaneous tissue
-ALLOWED_DOMINANT    = {0, SUBCUTANEOUS_LABEL}   # background(0) / subcutaneous -> removable when near gland
-NEAR_MM_DEFAULT     = 15.0                 # "near lacrimal" radius for the fat/spill-out rule
-MIN_LAC_VOX_DEFAULT = 1                    # a lesion touching >= this many lacrimal voxels is removed
-CONNECTIVITY        = 18                   # keep consistent with your metrics/compare stage
-LACRIMAL_DILATE_VOX = 3                    # dilate lacrimal labels by this many native-CT voxels before
-                                           # downsampling, so a gland smaller than one PET voxel still
-                                           # survives nearest-neighbor resampling onto the PET grid
+# DATA_DIR            = Path("/data/Data2/MULTIPRO/processed/") #/home/amka26/Documents/test_data
+LACRIMAL_LABELS = [144, 145]  # CADS: Lacrimal gland L / R
+SUBCUTANEOUS_LABEL = 158  # CADS: Subcutaneous tissue
+ALLOWED_DOMINANT = {0, SUBCUTANEOUS_LABEL}  # background(0) / subcutaneous -> removable when near gland
+NEAR_MM_DEFAULT = 15.0  # "near lacrimal" radius for the fat/spill-out rule
+MIN_LAC_VOX_DEFAULT = 1  # a lesion touching >= this many lacrimal voxels is removed
+CONNECTIVITY = 18  # keep consistent with your metrics/compare stage
+LACRIMAL_DILATE_VOX = 3  # dilate lacrimal labels by this many native-CT voxels before
+# downsampling, so a gland smaller than one PET voxel still
+# survives nearest-neighbor resampling onto the PET grid
 
-MASK_CHOICES  = ["PETseg",            # SUV
-                 "PETsegSUL",         # SUL
-                 "PETseg_revised"]    # doctors' annotation (label mask)
-MASK_EXTS     = (".nii.gz", ".nii")
-DEFAULT_MASKS = ["PETseg", "PETsegSUL"]
-OUT_SUFFIX    = "_postPro"            # cleaned mask saved as <mask><suffix>.nii.gz
-REMOVED_SUFFIX = "_postProRemoved"   # only the removed lesions, saved as <mask><suffix>.nii.gz
-CADS_FILE       = "CTcads.nii.gz"
+MASK_CHOICES = [
+    "PETseg",  # SUV
+    "PETsegSUL",  # SUL
+    "PETseg_revised",
+]  # doctors' annotation (label mask)
+MASK_EXTS = (".nii.gz", ".nii")
+DEFAULT_MASKS = ["PETseg", "PETsegSUL", "PETseg_revised"]  # default if --masks not given
+OUT_SUFFIX = "_postPro"  # cleaned mask saved as <mask><suffix>.nii.gz
+REMOVED_SUFFIX = "_postProRemoved"  # only the removed lesions, saved as <mask><suffix>.nii.gz
+CADS_FILE = "CTcads.nii.gz"
 NECESSARY_FILES = [CADS_FILE]
+
 
 def find_mask_file(session, stem):
     """Path of <stem>.nii.gz / <stem>.nii in this session, or None."""
@@ -61,9 +66,12 @@ def find_mask_file(session, stem):
         if p.exists():
             return p
     return None
-OUT_JSON        = "lacrimal_removed_components.json"
+
+
+OUT_JSON = "lacrimal_removed_components.json"
 
 NAMES = labelmap_cads
+
 
 def dilate_labels(arr, labels, iters):
     """Grow the given labels outward into background only,
@@ -77,16 +85,17 @@ def dilate_labels(arr, labels, iters):
         out[grown & (arr == 0)] = label
     return out
 
+
 def resample_cads_to_grid(img, arr, ref_img):
     """Put a CADS label array onto ref_img's grid with nearest-neighbour;
     no-op if grids already match."""
-    needs_resample = (img.shape != ref_img.shape or
-                      not np.allclose(img.affine, ref_img.affine))
+    needs_resample = img.shape != ref_img.shape or not np.allclose(img.affine, ref_img.affine)
     if not needs_resample:
         return arr
     src = nib.Nifti1Image(arr, img.affine, img.header)
     res = resample_from_to(src, (ref_img.shape, ref_img.affine), order=0)
     return np.rint(res.get_fdata()).astype(np.int32)
+
 
 def distance_field_from_native(img, arr, labels):
     """Distance (mm) to the nearest voxel of any of `labels`, computed on an
@@ -112,9 +121,18 @@ def resample_distance_to_grid(img, dist, ref_img):
 
 
 class LacrimalRemover:
-    def __init__(self, input_dirpath, near_mm=NEAR_MM_DEFAULT, min_lac_vox=MIN_LAC_VOX_DEFAULT,
-                 multiprocessing=False, max_workers=30, limit=None, patient_id=None,
-                 masks=None, save_mask=True):
+    def __init__(
+        self,
+        input_dirpath,
+        near_mm=NEAR_MM_DEFAULT,
+        min_lac_vox=MIN_LAC_VOX_DEFAULT,
+        multiprocessing=False,
+        max_workers=30,
+        limit=None,
+        patient_id=None,
+        masks=None,
+        save_mask=True,
+    ):
         self.masks = list(masks) if masks else list(DEFAULT_MASKS)
         self.save_mask = save_mask
         self.input_dirpath = input_dirpath
@@ -138,7 +156,7 @@ class LacrimalRemover:
             sub_dirs = [d for d in sub_dirs if Path(d).parent.name == self.patient_id]
             print(f"Filtering to patient_id={self.patient_id}: {len(sub_dirs)} session(s)", flush=True)
         if self.limit is not None:
-            sub_dirs = sub_dirs[:self.limit]
+            sub_dirs = sub_dirs[: self.limit]
             print(f"Limiting to first {len(sub_dirs)} session(s)", flush=True)
         if not sub_dirs:
             return
@@ -149,13 +167,11 @@ class LacrimalRemover:
         else:
             results = [self.process_wrapper(d) for d in sub_dirs]
 
-        rows = [r for res in results if res for r in res]   # flatten, skip errored (None/[])
+        rows = [r for res in results if res for r in res]  # flatten, skip errored (None/[])
         if rows:
             per_patient = {}
             for r in rows:
-                per_patient.setdefault(r["patient_id"], []).append({
-                    k: v for k, v in r.items() if k != "patient_id"
-                })
+                per_patient.setdefault(r["patient_id"], []).append({k: v for k, v in r.items() if k != "patient_id"})
 
             summary = {
                 "total_sessions": len(sub_dirs),
@@ -164,21 +180,23 @@ class LacrimalRemover:
                 "per_patient": [
                     {
                         "patient_id": pid,
-                        "removed_lesions": sorted(lesions, key=lambda l: (l["session"], l["mask_name"], l["component_id"])),
+                        "removed_lesions": sorted(
+                            lesions, key=lambda les: (les["session"], les["mask_name"], les["component_id"])
+                        ),
                     }
                     for pid, lesions in sorted(per_patient.items())
                 ],
             }
 
-            out_name = OUT_JSON if self.patient_id is None else \
-                OUT_JSON.replace(".json", f"_{self.patient_id}.json")
+            out_name = OUT_JSON if self.patient_id is None else OUT_JSON.replace(".json", f"_{self.patient_id}.json")
             out_json = Path(self.input_dirpath) / out_name
             tmp = out_json.with_suffix(".json.tmp")
             with open(tmp, "w") as f:
                 json.dump(summary, f, indent=2)
             tmp.replace(out_json)
-            print(f"\nWrote {len(rows)} removed lesion(s) across {len(per_patient)} patient(s) -> {out_json}",
-                  flush=True)
+            print(
+                f"\nWrote {len(rows)} removed lesion(s) across {len(per_patient)} patient(s) -> {out_json}", flush=True
+            )
         else:
             print("\nNo lesions removed in any session.", flush=True)
         print("Lacrimal removal done.", flush=True)
@@ -227,8 +245,7 @@ class LacrimalRemover:
             print(f"  [{mask_name}] no lacrimal voxels in native CADS - nothing to remove", flush=True)
 
         # lesions + vectorized per-lesion stats
-        cc, n = cc3d.connected_components((data > 0).astype(np.int32),
-                                          connectivity=CONNECTIVITY, return_N=True)
+        cc, n = cc3d.connected_components((data > 0).astype(np.int32), connectivity=CONNECTIVITY, return_N=True)
         stats = cc3d.statistics(cc)
         sizes = stats["voxel_counts"]
         boxes = stats["bounding_boxes"]
@@ -247,14 +264,13 @@ class LacrimalRemover:
 
             # CADS label composition of this lesion (fractions of its voxels)
             vals, counts = np.unique(cads[box][local], return_counts=True)
-            fracs = {int(v): int(c) / vox for v, c in zip(vals, counts)}
-            bg = fracs.pop(0, 0.0)     # label 0 = outside any CADS structure
+            fracs = {int(v): int(c) / vox for v, c in zip(vals, counts, strict=False)}
+            bg = fracs.pop(0, 0.0)  # label 0 = outside any CADS structure
             dom = max(fracs, key=fracs.get) if fracs else 0
 
             # --- removal decision ---
             touches_lac = in_lac >= self.min_lac_vox
-            near_fat = (min_dist <= self.near_mm and
-                        (dom in ALLOWED_DOMINANT or bg >= 0.5))
+            near_fat = min_dist <= self.near_mm and (dom in ALLOWED_DOMINANT or bg >= 0.5)
             remove = touches_lac or near_fat
             if touches_lac:
                 reason = "lacrimal overlap"
@@ -264,33 +280,36 @@ class LacrimalRemover:
                 reason = "kept"
 
             # verbose per-lesion line for EVERY lesion (calibration view)
-            touches = {NAMES.get(int(v), int(v)): int(c)
-                       for v, c in zip(vals, counts) if v != 0}
+            touches = {NAMES.get(int(v), int(v)): int(c) for v, c in zip(vals, counts, strict=False) if v != 0}
             tag = f"  <-- REMOVE ({reason})" if remove else ""
-            print(f"    lesion {lid:>2}: {vox:>6} vox | lacrimal {in_lac:>5} "
-                  f"({frac_lac:6.1%}) | dist {min_dist:5.1f}mm | bg {bg:4.0%} "
-                  f"| touches {touches}{tag}", flush=True)
+            print(
+                f"    lesion {lid:>2}: {vox:>6} vox | lacrimal {in_lac:>5} "
+                f"({frac_lac:6.1%}) | dist {min_dist:5.1f}mm | bg {bg:4.0%} "
+                f"| touches {touches}{tag}",
+                flush=True,
+            )
 
             if not remove:
-                continue   # keep this lesion
+                continue  # keep this lesion
 
             drop.append(lid)
             ranked = sorted(fracs.items(), key=lambda kv: -kv[1])[:3]  # top-3 organs
-            rows.append({
-                "patient_id": session.parent.name,
-                "session": session.name,
-                "mask_name": mask_name,
-                "component_id": lid,
-                "reason": reason,
-                "voxels": vox,
-                "lacrimal_voxels": in_lac,
-                "min_dist_mm": round(min_dist, 1),
-                "background_fraction": round(bg, 2),
-                "organs": [
-                    {"name": NAMES.get(label, str(label)), "fraction": round(frac, 2)}
-                    for label, frac in ranked
-                ],
-            })
+            rows.append(
+                {
+                    "patient_id": session.parent.name,
+                    "session": session.name,
+                    "mask_name": mask_name,
+                    "component_id": lid,
+                    "reason": reason,
+                    "voxels": vox,
+                    "lacrimal_voxels": in_lac,
+                    "min_dist_mm": round(min_dist, 1),
+                    "background_fraction": round(bg, 2),
+                    "organs": [
+                        {"name": NAMES.get(label, str(label)), "fraction": round(frac, 2)} for label, frac in ranked
+                    ],
+                }
+            )
 
         # save cleaned mask (same geometry, original label values kept; removed lesions -> 0)
         # always rebuilt from the ORIGINAL mask (never from a previous _postPro file) and
@@ -299,7 +318,7 @@ class LacrimalRemover:
             removed = np.isin(cc, drop)
             dtype = mask_img.get_data_dtype()
             outputs = {
-                f"{mask_name}{OUT_SUFFIX}": np.where(removed, 0, data).astype(dtype),      # cleaned
+                f"{mask_name}{OUT_SUFFIX}": np.where(removed, 0, data).astype(dtype),  # cleaned
                 f"{mask_name}{REMOVED_SUFFIX}": np.where(removed, data, 0).astype(dtype),  # removed only
             }
             for stem, arr_out in outputs.items():
@@ -316,23 +335,49 @@ def lacrimal_removal_entrypoint():
     parser = argparse.ArgumentParser(
         description="Remove lacrimal-gland false positives (and near-gland fat) from PETseg / PETsegSUL using CADS."
     )
-    parser.add_argument("--input-dirpath", type=str, default=str(DATA_DIR),
-                        help="Processed data root; searched recursively for sessions with CTcads + PETseg.")
-    parser.add_argument("--near-mm", type=float, default=NEAR_MM_DEFAULT,
-                        help="Proximity radius (mm) for the near-gland fat/subcutaneous rule.")
-    parser.add_argument("--min-lac-vox", type=int, default=MIN_LAC_VOX_DEFAULT,
-                        help="Remove a lesion overlapping >= this many lacrimal voxels.")
-    parser.add_argument("--masks", nargs="+", choices=MASK_CHOICES, default=DEFAULT_MASKS,
-                        help="Which mask(s) to clean: PETseg (SUV), PETsegSUL (SUL), PETseg_revised (doctors' annotation).")
-    parser.add_argument("--no-save", action="store_true",
-                        help="Do not write the cleaned <mask>_postPro.nii.gz files (calibration/dry run).")
-    parser.add_argument("--multiprocessing", action="store_true",
-                        help="Process sessions in parallel with a process pool.")
+    parser.add_argument(
+        "--input-dirpath",
+        type=str,
+        required=True,  # default=str(DATA_DIR)
+        help="Processed data root; searched recursively for sessions with CTcads + PETseg.",
+    )
+    parser.add_argument(
+        "--near-mm",
+        type=float,
+        default=NEAR_MM_DEFAULT,
+        help="Proximity radius (mm) for the near-gland fat/subcutaneous rule.",
+    )
+    parser.add_argument(
+        "--min-lac-vox",
+        type=int,
+        default=MIN_LAC_VOX_DEFAULT,
+        help="Remove a lesion overlapping >= this many lacrimal voxels.",
+    )
+    parser.add_argument(
+        "--masks",
+        nargs="+",
+        choices=MASK_CHOICES,
+        default=DEFAULT_MASKS,
+        help="Which mask(s) to clean: PETseg (SUV), PETsegSUL (SUL), PETseg_revised (doctors' annotation).",
+    )
+    parser.add_argument(
+        "--no-save",
+        action="store_true",
+        help="Do not write the cleaned <mask>_postPro.nii.gz files (calibration/dry run).",
+    )
+    parser.add_argument(
+        "--multiprocessing", action="store_true", help="Process sessions in parallel with a process pool."
+    )
     parser.add_argument("--max-workers", type=int, default=30)
-    parser.add_argument("--limit", type=int, default=None,
-                        help="Only process the first N sessions found (for test runs).")
-    parser.add_argument("--patient-id", type=str, default=None,
-                        help="Only process sessions for this patient_id (folder name), for debugging.")
+    parser.add_argument(
+        "--limit", type=int, default=None, help="Only process the first N sessions found (for test runs)."
+    )
+    parser.add_argument(
+        "--patient-id",
+        type=str,
+        default=None,
+        help="Only process sessions for this patient_id (folder name), for debugging.",
+    )
     args = parser.parse_args()
 
     LacrimalRemover(
