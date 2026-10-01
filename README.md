@@ -52,7 +52,16 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
       - `PETsegSUL.nii.gz` - SUL segmentations by AutoPET3
       - Expands `patient_info.json` with series information
 
-6. **CT Segmentation with CADS v1.0.0**
+6. **PET Segmentation with LION**
+   - Segments PET scans using [LION](https://github.com/ENHANCE-PET/LION) — a PET-only segmentation model (no CT required) trained on FDG (5,235 pts) and PSMA (2,046 pts) cohorts.
+   - Runs in a separate `.venv_lion` virtual environment due to dependency conflicts. Models download automatically on first run.
+   - Activated via `--tasks lion --lion-model fdg|psma --lion-venv .venv_lion`. The LION mask can be fed into radiomics/tumor via `--mask-source lion`.
+   - Output:
+      - `PETseg_LION.nii.gz` – SUV lesion segmentation by LION
+      - `PETsegSUL_LION.nii.gz` – SUL lesion segmentation by LION
+      - Expands `patient_info.json` with `PETsegLIONPath` / `PETsegSULLIONPath`; radiomics/tumor results land under `TumorStatsLION` / `TumorStatsLIONSUL`
+
+7. **CT Segmentation with CADS v1.0.0**
    - Performs organ segmentation on CT images using the CADS model using the specified tasks and saves everything to a single file. The labels are set as the labelmap_all_structure  as shown here https://github.com/murong-xu/CADS/tree/main/cads/dataset_utils.
    - Runs as a **staged pipeline** (CADS "Option 2"): preprocess (CPU) → inference (GPU) → restore+combine (CPU). The `cads` workflow task runs all three in sequence; for large cohorts the stages can be run as separate CPU/GPU jobs (see [docs/staged-cads.md](docs/staged-cads.md)). Intermediates live in a staging dir (default `<output>/cads_staging`) and are auto-removed once each `CTcads.nii.gz` is written.
    - Output:
@@ -60,14 +69,14 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
       - Expands `patient_info.json` with CADS information
 
 
-7. **CT Segmentation with Moose**
+8. **CT Segmentation with Moose**
    - Performs organ segmentation on CT images using Moose.
    - Moose can only take one CT per series.
    - Outputs:
      - `CTmoose_organs.nii.gz` – Segmentation mask
      - Expands `patient_info.json` with Moose information
 
-8. **Body Composition Analysis with BOA (BCA)**
+9. **Body Composition Analysis with BOA (BCA)**
    - Runs the UMEssen [Body-and-Organ-Analysis](https://github.com/UMEssen/Body-and-Organ-Analysis) BCA component on each `CT.nii.gz` via the `shipai/boa-cli` Docker image (no Python dependency added — BOA runs in its own container).
    - Reuses MUSIQ's existing `CTseg.nii.gz` as BOA's `total` segmentation when present, so the 104-organ TotalSegmentator step is not recomputed. Run `totalsegmentator` before `boa`; disable reuse with `--boa-no-reuse-total`.
    - Outputs (next to the other NIfTIs):
@@ -76,15 +85,15 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
      - `boa/` subfolder with BOA's `output.xlsx`, optional `report.pdf`, JSON measurements and logs
      - Expands `patient_info.json` with a `BCA` block and the segmentation paths
 
-9. **Radiomics Extraction**
+10. **Radiomics Extraction**
    - Computes radiomics metrics from SUV or SUL and CT and adds them to `patient_info.json`: SUV/SUL stats (mean, max, peak, median, std), lesion count, TMTV (also at thresholds 0.3/0.4/0.41/0.5/2.5/3.0/3.5/4.0), TLG, tumor dissemination (Dmax) and its height/weight-standardized form (SDmax), and surface area.
-   - **Mask source** (`--mask-source`, see [docs/mask-sources.md](docs/mask-sources.md)): `auto` uses the automated `PETseg.nii.gz`/`PETsegSUL.nii.gz` and writes `TumorStats` (SUV) / `TumorStatsSUL` (SUL); `revised` uses the physician label and writes `TumorStatsRevised`.
+   - **Mask source** (`--mask-source`, see [docs/mask-sources.md](docs/mask-sources.md)): `auto` uses `PETseg.nii.gz`/`PETsegSUL.nii.gz` → `TumorStats`/`TumorStatsSUL`; `revised` uses the physician label → `TumorStatsRevised`; `lion` uses `PETseg_LION.nii.gz`/`PETsegSUL_LION.nii.gz` → `TumorStatsLION`/`TumorStatsLIONSUL`.
 
-10. **Tumor Size Analysis**
+11. **Tumor Size Analysis**
    - Quantifies tumor volume per organ. Outputs `CTsegres.nii.gz` (segmentation resampled to PET) and extends `patient_info.json` with per-organ volume, organ overlap, SUV/SUL stats and surface area.
    - Same `--mask-source` behaviour as Radiomics (per-lesion results land under the matching `TumorStats*` key).
 
-11. **Optional Plotting**
+12. **Optional Plotting**
    - Generates visualizations
 
 ---
@@ -120,6 +129,8 @@ musiq/
 │   │   │   │   ├── PET.nii.gz                     # PET converted to nifti
 │   │   │   │   ├── PETseg.nii.gz                  # SUV segmentations by AutoPET3
 │   │   │   │   ├── PETsegSUL.nii.gz               # SUL segmentations by AutoPET3
+│   │   │   │   ├── PETseg_LION.nii.gz             # SUV segmentations by LION
+│   │   │   │   ├── PETsegSUL_LION.nii.gz          # SUL segmentations by LION
 │   │   │   │   ├── SUV.nii.gz                     # SUV map from PET
 │   │   │   │   ├── SUL.nii.gz                     # SUL map from PET
 │   │   │   ├── study_date_1/
@@ -134,6 +145,7 @@ musiq/
 ├── setup.py
 ├── README.md
 ├── requirements.txt
+├── requirements_lion.txt
 ├── requirements_moose.txt
 
 ```
@@ -171,6 +183,17 @@ source .venv_moose/bin/activate
 pip install -r requirements_moose.txt
 pip install moosez --no-deps
 ```
+
+- In order to use the pipeline with the LION extension, create a third virtual environment:
+
+```bash
+deactivate
+python3.12 -m venv .venv_lion
+source .venv_lion/bin/activate
+pip install -r requirements_lion.txt
+deactivate
+```
+  `requirements_lion.txt` installs `lionz` and `musiq` (editable, via `-e .`) so the `musiq_lion_inference` console script is available in `.venv_lion`. LION downloads model weights automatically on first run (no manual checkpoint download needed). Pass `--lion-venv .venv_lion` when running the `lion` task.
 
 - The `boa` task runs in Docker, so it needs no virtual environment — just pull the image once (an NVIDIA GPU + Container Toolkit are required):
 ```bash
@@ -239,6 +262,8 @@ If you are using Windows, it is recommended to add the following flags to reduce
    - Sundar LKS, Yu J, Muzik O, Kulterer OC, Fueger B, Kifjak D et al. Fully Automated,Semantic Segmentation of Whole-Body18 F-FDG PET/CT Images Based on Data-CentricArtificial Intelligence. J Nucl Med. 2022;63(12):1941–8.
 - **CADS**
    - Xu, M., Amiranashvili, T., Navarro, F., Fritsak, M., Hamamci, I.E., Shit, S., Wittmann, B., Er, S., Christ, S.M., de la Rosa, E. and Deseoe, J., 2025. CADS: A Comprehensive Anatomical Dataset and Segmentation for Whole-Body Anatomy in Computed Tomography. arXiv preprint arXiv:2507.22953.
+- **LION (Lesion segmentation)**
+   - Shiyam Sundar, L. K., Pires, M., & Gutschmayer, S. LION: Automated Lesion Segmentation for Whole-Body PET. Zenodo. https://doi.org/10.5281/zenodo.12626789. https://github.com/ENHANCE-PET/LION
 - **BOA (Body and Organ Analysis)**
    - Haubold, J., Baldini, G., Parmar, V., Schaarschmidt, B.M., Koitka, S., Kroll, L., van Landeghem, N., Umutlu, L., Forsting, M., Nensa, F. and Hosch, R., 2024. BOA: A CT-Based Body and Organ Analysis for Radiologists at the Point of Care. Investigative Radiology, 59(6), pp.433-441. https://github.com/UMEssen/Body-and-Organ-Analysis
 ---

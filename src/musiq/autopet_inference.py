@@ -81,7 +81,7 @@ class AutopetInference:
                                 logger.info("Resampling CT.nii.gz to PET size.")
                                 resample_image(
                                     source_img=os.path.join(dirpath, "CT.nii.gz"),
-                                    target_img=os.path.join(dirpath, "PET.nii.gz"),
+                                    target_img=os.path.join(dirpath, f"{metric}.nii.gz"),
                                     nii_output_dirpath=dirpath,
                                     output_fname="CTres.nii.gz",
                                     interpolation="continuous",
