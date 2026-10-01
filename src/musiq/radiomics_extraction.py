@@ -47,9 +47,9 @@ def resample_label_to_image_grid(label_fpath: str, target_fpath: str, work_dirpa
             os.remove(out_fpath)
 
 
-# Mask sources (``mask_source``): "auto" = pipeline PETseg/PETsegSUL, "revised" = physician label,
-# "lion" = LION PETseg_LION/PETsegSUL_LION.
-MASK_SOURCES = ("auto", "revised", "lion")
+# Mask sources (``mask_source``): "auto" = pipeline PETseg/PETsegSUL mask, "revised" = physician
+# Tumor label (must share the SUV/PET grid).
+MASK_SOURCES = ("auto", "revised", "lion", "postprocessed")
 DEFAULT_LABEL_GLOB = "PETseg_revised.nii"
 
 
@@ -70,6 +70,11 @@ def resolve_mask(
     if mask_source == "lion":
         fname = "PETseg_LION.nii.gz" if metric == "SUV" else "PETsegSUL_LION.nii.gz"
         key = "TumorStatsLION" if metric == "SUV" else "TumorStatsLIONSUL"
+        mask_path = os.path.join(study_dirpath, fname)
+        return (mask_path if os.path.exists(mask_path) else None), key
+    if mask_source == "postprocessed":
+        fname = "PETseg_postprocessed.nii.gz" if metric == "SUV" else "PETsegSUL_postprocessed.nii.gz"
+        key = "TumorStatsPostprocessed" if metric == "SUV" else "TumorStatsPostprocessedSUL"
         mask_path = os.path.join(study_dirpath, fname)
         return (mask_path if os.path.exists(mask_path) else None), key
     fname = "PETseg.nii.gz" if metric == "SUV" else "PETsegSUL.nii.gz"
