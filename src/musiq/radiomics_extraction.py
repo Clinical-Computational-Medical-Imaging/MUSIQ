@@ -47,9 +47,9 @@ def resample_label_to_image_grid(label_fpath: str, target_fpath: str, work_dirpa
             os.remove(out_fpath)
 
 
-# Mask sources (``mask_source``): "auto" = pipeline PETseg/PETsegSUL mask, "revised" = physician
-# Tumor label (must share the SUV/PET grid).
-MASK_SOURCES = ("auto", "revised")
+# Mask sources (``mask_source``): "auto" = pipeline PETseg/PETsegSUL, "revised" = physician label,
+# "lion" = LION PETseg_LION/PETsegSUL_LION.
+MASK_SOURCES = ("auto", "revised", "lion")
 DEFAULT_LABEL_GLOB = "PETseg_revised.nii"
 
 
@@ -67,6 +67,11 @@ def resolve_mask(
     if mask_source == "revised":
         key = "TumorStatsRevised" if metric == "SUV" else "TumorStatsRevisedSUL"
         return resolve_tumor_label(study_dirpath, label_dirpath, label_glob), key
+    if mask_source == "lion":
+        fname = "PETseg_LION.nii.gz" if metric == "SUV" else "PETsegSUL_LION.nii.gz"
+        key = "TumorStatsLION" if metric == "SUV" else "TumorStatsLIONSUL"
+        mask_path = os.path.join(study_dirpath, fname)
+        return (mask_path if os.path.exists(mask_path) else None), key
     fname = "PETseg.nii.gz" if metric == "SUV" else "PETsegSUL.nii.gz"
     key = "TumorStats" if metric == "SUV" else "TumorStatsSUL"
     mask_path = os.path.join(study_dirpath, fname)
@@ -177,11 +182,12 @@ class RadiomicsExtractor:
                     sub_dirs.append(dirpath)
             if not sub_dirs:
                 label_loc = "the study dir" if not self.label_dirpath else self.label_dirpath
-                mask_desc = (
-                    f"a '{self.label_glob}' label in {label_loc}"
-                    if self.mask_source == "revised"
-                    else ("PETseg.nii.gz" if metric == "SUV" else "PETsegSUL.nii.gz")
-                )
+                if self.mask_source == "revised":
+                    mask_desc = f"a '{self.label_glob}' label in {label_loc}"
+                elif self.mask_source == "lion":
+                    mask_desc = "PETseg_LION.nii.gz" if metric == "SUV" else "PETsegSUL_LION.nii.gz"
+                else:
+                    mask_desc = "PETseg.nii.gz" if metric == "SUV" else "PETsegSUL.nii.gz"
                 msg = f"No directories found with necessary files for {metric}: {necessary_files} plus {mask_desc}."
                 if metric == "SUL":
                     msg += (

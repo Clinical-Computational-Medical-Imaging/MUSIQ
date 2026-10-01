@@ -352,11 +352,12 @@ class TumorInfoExtraction:
 
             if not study_dirs:
                 label_loc = "the study dir" if not self.label_dirpath else self.label_dirpath
-                mask_desc = (
-                    f"a '{self.label_glob}' label in {label_loc}"
-                    if self.mask_source == "revised"
-                    else ("PETseg.nii.gz" if metric == "SUV" else "PETsegSUL.nii.gz")
-                )
+                if self.mask_source == "revised":
+                    mask_desc = f"a '{self.label_glob}' label in {label_loc}"
+                elif self.mask_source == "lion":
+                    mask_desc = "PETseg_LION.nii.gz" if metric == "SUV" else "PETsegSUL_LION.nii.gz"
+                else:
+                    mask_desc = "PETseg.nii.gz" if metric == "SUV" else "PETsegSUL.nii.gz"
                 msg = (
                     f"No complete studies found for {metric}. "
                     f"{', '.join(required_files)} plus {mask_desc} are required in each patient/study directory."

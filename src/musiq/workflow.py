@@ -59,6 +59,10 @@ class Workflow:
         boa_reuse_total: bool = True,
         boa_runtime: str = "docker",
         boa_sif: str | None = None,
+        lion_model: str = "fdg",
+        lion_accelerator: str | None = None,
+        lion_conda_env: str = "lion",
+        lion_venv: str | None = None,
     ) -> None:
         """
         Run the MUSIQ workflow with the specified parameters.
@@ -76,6 +80,7 @@ class Workflow:
                 - "plot": Create visualisations.
                 - "cads": Run CADS on CT images.
                 - "boa": Run UMEssen BOA Body Composition Analysis (BCA) on CT images via Docker.
+                - "lion": Run LION lesion segmentation on PET images (requires a conda env with musiq_lion_inference).
             ct_primary_keywords (list[str] | None): Keywords for primary selection of CT series.
             ct_secondary_keywords (list[str] | None): Keywords for secondary selection of CT series.
             ct_exclusion_keywords (list[str] | None): Keywords to exclude CT series.
@@ -93,12 +98,12 @@ class Workflow:
         if pet_metric is None:
             pet_metric = ["SUV", "SUL"]
         self.pet_metric = pet_metric
-        # mask_sources: 'auto' (PETseg -> TumorStats[SUL]) and/or 'revised' (physician label -> TumorStatsRevised)
+        # mask_sources: 'auto' (PETseg), 'revised' (physician label), 'lion' (PETseg_LION)
         if mask_sources is None:
             mask_sources = ["auto"]
         for s in mask_sources:
-            if s not in ("auto", "revised"):
-                raise ValueError(f"mask_sources entries must be 'auto' or 'revised', got '{s}'")
+            if s not in ("auto", "revised", "lion"):
+                raise ValueError(f"mask_sources entries must be 'auto', 'revised', or 'lion', got '{s}'")
         self.mask_sources = mask_sources
         self.label_dirpath = label_dirpath
         self.label_glob = label_glob
@@ -133,6 +138,7 @@ class Workflow:
                         "sul",
                         "cads",
                         "boa",
+                        "lion",
                     ]
                     for t in tasks or []
                 )
@@ -142,7 +148,7 @@ class Workflow:
                     "Invalid tasks specified. Possible values are: "
                     "'series_selection', 'radiomics', 'autopet', "
                     "'totalsegmentator', 'tumor', 'plot', 'moose', "
-                    "'muscle_fat', 'sul', 'cads', 'boa'."
+                    "'muscle_fat', 'sul', 'cads', 'boa', 'lion'."
                 )
 
         self.series_selection = "series_selection" in (tasks or [])
@@ -156,6 +162,11 @@ class Workflow:
         self.tumor = "tumor" in (tasks or [])
         self.plot = "plot" in (tasks or [])
         self.boa = "boa" in (tasks or [])
+        self.lion = "lion" in (tasks or [])
+        self.lion_model = lion_model
+        self.lion_accelerator = lion_accelerator
+        self.lion_conda_env = lion_conda_env
+        self.lion_venv = lion_venv
 
         self.boa_weights_path = boa_weights_path
         self.boa_image = boa_image
@@ -287,6 +298,29 @@ class Workflow:
                 pet_metric=self.pet_metric,
             ).run()
 
+        if self.lion:
+            logger.info("\n" + "#" * 50 + "\nStarting LION Inference\n" + "#" * 50)
+            metrics = self.pet_metric if isinstance(self.pet_metric, list) else [self.pet_metric]
+            if self.lion_venv:
+                _lion_bin = plb.Path(self.lion_venv) / "bin/musiq_lion_inference"
+            else:
+                _lion_bin = plb.Path.home() / ".conda/envs" / self.lion_conda_env / "bin/musiq_lion_inference"
+            cmd = [
+                str(_lion_bin),
+                "--input-dirpath-processed",
+                self.output_dirpath,
+                "--lion-model",
+                self.lion_model,
+                "--pet-metric",
+                *metrics,
+            ]
+            if self.lion_accelerator:
+                cmd += ["--lion-accelerator", self.lion_accelerator]
+            try:
+                subprocess.run(cmd, check=True)
+            except subprocess.CalledProcessError as e:
+                logger.error(f"LION inference failed (exit code {e.returncode}).")
+
         if self.cads:
             from .cads_inference import CadsInference
 
@@ -318,18 +352,17 @@ class Workflow:
                 "clin_ct_organs",
             ]
             try:
-                result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-                logger.info(result.stderr)
+                subprocess.run(cmd, check=True)
             except subprocess.CalledProcessError as e:
-                logger.error("Error during Moose inference:\n" + e.stderr)
+                logger.error(f"Moose inference failed (exit code {e.returncode}).")
 
         if self.radiomics:
             from .radiomics_extraction import RadiomicsExtractor
 
             logger.info("\n" + "#" * 50 + "\nStarting Radiomics Computation\n" + "#" * 50)
             for source in self.mask_sources:
-                # Revised runs on SUV only (the manual label is drawn once, independent of SUV/SUL).
-                metric = self.pet_metric if source == "auto" else ["SUV"]
+                # Revised runs on SUV only (drawn once, independent of metric); lion and auto run both.
+                metric = self.pet_metric if source in ("auto", "lion") else ["SUV"]
                 RadiomicsExtractor(
                     input_dirpath_processed=self.output_dirpath,
                     pet_metric=metric,
@@ -343,7 +376,7 @@ class Workflow:
 
             logger.info("\n" + "#" * 50 + "\nStarting Tumor Info Extraction\n" + "#" * 50)
             for source in self.mask_sources:
-                metric = self.pet_metric if source == "auto" else ["SUV"]
+                metric = self.pet_metric if source in ("auto", "lion") else ["SUV"]
                 TumorInfoExtraction(
                     input_dirpath_processed=self.output_dirpath,
                     pet_metric=metric,
@@ -383,7 +416,7 @@ def workflow_entrypoint():
         "--tasks",
         nargs="+",
         help="List of tasks to run. Possible values: series_selection, "
-        "radiomics, autopet, totalsegmentator, tumor, plot, moose, muscle_fat, sul, cads, boa.",
+        "radiomics, autopet, totalsegmentator, tumor, plot, moose, muscle_fat, sul, cads, boa, lion.",
         default=None,
     )
     parser.add_argument(
@@ -447,11 +480,11 @@ def workflow_entrypoint():
         dest="mask_sources",
         type=str,
         nargs="+",
-        choices=["auto", "revised"],
+        choices=["auto", "revised", "lion"],
         default=["auto"],
-        help="Mask(s) for radiomics/tumor: 'auto' (PETseg -> TumorStats[SUL]) and/or 'revised' "
-        "(physician label -> TumorStatsRevised, SUV only). Pass both to compute all: "
-        "--mask-source auto revised (default: auto).",
+        help="Mask(s) for radiomics/tumor: 'auto' (PETseg -> TumorStats[SUL]), 'revised' "
+        "(physician label -> TumorStatsRevised, SUV only), 'lion' (PETseg_LION -> TumorStatsLION[SUL]). "
+        "Pass multiple: --mask-source auto lion (default: auto).",
     )
     parser.add_argument(
         "--label-dirpath",
@@ -503,6 +536,33 @@ def workflow_entrypoint():
         default=None,
         help="Path to the BOA Apptainer/Singularity image (.sif). Required when --boa-runtime apptainer.",
     )
+    parser.add_argument(
+        "--lion-model",
+        type=str,
+        default="fdg",
+        choices=["fdg", "psma"],
+        help="LION model to use: 'fdg' (default) or 'psma'.",
+    )
+    parser.add_argument(
+        "--lion-accelerator",
+        type=str,
+        default=None,
+        choices=["cuda", "cpu", "mps"],
+        help="LION device override (default: auto-detect cuda if available, else cpu).",
+    )
+    parser.add_argument(
+        "--lion-conda-env",
+        type=str,
+        default="lion",
+        help="Name of the conda environment that contains musiq_lion_inference (default: 'lion').",
+    )
+    parser.add_argument(
+        "--lion-venv",
+        type=str,
+        default=None,
+        help="Path to a Python venv containing musiq_lion_inference (e.g. .venv_lion). "
+        "When set, takes precedence over --lion-conda-env.",
+    )
     args = parser.parse_args()
 
     if not args.input_dirpath or not args.output_dirpath:
@@ -538,6 +598,10 @@ def workflow_entrypoint():
         boa_reuse_total=not args.boa_no_reuse_total,
         boa_runtime=args.boa_runtime,
         boa_sif=args.boa_sif,
+        lion_model=args.lion_model,
+        lion_accelerator=args.lion_accelerator,
+        lion_conda_env=args.lion_conda_env,
+        lion_venv=args.lion_venv,
     ).run()
 
 
