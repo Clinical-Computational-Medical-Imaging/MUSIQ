@@ -5,6 +5,7 @@ import logging
 import os
 import pathlib as plb
 import shutil
+import sys
 import tempfile
 
 logger = logging.getLogger(__name__)
@@ -63,7 +64,7 @@ class LionInference:
 
         for metric in self.pet_metrics:
             petseg_fname = "PETseg_LION.nii.gz" if metric == "SUV" else "PETsegSUL_LION.nii.gz"
-            petseg_key = "PETsegLIONPath" if metric == "SUV" else "PETsegSULLIONPath"
+            petseg_key = "PETseg_LIONPath" if metric == "SUV" else "PETsegSUL_LIONPath"
             found_any = False
 
             for dirpath, dirnames, filenames in os.walk(self.input_dirpath):
@@ -72,7 +73,7 @@ class LionInference:
                     continue
                 found_any = True
                 patient_series = plb.Path(dirpath).parts[-2:]
-                logger.info(f"Processing {dirpath}")
+                logger.info(f"Processing {patient_series[0]}/{patient_series[1]}")
 
                 if os.path.isfile(os.path.join(dirpath, petseg_fname)):
                     logger.info(f"Skipping {patient_series}: {petseg_fname} already exists.")
@@ -95,7 +96,9 @@ class LionInference:
                     pt_copy = os.path.join(tmp, "PT_input.nii.gz")
                     shutil.copy(input_fpath, pt_copy)
                     try:
-                        seg_fpath = lionz.lion(pt_copy, self.lion_model, output_dir=tmp, accelerator=accelerator)
+                        seg_fpath = lionz.lion(
+                            pt_copy, self.lion_model, output_dir=tmp, accelerator=accelerator, verbose_console=True
+                        )
                         if not seg_fpath or not os.path.exists(seg_fpath):
                             logger.error(f"LION produced no output for {patient_series}.")
                             continue
@@ -124,7 +127,11 @@ class LionInference:
 
 def lion_inference_entrypoint() -> None:
     """Entry point for standalone LION inference (runs under .venv_lion)."""
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+        stream=sys.stdout,
+    )
     global logger
     logger = logging.getLogger("musiq.lion_inference")
 

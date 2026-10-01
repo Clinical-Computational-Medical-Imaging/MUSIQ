@@ -61,6 +61,8 @@ class Workflow:
         boa_sif: str | None = None,
         lion_model: str = "fdg",
         lion_accelerator: str | None = None,
+        lion_conda_env: str = "lion",
+        lion_venv: str | None = None,
     ) -> None:
         """
         Run the MUSIQ workflow with the specified parameters.
@@ -78,7 +80,7 @@ class Workflow:
                 - "plot": Create visualisations.
                 - "cads": Run CADS on CT images.
                 - "boa": Run UMEssen BOA Body Composition Analysis (BCA) on CT images via Docker.
-                - "lion": Run LION lesion segmentation on PET images (requires .venv_lion).
+                - "lion": Run LION lesion segmentation on PET images (requires a conda env with musiq_lion_inference).
             ct_primary_keywords (list[str] | None): Keywords for primary selection of CT series.
             ct_secondary_keywords (list[str] | None): Keywords for secondary selection of CT series.
             ct_exclusion_keywords (list[str] | None): Keywords to exclude CT series.
@@ -163,6 +165,8 @@ class Workflow:
         self.lion = "lion" in (tasks or [])
         self.lion_model = lion_model
         self.lion_accelerator = lion_accelerator
+        self.lion_conda_env = lion_conda_env
+        self.lion_venv = lion_venv
 
         self.boa_weights_path = boa_weights_path
         self.boa_image = boa_image
@@ -297,13 +301,12 @@ class Workflow:
         if self.lion:
             logger.info("\n" + "#" * 50 + "\nStarting LION Inference\n" + "#" * 50)
             metrics = self.pet_metric if isinstance(self.pet_metric, list) else [self.pet_metric]
+            if self.lion_venv:
+                _lion_bin = plb.Path(self.lion_venv) / "bin/musiq_lion_inference"
+            else:
+                _lion_bin = plb.Path.home() / ".conda/envs" / self.lion_conda_env / "bin/musiq_lion_inference"
             cmd = [
-                "conda",
-                "run",
-                "--no-capture-output",
-                "-n",
-                "lion",
-                "musiq_lion_inference",
+                str(_lion_bin),
                 "--input-dirpath-processed",
                 self.output_dirpath,
                 "--lion-model",
@@ -314,10 +317,9 @@ class Workflow:
             if self.lion_accelerator:
                 cmd += ["--lion-accelerator", self.lion_accelerator]
             try:
-                result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-                logger.info(result.stderr)
+                subprocess.run(cmd, check=True)
             except subprocess.CalledProcessError as e:
-                logger.error("Error during LION inference:\n" + e.stderr)
+                logger.error(f"LION inference failed (exit code {e.returncode}).")
 
         if self.cads:
             from .cads_inference import CadsInference
@@ -350,10 +352,9 @@ class Workflow:
                 "clin_ct_organs",
             ]
             try:
-                result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-                logger.info(result.stderr)
+                subprocess.run(cmd, check=True)
             except subprocess.CalledProcessError as e:
-                logger.error("Error during Moose inference:\n" + e.stderr)
+                logger.error(f"Moose inference failed (exit code {e.returncode}).")
 
         if self.radiomics:
             from .radiomics_extraction import RadiomicsExtractor
@@ -549,6 +550,19 @@ def workflow_entrypoint():
         choices=["cuda", "cpu", "mps"],
         help="LION device override (default: auto-detect cuda if available, else cpu).",
     )
+    parser.add_argument(
+        "--lion-conda-env",
+        type=str,
+        default="lion",
+        help="Name of the conda environment that contains musiq_lion_inference (default: 'lion').",
+    )
+    parser.add_argument(
+        "--lion-venv",
+        type=str,
+        default=None,
+        help="Path to a Python venv containing musiq_lion_inference (e.g. .venv_lion). "
+        "When set, takes precedence over --lion-conda-env.",
+    )
     args = parser.parse_args()
 
     if not args.input_dirpath or not args.output_dirpath:
@@ -586,6 +600,8 @@ def workflow_entrypoint():
         boa_sif=args.boa_sif,
         lion_model=args.lion_model,
         lion_accelerator=args.lion_accelerator,
+        lion_conda_env=args.lion_conda_env,
+        lion_venv=args.lion_venv,
     ).run()
 
 
