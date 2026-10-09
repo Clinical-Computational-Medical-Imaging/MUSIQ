@@ -4,7 +4,7 @@ The `radiomics` and `tumor` stages compute on one or both mask sources, chosen w
 
 | `--mask-source` | Mask used | JSON keys | Metrics |
 | --- | --- | --- | --- |
-| `auto` (default) | automated `PETseg.nii.gz` / `PETsegSUL.nii.gz` | `TumorStats` / `TumorStatsSUL` | per `--pet-metric` (SUV and/or SUL) |
+| `autopet` (default) | automated `PETseg.nii.gz` / `PETsegSUL.nii.gz` | `TumorStats` / `TumorStatsSUL` | per `--pet-metric` (SUV and/or SUL) |
 | `revised` | physician label (see `--label-dirpath` / `--label-glob` below) | `TumorStatsRevised` | SUV only (the manual label is drawn once, independent of SUV/SUL) |
 
 Pass both to compute everything in a single call — the sources run **sequentially** so their distinct keys never collide, and the automated `TumorStats*` are left untouched by the revised pass:
@@ -12,7 +12,7 @@ Pass both to compute everything in a single call — the sources run **sequentia
 ```bash
 musiq --input-dirpath /data/raw --output-dirpath /data/processed \
   --tasks radiomics tumor \
-  --mask-source auto revised --pet-metric SUV SUL \
+  --mask-source autopet revised --pet-metric SUV SUL \
   --label-dirpath /path/to/labels --label-glob '*segmentation_Tumor.nii' \
   --radiomics-workers 30
 ```
