@@ -119,9 +119,7 @@ dependencies= [
 
 [project.scripts]
 musiq_autopet_inference = "musiq.autopet_inference:autopet_inference_entrypoint"
-musiq_autopet_postprocess_lacrimals = "musiq.autopet_postprocessing.lacrimalRemoval:lacrimal_removal_entrypoint"
-musiq_autopet_postprocess_arm_lesions = "musiq.autopet_postprocessing.arm_lesions:arm_lesion_removal_entrypoint"
-musiq_autopet_postprocess_small_voxels = "musiq.autopet_postprocessing.smallVoxRemoval:small_vox_removal_entrypoint"
+musiq_autopet_postprocess = "musiq.autopet_postprocessing:autopet_postprocessing_entrypoint"
 musiq_cads_preprocess = "musiq.cads_inference:cads_preprocess_entrypoint"
 musiq_boa_inference = "musiq.boa_inference:boa_inference_entrypoint"
 musiq_cads_inference = "musiq.cads_inference:cads_inference_entrypoint"

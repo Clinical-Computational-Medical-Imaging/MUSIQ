@@ -2,7 +2,7 @@
 Flag/remove above-shoulder ARM lesions, using CADS labels.
 
 Pipeline order:  lacrimalRemoval.py  ->  arm_lesions.py  ->  smallVoxRemoval.py
-This script reads <mask>_postPro.nii.gz (the lacrimal-cleaned mask) and updates it IN PLACE
+This script reads <mask>_postprocessed.nii.gz (the lacrimal-cleaned mask) and updates it IN PLACE
 (pass --no-save to only log). It never touches the original mask.
 
 Choose which mask(s) to process by passing --masks:
@@ -33,11 +33,11 @@ not lateral to it. It will also catch head subcutaneous tissue (e.g. scalp) in t
 slices, so check the flagged lesions in the log (use --no-save for a log-only look first).
 
 Per session and mask (skipped with --no-save):
-  <mask>_postPro.nii.gz          updated IN PLACE: the flagged arm lesions are removed from it
-  <mask>_postProRemoved.nii.gz  the arm lesions are ADDED to it, so it holds every lesion removed so far
-                                 (lacrimal + arm), labels kept, 0 elsewhere. No separate arm file is made.
-Rerunning on the same _postPro is safe: nothing more is removed and the removed-lesions file is unchanged.
-If lacrimalRemoval.py is rerun (it rebuilds _postPro and _postProRemoved from the original mask), run
+  <mask>_postprocessed.nii.gz         updated IN PLACE: the flagged arm lesions are removed from it
+  <mask>_postprocessedRemoved.nii.gz the arm lesions are ADDED to it, so it holds every lesion removed so far
+                                      (lacrimal + arm), labels kept, 0 elsewhere. No separate arm file is made.
+Rerunning on the same _postprocessed is safe: nothing more is removed and the removed-lesions file is unchanged.
+If lacrimalRemoval.py is rerun (it rebuilds _postprocessed and _postprocessedRemoved from the original mask), run
 this script and smallVoxRemoval.py again afterwards.
 
 Remove + save:  python3 -u arm_lesions.py --input-dirpath /path/to/processed --masks PETseg_revised
@@ -178,7 +178,7 @@ class ArmLesionRemover:
         if not sub_dirs:
             return
 
-        mode = "updating _postPro in place" if self.save_mask else "--no-save (no mask writing)"
+        mode = "updating _postprocessed in place" if self.save_mask else "--no-save (no mask writing)"
         print(f"Mode: {mode}", flush=True)
 
         if self.multiprocessing:
@@ -215,7 +215,7 @@ class ArmLesionRemover:
         # CSF/gray-matter are large enough to survive that resampling, so we
         # can load it once and reuse it directly -- no native-resolution work
         cads_img = nib.squeeze_image(nib.load(str(session / CADS_FILENAME)))
-        cads_arr = np.rint(cads_img.get_fdata()).astype(np.int32)
+        cads_arr = np.asarray(cads_img.dataobj).astype(np.int32)
 
         rows = []
         for mask_name in self.masks:
@@ -314,7 +314,7 @@ class ArmLesionRemover:
                 }
             )
 
-        # update _postPro in place + save the removed lesions (skipped with --no-save)
+        # update _postprocessed in place + save the removed lesions (skipped with --no-save)
         if not self.save_mask:
             print(f"  [{mask_name}] flagged {len(drop_ids)} (--no-save; no files written)", flush=True)
             return rows
@@ -323,10 +323,10 @@ class ArmLesionRemover:
             print(f"  [{mask_name}] nothing to remove; {in_path.name} kept", flush=True)
             return rows
 
-        # the arm lesions are ADDED to the shared <mask>_postProRemoved file (one file holds every
+        # the arm lesions are ADDED to the shared <mask>_postprocessedRemoved file (one file holds every
         # lesion removed so far). This is a union, so rerunning is safe: lesions already removed from
-        # _postPro are not found again, and after a lacrimal rerun (fresh _postPro and a fresh removed
-        # file) the arm lesions are found again and merged in again.
+        # _postprocessed are not found again, and after a lacrimal rerun (fresh _postprocessed and a fresh
+        # removed file) the arm lesions are found again and merged in again.
         removed_file = session / f"{mask_name}{REMOVED_SUFFIX}.nii.gz"
         dtype = model_img.get_data_dtype()
         removed = np.isin(cc, drop_ids)
@@ -334,8 +334,8 @@ class ArmLesionRemover:
         if removed_file.exists():
             old = np.asanyarray(nib.load(str(removed_file)).dataobj).reshape(data.shape)
             removed_arr = np.where(old > 0, old, removed_arr)
-        # removed file first, _postPro second: a crash in between leaves the lesions in _postPro, so a
-        # rerun finds them again and merges them again (no lesion can end up in neither file)
+        # removed file first, _postprocessed second: a crash in between leaves the lesions in _postprocessed,
+        # so a rerun finds them again and merges them again (no lesion can end up in neither file)
         save_atomic(removed_arr.astype(dtype), model_img, removed_file)
         save_atomic(np.where(removed, 0, data).astype(dtype), model_img, in_path)
         print(
@@ -349,14 +349,14 @@ class ArmLesionRemover:
 def arm_lesion_removal_entrypoint():
     parser = argparse.ArgumentParser(
         description=(
-            "Flag/remove above-shoulder arm lesions from the lacrimal-cleaned masks (<mask>_postPro) using CADS."
+            "Flag/remove above-shoulder arm lesions from the lacrimal-cleaned masks (<mask>_postprocessed) using CADS."
         ),
     )
     parser.add_argument(
         "--input-dirpath",
         type=str,
         required=True,
-        help="Processed data root; searched recursively for sessions with CTcadsres + <mask>_postPro.",
+        help="Processed data root; searched recursively for sessions with CTcadsres + <mask>_postprocessed.",
     )
     parser.add_argument(
         "--masks",
@@ -368,8 +368,8 @@ def arm_lesion_removal_entrypoint():
     parser.add_argument(
         "--no-save",
         action="store_true",
-        help="Do not write files: by default the flagged lesions are removed from <mask>_postPro "
-        "in place and added to <mask>_postProRemoved.nii.gz (calibration/dry run).",
+        help="Do not write files: by default the flagged lesions are removed from <mask>_postprocessed "
+        "in place and added to <mask>_postprocessedRemoved.nii.gz (calibration/dry run).",
     )
     parser.add_argument(
         "--multiprocessing", action="store_true", help="Process sessions in parallel with a process pool."

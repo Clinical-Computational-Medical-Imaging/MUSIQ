@@ -53,8 +53,8 @@ MASK_CHOICES = [
 ]  # doctors' annotation (label mask)
 MASK_EXTS = (".nii.gz", ".nii")
 DEFAULT_MASKS = ["PETseg", "PETsegSUL", "PETseg_revised"]  # default if --masks not given
-OUT_SUFFIX = "_postPro"  # cleaned mask saved as <mask><suffix>.nii.gz
-REMOVED_SUFFIX = "_postProRemoved"  # only the removed lesions, saved as <mask><suffix>.nii.gz
+OUT_SUFFIX = "_postprocessed"  # cleaned mask saved as <mask><suffix>.nii.gz
+REMOVED_SUFFIX = "_postprocessedRemoved"  # only the removed lesions, saved as <mask><suffix>.nii.gz
 CADS_FILE = "CTcads.nii.gz"
 NECESSARY_FILES = [CADS_FILE]
 
@@ -218,7 +218,7 @@ class LacrimalRemover:
         # expensive on this big grid -- do it ONCE per session and reuse for
         # both PETseg and PETsegSUL instead of redoing it per mask
         cads_img = nib.squeeze_image(raw)
-        arr = np.rint(cads_img.get_fdata()).astype(np.int32)
+        arr = np.asarray(cads_img.dataobj).astype(np.int32)
         arr_dil = dilate_labels(arr, LACRIMAL_LABELS, LACRIMAL_DILATE_VOX)
         dist_nat = distance_field_from_native(cads_img, arr, LACRIMAL_LABELS)
 
@@ -312,7 +312,7 @@ class LacrimalRemover:
             )
 
         # save cleaned mask (same geometry, original label values kept; removed lesions -> 0)
-        # always rebuilt from the ORIGINAL mask (never from a previous _postPro file) and
+        # always rebuilt from the ORIGINAL mask (never from a previous _postprocessed file) and
         # written to a temp file then swapped in, so a rerun fully replaces the old output
         if self.save_mask:
             removed = np.isin(cc, drop)
@@ -363,7 +363,7 @@ def lacrimal_removal_entrypoint():
     parser.add_argument(
         "--no-save",
         action="store_true",
-        help="Do not write the cleaned <mask>_postPro.nii.gz files (calibration/dry run).",
+        help="Do not write the cleaned <mask>_postprocessed.nii.gz files (calibration/dry run).",
     )
     parser.add_argument(
         "--multiprocessing", action="store_true", help="Process sessions in parallel with a process pool."

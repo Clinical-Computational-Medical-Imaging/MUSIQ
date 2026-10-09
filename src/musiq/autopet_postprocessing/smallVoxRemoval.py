@@ -1,6 +1,6 @@
 """
 Remove small lesions (<= SMALL_VOX_MAX voxels) that lie outside the prostate.
-Run this AFTER lacrimalRemoval.py: it reads <mask>_postPro.nii.gz (the lacrimal-cleaned
+Run this AFTER lacrimalRemoval.py: it reads <mask>_postprocessed.nii.gz (the lacrimal-cleaned
 mask) and never touches the original mask or the lacrimal outputs.
 
 Choose which mask(s) to process by passing --masks:
@@ -11,12 +11,12 @@ Choose which mask(s) to process by passing --masks:
 If --masks is not given, it defaults to PETseg PETsegSUL (SUV + SUL).
 
 Per session and mask:
-  <mask>_postPro.nii.gz          updated IN PLACE: the small lesions are removed from it
-  <mask>_postProRemoved.nii.gz   the small lesions are ADDED to it, so it holds every lesion removed so far
-                                 (lacrimal + arm + small), labels kept, 0 elsewhere. No separate file is made.
-Rerunning this script on the same _postPro is safe: nothing more is removed and the removed-lesions
-file is unchanged. If lacrimalRemoval.py is rerun (which rebuilds _postPro and _postProRemoved from the
-original mask), run arm_lesions.py and this script again afterwards.
+  <mask>_postprocessed.nii.gz         updated IN PLACE: the small lesions are removed from it
+  <mask>_postprocessedRemoved.nii.gz  the small lesions are ADDED to it, so it holds every lesion removed so far
+                                      (lacrimal + arm + small), labels kept, 0 elsewhere. No separate file is made.
+Rerunning this script on the same _postprocessed is safe: nothing more is removed and the removed-lesions
+file is unchanged. If lacrimalRemoval.py is rerun (which rebuilds _postprocessed and _postprocessedRemoved from
+the original mask), run arm_lesions.py and this script again afterwards.
 Pass --no-save to only log and write nothing.
 
 for running from the terminal: SmallVoxRemover("/path/to/processed", multiprocessing=True, max_workers=5).run()
@@ -242,10 +242,10 @@ class SmallVoxRemover:
                 }
             )
 
-        # the small lesions are ADDED to the shared <mask>_postProRemoved file (one file holds every
+        # the small lesions are ADDED to the shared <mask>_postprocessedRemoved file (one file holds every
         # lesion removed so far). This is a union, so rerunning is safe: lesions already removed from
-        # _postPro are not found again, and after a lacrimal rerun (fresh _postPro and a fresh removed
-        # file) the small lesions are found again and merged in again.
+        # _postprocessed are not found again, and after a lacrimal rerun (fresh _postprocessed and a fresh
+        # removed file) the small lesions are found again and merged in again.
         if self.save_mask and drop:
             removed_file = session / f"{mask_name}{REMOVED_SUFFIX}.nii.gz"
             dtype = mask_img.get_data_dtype()
@@ -254,8 +254,8 @@ class SmallVoxRemover:
             if removed_file.exists():
                 old = np.asanyarray(nib.load(str(removed_file)).dataobj).reshape(data.shape)
                 removed_arr = np.where(old > 0, old, removed_arr)
-            # removed file first, _postPro second: a crash in between leaves the lesions in _postPro, so a
-            # rerun finds them again and merges them again (no lesion can end up in neither file)
+            # removed file first, _postprocessed second: a crash in between leaves the lesions in _postprocessed,
+            # so a rerun finds them again and merges them again (no lesion can end up in neither file)
             save_atomic(removed_arr.astype(dtype), mask_img, removed_file)
             save_atomic(np.where(removed, 0, data).astype(dtype), mask_img, in_path)
             print(f"  [{mask_name}] updated {in_path.name} (in place), added to {removed_file.name}", flush=True)
@@ -265,13 +265,13 @@ class SmallVoxRemover:
 
 def small_vox_removal_entrypoint():
     parser = argparse.ArgumentParser(
-        description="Remove small lesions outside the prostate from the lacrimal-cleaned masks (<mask>_postPro)."
+        description="Remove small lesions outside the prostate from the lacrimal-cleaned masks (<mask>_postprocessed)."
     )
     parser.add_argument(
         "--input-dirpath",
         type=str,
         required=True,
-        help="Processed data root; searched recursively for sessions with CTcads + <mask>_postPro.",
+        help="Processed data root; searched recursively for sessions with CTcads + <mask>_postprocessed.",
     )
     parser.add_argument(
         "--small-vox-max",

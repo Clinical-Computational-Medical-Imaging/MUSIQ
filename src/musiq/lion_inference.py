@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import pathlib as plb
+import re
 import shutil
 import sys
 import tempfile
@@ -12,6 +13,10 @@ logger = logging.getLogger(__name__)
 
 # Must match RESERVED_PROCESSED_DIRS in utils.py — inlined here because this script runs in .venv_lion.
 _RESERVED_DIRS = {"cads_staging", "plots", "logger"}
+
+
+def _natural_key(s: str) -> list:
+    return [int(c) if c.isdigit() else c.lower() for c in re.split(r"(\d+)", s)]
 
 
 class LionInference:
@@ -68,7 +73,7 @@ class LionInference:
             found_any = False
 
             for dirpath, dirnames, filenames in os.walk(self.input_dirpath):
-                dirnames[:] = [d for d in dirnames if d not in _RESERVED_DIRS]
+                dirnames[:] = sorted([d for d in dirnames if d not in _RESERVED_DIRS], key=_natural_key)
                 if f"{metric}.nii.gz" not in filenames:
                     continue
                 found_any = True

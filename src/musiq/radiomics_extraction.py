@@ -47,9 +47,9 @@ def resample_label_to_image_grid(label_fpath: str, target_fpath: str, work_dirpa
             os.remove(out_fpath)
 
 
-# Mask sources (``mask_source``): "auto" = pipeline PETseg/PETsegSUL mask, "revised" = physician
+# Mask sources (``mask_source``): "autopet" = pipeline PETseg/PETsegSUL mask, "revised" = physician
 # Tumor label (must share the SUV/PET grid).
-MASK_SOURCES = ("auto", "revised", "lion", "postprocessed")
+MASK_SOURCES = ("autopet", "revised", "lion", "postprocessed")
 DEFAULT_LABEL_GLOB = "PETseg_revised.nii"
 
 
@@ -136,7 +136,7 @@ class RadiomicsExtractor:
         self,
         input_dirpath_processed: str | os.PathLike,
         pet_metric: str | list[str] | None = None,
-        mask_source: str = "auto",
+        mask_source: str = "autopet",
         label_dirpath: str | os.PathLike | None = None,
         label_glob: str = DEFAULT_LABEL_GLOB,
         workers: int = 1,
@@ -149,7 +149,7 @@ class RadiomicsExtractor:
             Can be nested.
             pet_metric (str | list[str] | None): PET metric(s) to use as input.
                 Accepts "SUV", "SUL", or both. Defaults to ["SUV", "SUL"].
-            mask_source (str): "auto" (PETseg/PETsegSUL -> TumorStats/TumorStatsSUL) or
+            mask_source (str): "autopet" (PETseg/PETsegSUL -> TumorStats/TumorStatsSUL) or
                 "revised" (physician Tumor label -> TumorStatsRevised/TumorStatsRevisedSUL).
             label_dirpath (str | os.PathLike | None): used when mask_source="revised". None looks for the
                 label inside each study dir; a path looks under <label_dirpath>/<PatientID>/.
@@ -410,9 +410,10 @@ def radiomics_extraction_entrypoint() -> None:
         "--mask-source",
         type=str,
         choices=list(MASK_SOURCES),
-        default="auto",
-        help="Mask to compute on: 'auto' (PETseg -> TumorStats) or 'revised' (physician label -> "
-        "TumorStatsRevised). Default: auto.",
+        default="autopet",
+        help="Mask to compute on: 'autopet' (PETseg -> TumorStats), 'revised' (physician label -> TumorStatsRevised), "
+        "'lion' (PETseg_LION -> TumorStatsLION), 'postprocessed' (PETseg_postprocessed -> TumorStatsPostprocessed). "
+        "Default: autopet.",
     )
     parser.add_argument(
         "--label-dirpath",
