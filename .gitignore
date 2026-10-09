@@ -10,6 +10,10 @@ venv/
 moose_venv/
 .venv_moose/
 
+#SLURM
+*SLURM*.sh
+*[Ss]lurm*.sh
+
 # Distribution / packaging
 build/
 dist/
@@ -63,6 +67,9 @@ desktop.ini
 *.log
 *.sqlite3
 
+# Local analysis notebooks / scratch
+check_completeness.ipynb
+
 # Optional: ignore data and generated folders
 data/
 output/
@@ -70,3 +77,4 @@ logs/
 logger/
 autopet-3-submission/
 autopet-3-model/
+CADS/

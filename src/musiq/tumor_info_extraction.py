@@ -1,59 +1,432 @@
 import json
 import logging
 import os
+from concurrent.futures import ProcessPoolExecutor
 
 import cc3d
+import nibabel as nib
 import numpy as np
 import pandas as pd
+from scipy import ndimage
 from tqdm import tqdm
 
 from . import metrics, utils
+from .radiomics_extraction import (
+    DEFAULT_LABEL_GLOB,
+    MASK_SOURCES,
+    resample_label_to_image_grid,
+    resolve_mask,
+)
 
 logger = logging.getLogger(__name__)
 
+# CADS global label integers (from labelmap_all_structure) for CSTB compartment classification.
+# Inlined so the tumor task has no runtime CADS-repo import dependency.
+_CSTB_BONE_LABELS: frozenset[int] = frozenset(
+    {
+        *range(18, 42),  # vertebrae L5-C1 (task 552)
+        60,
+        61,
+        62,
+        63,
+        64,
+        65,
+        66,
+        67,
+        68,
+        69,
+        70,  # humerus/scapula/clavicula/femur/hip/sacrum (task 554)
+        *range(81, 105),  # ribs 1-24 (task 555)
+        115,  # sternum (task 556)
+        132,  # OAR_Bone_Mandible (task 558)
+    }
+)
+
+_CSTB_ORGAN_LABELS: frozenset[int] = frozenset(
+    {
+        *range(1, 18),  # major organs + lung lobes (task 551)
+        # task 553: cardiac + GI + vessels; skip brain=50 (excluded from CTcads) and face=59
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        51,
+        52,
+        53,
+        54,
+        55,
+        56,
+        57,
+        58,
+        # task 556 soft tissue OARs; heart=107 and bowel_bag=108 are excluded from CTcads
+        105,
+        106,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114,
+        # task 558 head/neck OARs; skip mandible=132 (already in bone)
+        129,
+        130,
+        131,
+        133,
+        134,
+        135,
+        136,
+        137,
+        138,
+        139,
+        140,
+        141,
+        142,
+        143,
+        144,
+        145,
+        146,
+        147,
+        148,
+        149,
+        150,
+        151,
+        152,
+        153,
+        154,
+        155,
+        156,
+        157,
+    }
+)
+# Muscles (71-80, 116-119), subcutaneous tissue (158), thoracic cavity (161),
+# and CTcads background (0) all fall into "Outside" (clinical assumption: lymph nodes).
+
+# Label name lookup for TopCADSLabel — mirrors labelmap_all_structure from CADS.
+_CADS_LABEL_NAMES: dict[int, str] = {
+    1: "spleen",
+    2: "kidney_right",
+    3: "kidney_left",
+    4: "gallbladder",
+    5: "liver",
+    6: "stomach",
+    7: "aorta",
+    8: "inferior_vena_cava",
+    9: "portal_vein_and_splenic_vein",
+    10: "pancreas",
+    11: "adrenal_gland_right",
+    12: "adrenal_gland_left",
+    13: "lung_upper_lobe_left",
+    14: "lung_lower_lobe_left",
+    15: "lung_upper_lobe_right",
+    16: "lung_middle_lobe_right",
+    17: "lung_lower_lobe_right",
+    18: "vertebrae_L5",
+    19: "vertebrae_L4",
+    20: "vertebrae_L3",
+    21: "vertebrae_L2",
+    22: "vertebrae_L1",
+    23: "vertebrae_T12",
+    24: "vertebrae_T11",
+    25: "vertebrae_T10",
+    26: "vertebrae_T9",
+    27: "vertebrae_T8",
+    28: "vertebrae_T7",
+    29: "vertebrae_T6",
+    30: "vertebrae_T5",
+    31: "vertebrae_T4",
+    32: "vertebrae_T3",
+    33: "vertebrae_T2",
+    34: "vertebrae_T1",
+    35: "vertebrae_C7",
+    36: "vertebrae_C6",
+    37: "vertebrae_C5",
+    38: "vertebrae_C4",
+    39: "vertebrae_C3",
+    40: "vertebrae_C2",
+    41: "vertebrae_C1",
+    42: "esophagus",
+    43: "trachea",
+    44: "heart_myocardium",
+    45: "heart_atrium_left",
+    46: "heart_ventricle_left",
+    47: "heart_atrium_right",
+    48: "heart_ventricle_right",
+    49: "pulmonary_artery",
+    50: "brain",
+    51: "iliac_artery_left",
+    52: "iliac_artery_right",
+    53: "iliac_vena_left",
+    54: "iliac_vena_right",
+    55: "small_bowel",
+    56: "duodenum",
+    57: "colon",
+    58: "urinary_bladder",
+    59: "face",
+    60: "humerus_left",
+    61: "humerus_right",
+    62: "scapula_left",
+    63: "scapula_right",
+    64: "clavicula_left",
+    65: "clavicula_right",
+    66: "femur_left",
+    67: "femur_right",
+    68: "hip_left",
+    69: "hip_right",
+    70: "sacrum",
+    71: "gluteus_maximus_left",
+    72: "gluteus_maximus_right",
+    73: "gluteus_medius_left",
+    74: "gluteus_medius_right",
+    75: "gluteus_minimus_left",
+    76: "gluteus_minimus_right",
+    77: "autochthon_left",
+    78: "autochthon_right",
+    79: "iliopsoas_left",
+    80: "iliopsoas_right",
+    81: "rib_left_1",
+    82: "rib_left_2",
+    83: "rib_left_3",
+    84: "rib_left_4",
+    85: "rib_left_5",
+    86: "rib_left_6",
+    87: "rib_left_7",
+    88: "rib_left_8",
+    89: "rib_left_9",
+    90: "rib_left_10",
+    91: "rib_left_11",
+    92: "rib_left_12",
+    93: "rib_right_1",
+    94: "rib_right_2",
+    95: "rib_right_3",
+    96: "rib_right_4",
+    97: "rib_right_5",
+    98: "rib_right_6",
+    99: "rib_right_7",
+    100: "rib_right_8",
+    101: "rib_right_9",
+    102: "rib_right_10",
+    103: "rib_right_11",
+    104: "rib_right_12",
+    105: "spinal_canal",
+    106: "larynx",
+    107: "heart",
+    108: "bowel_bag",
+    109: "sigmoid",
+    110: "rectum",
+    111: "prostate",
+    112: "seminal_vesicle",
+    113: "left_mammary_gland",
+    114: "right_mammary_gland",
+    115: "sternum",
+    116: "right psoas major",
+    117: "left psoas major",
+    118: "right rectus abdominis",
+    119: "left rectus abdominis",
+    120: "white matter",
+    121: "gray matter",
+    122: "csf",
+    123: "scalp",
+    124: "eye balls",
+    125: "compact bone",
+    126: "spongy bone",
+    127: "blood",
+    128: "head muscles",
+    129: "OAR_A_Carotid_L",
+    130: "OAR_A_Carotid_R",
+    131: "OAR_Arytenoid",
+    132: "OAR_Bone_Mandible",
+    133: "OAR_Brainstem",
+    134: "OAR_BuccalMucosa",
+    135: "OAR_Cavity_Oral",
+    136: "OAR_Cochlea_L",
+    137: "OAR_Cochlea_R",
+    138: "OAR_Cricopharyngeus",
+    139: "OAR_Esophagus_S",
+    140: "OAR_Eye_AL",
+    141: "OAR_Eye_AR",
+    142: "OAR_Eye_PL",
+    143: "OAR_Eye_PR",
+    144: "OAR_Glnd_Lacrimal_L",
+    145: "OAR_Glnd_Lacrimal_R",
+    146: "OAR_Glnd_Submand_L",
+    147: "OAR_Glnd_Submand_R",
+    148: "OAR_Glnd_Thyroid",
+    149: "OAR_Glottis",
+    150: "OAR_Larynx_SG",
+    151: "OAR_Lips",
+    152: "OAR_OpticChiasm",
+    153: "OAR_OpticNrv_L",
+    154: "OAR_OpticNrv_R",
+    155: "OAR_Parotid_L",
+    156: "OAR_Parotid_R",
+    157: "OAR_Pituitary",
+    158: "subcutaneous_tissue",
+    159: "muscle",
+    160: "abdominal_cavity",
+    161: "thoracic_cavity",
+    162: "bones",
+    163: "glands",
+    164: "pericardium",
+    165: "breast_implant",
+    166: "mediastinum",
+    167: "spinal_cord",
+}
+
+
+def _suvpeak_half_kernel(spacing_mm: float) -> int:
+    """Half-width (in voxels) of the ~1 cm^3 SUVpeak kernel along one axis.
+
+    Mirrors the kernel sizing in metrics.calculate_suvpeak_median so per-lesion crops can be padded
+    enough that the peak neighbourhood is fully contained and SUVpeak matches a full-volume computation.
+    """
+    num = max(1, int(round(10.0 / spacing_mm)))  # 10 mm = 1 cm
+    if num % 2 == 0:
+        num += 1
+    return num // 2
+
 
 class TumorInfoExtraction:
-    def __init__(self, input_dirpath_processed: str | os.PathLike) -> None:
-        """Class to handle tumor information extraction from PETseg, SUV, and CTseg files in a specified folder.
+    def __init__(
+        self,
+        input_dirpath_processed: str | os.PathLike,
+        pet_metric: str | list[str] | None = None,
+        mask_source: str = "autopet",
+        label_dirpath: str | os.PathLike | None = None,
+        label_glob: str = DEFAULT_LABEL_GLOB,
+        workers: int = 1,
+    ) -> None:
+        """Class to handle tumor information extraction from a mask, SUV/SUL, and CTseg files in a specified folder.
         Creates CTsegres.nii.gz if it does not exist.
         The existing patient_info.json is required to extract and save data.
         Expects exactly one CT.nii.gz file per serie.
 
         Args:
             input_dirpath_processed (str | os.PathLike): Directory containing the CT.nii.gz file. Can be nested.
+            pet_metric (str | list[str] | None): PET metric(s) to use as input.
+                Accepts "SUV", "SUL", or both. Defaults to ["SUV", "SUL"].
+            mask_source (str): "autopet" (PETseg/PETsegSUL -> TumorStats/TumorStatsSUL) or
+                "revised" (physician Tumor label -> TumorStatsRevised/TumorStatsRevisedSUL).
+            label_dirpath (str | os.PathLike | None): used when mask_source="revised". None looks for the
+                label inside each study dir; a path looks under <label_dirpath>/<PatientID>/<study_date>/
+                first (multi-timepoint) then <label_dirpath>/<PatientID>/ (single-label-per-patient).
+            label_glob (str): filename pattern of the revised label (may contain wildcards), e.g.
+                "PETseg_revised.nii" or "*segmentation_Tumor.nii".
+            workers (int): number of parallel worker processes. 1 (default) runs serially. Patients are
+                the unit of parallelism, so each patient_info.json is only ever written by one worker.
         """
+        if pet_metric is None:
+            pet_metric = ["SUV", "SUL"]
+        pet_metrics = [pet_metric] if isinstance(pet_metric, str) else list(pet_metric)
+        for m in pet_metrics:
+            if m not in ("SUV", "SUL"):
+                raise ValueError(f"pet_metric must be 'SUV' or 'SUL', got '{m}'")
+        if mask_source not in MASK_SOURCES:
+            raise ValueError(f"mask_source must be one of {MASK_SOURCES}, got '{mask_source}'")
         self.input_dirpath = input_dirpath_processed
+        self.pet_metrics = pet_metrics
+        self.mask_source = mask_source
+        self.label_dirpath = label_dirpath
+        self.label_glob = label_glob
+        self.workers = max(1, int(workers))
+        self.skipped: list[dict] = []  # studies skipped on grid mismatch
 
     def run(self) -> None:
-        study_dirs = []
+        for metric in self.pet_metrics:
+            study_dirs = []
+            required_files = ["CTseg.nii.gz", f"{metric}.nii.gz"]
 
-        for dirpath, dirnames, _filenames in os.walk(self.input_dirpath):
-            for subdirname in dirnames:
-                subdirpath = os.path.join(dirpath, subdirname)
-                required_files = ["PETseg.nii.gz", "CTseg.nii.gz", "SUV.nii.gz"]
-                if all(os.path.exists(os.path.join(subdirpath, f)) for f in required_files):
-                    study_dirs.append(subdirpath)
-                    break  # Stop after first matching subdirectory
+            for dirpath, dirnames, _filenames in os.walk(self.input_dirpath):
+                # Don't descend into non-patient dirs (e.g. cads_staging intermediates).
+                dirnames[:] = [d for d in dirnames if d not in utils.RESERVED_PROCESSED_DIRS]
+                for subdirname in dirnames:
+                    subdirpath = os.path.join(dirpath, subdirname)
+                    if (
+                        all(os.path.exists(os.path.join(subdirpath, f)) for f in required_files)
+                        and resolve_mask(subdirpath, metric, self.mask_source, self.label_dirpath, self.label_glob)[0]
+                    ):
+                        study_dirs.append(subdirpath)
 
-        if not study_dirs:
+            if not study_dirs:
+                label_loc = "the study dir" if not self.label_dirpath else self.label_dirpath
+                if self.mask_source == "revised":
+                    mask_desc = f"a '{self.label_glob}' label in {label_loc}"
+                elif self.mask_source == "lion":
+                    mask_desc = "PETseg_LION.nii.gz" if metric == "SUV" else "PETsegSUL_LION.nii.gz"
+                else:
+                    mask_desc = "PETseg.nii.gz" if metric == "SUV" else "PETsegSUL.nii.gz"
+                msg = (
+                    f"No complete studies found for {metric}. "
+                    f"{', '.join(required_files)} plus {mask_desc} are required in each patient/study directory."
+                )
+                if metric == "SUL":
+                    msg += " SUL.nii.gz and PETsegSUL.nii.gz are created by the muscle-fat and autopet tasks — "
+                    "make sure both have been run first."
+                logger.warning(msg)
+                continue
+
+            study_dirs = sorted(study_dirs, key=lambda x: os.path.basename(os.path.dirname(x)))
+            # Group by patient dir so each patient_info.json has a single writer
+            patient_groups: dict[str, list[str]] = {}
+            for d in study_dirs:
+                patient_groups.setdefault(os.path.dirname(d), []).append(d)
+            group_items = [(dirs, metric) for dirs in patient_groups.values()]
             logger.info(
-                "No complete studies found in the input directory. "
-                "PETseg.nii.gz, CTseg.nii.gz, SUV.nii.gz are "
-                "required in each patient/study directory."
+                "Running %s tumor info for %s on %d studies (%d patients, %d workers).",
+                self.mask_source,
+                metric,
+                len(study_dirs),
+                len(group_items),
+                self.workers,
             )
-            return
+            if self.workers > 1:
+                with ProcessPoolExecutor(max_workers=self.workers) as executor:
+                    for skips in executor.map(self._process_patient_group, group_items):
+                        self.skipped.extend(skips)
+            else:
+                for item in tqdm(group_items, desc=metric):
+                    self.skipped.extend(self._process_patient_group(item))
 
-        study_dirs = sorted(study_dirs, key=lambda x: os.path.basename(x))
-        for study_dirpath in tqdm(study_dirs):
-            self.process_study(study_dirpath)
+        # Report studies skipped because the Tumor label grid did not match the SUV/SUL image (revised only).
+        if self.skipped:
+            report_path = os.path.join(self.input_dirpath, "tumor_seg_tumorinfo_skipped.csv")
+            pd.DataFrame(self.skipped).drop_duplicates().to_csv(report_path, index=False)
+            logger.warning(
+                "Skipped %d study/metric pair(s) on grid mismatch; report: %s", len(self.skipped), report_path
+            )
 
-    @staticmethod
-    def process_study(study_dirpath) -> None:
-        """Process a single study directory."""
+    def _process_patient_group(self, args: tuple) -> list[dict]:
+        """Process every study dir of one patient serially and return any skip records.
+
+        Grouping by patient keeps each patient_info.json single-writer, so groups can run in parallel.
+        """
+        study_dirs, pet_metric = args
+        skips: list[dict] = []
+        for study_dirpath in study_dirs:
+            try:
+                skip = self.process_study(study_dirpath, pet_metric)
+            except Exception as e:  # never let one study kill the whole pool
+                logger.error("Error processing %s (%s): %s", study_dirpath, pet_metric, e)
+                continue
+            if skip:
+                skips.append(skip)
+        return skips
+
+    def process_study(self, study_dirpath, pet_metric: str = "SUV") -> dict | None:
+        """Process a single study directory. Returns a skip record on grid mismatch, else None."""
         logger.info(f"Extracting tumor metrics for {study_dirpath}")
-        petseg_fpath = os.path.join(study_dirpath, "PETseg.nii.gz")
+        tumor_stats_key: str
+        petseg_fpath, tumor_stats_key = resolve_mask(
+            study_dirpath, pet_metric, self.mask_source, self.label_dirpath, self.label_glob
+        )
+        if petseg_fpath is None:
+            logger.warning("No %s mask found for %s; skipping.", self.mask_source, study_dirpath)
+            return None
         ctsegres_fpath = os.path.join(study_dirpath, "CTsegres.nii.gz")
-        suv_fpath = os.path.join(study_dirpath, "SUV.nii.gz")
+        suv_fpath = os.path.join(study_dirpath, f"{pet_metric}.nii.gz")
 
         patient_dirpath = os.path.dirname(study_dirpath)
 
@@ -65,25 +438,74 @@ class TumorInfoExtraction:
             with open(os.path.join(patient_dirpath, "patient_info.json")) as json_file:
                 patient_info = json.load(json_file)
 
+        pet_ref = os.path.join(study_dirpath, "PET.nii.gz")
+        if not os.path.exists(pet_ref):
+            pet_ref = suv_fpath  # datasets without PET.nii.gz (e.g. DEEP-PSMA); SUV is on the same grid
         if not os.path.exists(ctsegres_fpath):
             utils.resample_image(
                 source_img=os.path.join(study_dirpath, "CTseg.nii.gz"),
-                target_img=os.path.join(study_dirpath, "PET.nii.gz"),
+                target_img=pet_ref,
                 nii_output_dirpath=study_dirpath,
                 interpolation="nearest",
                 fill_value=0,
                 output_fname="CTsegres.nii.gz",
             )
 
+        ctcads_fpath = os.path.join(study_dirpath, "CTcads.nii.gz")
+        ctcadsres_fpath = os.path.join(study_dirpath, "CTcadsres.nii.gz")
+        if os.path.exists(ctcads_fpath) and not os.path.exists(ctcadsres_fpath):
+            utils.resample_image(
+                source_img=ctcads_fpath,
+                target_img=pet_ref,
+                nii_output_dirpath=study_dirpath,
+                interpolation="nearest",
+                fill_value=0,
+                output_fname="CTcadsres.nii.gz",
+            )
+        ctcadsres_array = (
+            metrics.get_3darray_from_niftipath(ctcadsres_fpath) if os.path.exists(ctcadsres_fpath) else None
+        )
+        if ctcadsres_array is None:
+            logger.debug("CTcads.nii.gz absent for %s — CSTB will not be computed.", study_dirpath)
+
         petseg_array = metrics.get_3darray_from_niftipath(petseg_fpath)
-        ctsegres_array = metrics.get_3darray_from_niftipath(ctsegres_fpath)
         suv_array = metrics.get_3darray_from_niftipath(suv_fpath)
+        # Revised label must align in world-space; resample if shape or affine differs (same shape
+        # with a flipped y-axis is a common mismatch between externally-drawn masks and MUSIQ SUV).
+        if self.mask_source == "revised" and (
+            petseg_array.shape != suv_array.shape
+            or not np.allclose(nib.load(petseg_fpath).affine, nib.load(suv_fpath).affine, atol=1e-3)
+        ):
+            resampled = resample_label_to_image_grid(petseg_fpath, suv_fpath, study_dirpath)
+            if resampled is None or ((petseg_array > 0).any() and not (resampled > 0).any()):
+                logger.warning(
+                    "Grid mismatch (disjoint world space) for %s: Tumor label %s vs %s %s. Skipping.",
+                    study_dirpath,
+                    petseg_array.shape,
+                    pet_metric,
+                    suv_array.shape,
+                )
+                return {
+                    "study_dirpath": study_dirpath,
+                    "pet_metric": pet_metric,
+                    "label_path": petseg_fpath,
+                    "label_shape": str(petseg_array.shape),
+                    "image_shape": str(suv_array.shape),
+                }
+            logger.info(
+                "Revised label for %s resampled onto the %s grid (%s -> %s); tumor preserved.",
+                study_dirpath,
+                pet_metric,
+                petseg_array.shape,
+                suv_array.shape,
+            )
+            petseg_array = resampled
+        ctsegres_array = metrics.get_3darray_from_niftipath(ctsegres_fpath)
         spacing = utils.get_spacing_from_niftipath(suv_fpath)
         voxel_volume_cc = np.prod(spacing) / 1000
 
         study_date = study_dirpath.split(os.sep)[-1]
 
-        # expects exactly one CT per serie
         if json_exists:
             series_name = next(iter(patient_info["Studies"][study_date]["Modalities"]["CT"][0]))
             try:
@@ -103,29 +525,69 @@ class TumorInfoExtraction:
             organ_labels = {}
 
         # Perform connected component analysis
-        labeled_tumors, num_lesions = cc3d.connected_components(petseg_array, connectivity=26, return_N=True)
+        labeled_tumors, num_lesions = cc3d.connected_components(petseg_array, connectivity=18, return_N=True)
 
-        # Process each tumor
+        # Per-lesion bbox (cost scales with lesion size); pad >= SUVpeak kernel width + >=1 voxel for marching cubes
+        pad = [max(1, _suvpeak_half_kernel(sp)) for sp in spacing]
+        bboxes = ndimage.find_objects(labeled_tumors)
+
         results = []
         for i in range(1, num_lesions + 1):
-            tumor_mask = np.zeros_like(labeled_tumors)
-            tumor_mask[labeled_tumors == i] = 1
-
-            pet_metrics = utils.compute_pet_metrics(tumor_mask, suv_array, spacing)
-            if organ_labels:
-                organ_overlap = utils.compute_tumor_organ_overlap(tumor_mask, ctsegres_array, organ_labels)
-            num_nonzero_voxels = len(np.nonzero(tumor_mask)[0])
-
-            results.append(
-                {
-                    "TumorID": i,
-                    "Volume_cm3": num_nonzero_voxels * voxel_volume_cc,
-                    "PETMetrics": pet_metrics,
-                    "OrganOverlap": organ_overlap if organ_labels else {},
-                }
+            bbox = bboxes[i - 1]
+            if bbox is None:  # cc3d labels are contiguous 1..N, but stay safe
+                continue
+            crop = tuple(
+                slice(max(0, s.start - p), min(dim, s.stop + p))
+                for s, p, dim in zip(bbox, pad, labeled_tumors.shape, strict=True)
             )
+            tumor_mask = (labeled_tumors[crop] == i).astype(np.uint8)
+
+            pet_metrics = utils.compute_pet_metrics(tumor_mask, suv_array[crop], spacing)
+            if organ_labels:
+                organ_overlap = utils.compute_tumor_organ_overlap(tumor_mask, ctsegres_array[crop], organ_labels)
+            num_nonzero_voxels = int(tumor_mask.sum())
+
+            entry: dict = {
+                "TumorID": i,
+                "Volume_cm3": num_nonzero_voxels * voxel_volume_cc,
+                "PETMetrics": pet_metrics,
+                "OrganOverlap": organ_overlap if organ_labels else {},
+            }
+            if ctcadsres_array is not None:
+                comp_fracs, top_label = utils.compute_lesion_compartment_fractions(
+                    tumor_mask,
+                    ctcadsres_array[crop],
+                    _CSTB_BONE_LABELS,
+                    _CSTB_ORGAN_LABELS,
+                    _CADS_LABEL_NAMES,
+                )
+                entry["CompartmentFractions"] = comp_fracs
+                entry["PrimaryCompartment"] = max(comp_fracs, key=comp_fracs.get)
+                entry["TopCADSLabel"] = top_label
+            results.append(entry)
+
+        if ctcadsres_array is not None:
+            cstb: dict[str, dict] = {}
+            for comp in ("Bone", "Organs", "Outside"):
+                cstb[comp] = {
+                    "TMTV_cm3": sum(
+                        r["Volume_cm3"] * r["CompartmentFractions"][comp]
+                        for r in results
+                        if "CompartmentFractions" in r
+                    ),
+                    "TLG": sum(
+                        r["Volume_cm3"] * r["PETMetrics"]["SUVmean"] * r["CompartmentFractions"][comp]
+                        for r in results
+                        if "CompartmentFractions" in r and r["PETMetrics"].get("SUVmean") is not None
+                    ),
+                    "LesionCount": sum(1 for r in results if r.get("PrimaryCompartment") == comp),
+                }
+
         if json_exists:
-            patient_info["Studies"][study_date]["TumorStats"].update({"Tumors": results})
+            tumor_stats = patient_info["Studies"][study_date].setdefault(tumor_stats_key, {})
+            tumor_stats.update({"Tumors": results})
+            if ctcadsres_array is not None:
+                tumor_stats["CSTB"] = cstb
             with open(os.path.join(patient_dirpath, "patient_info.json"), "w") as f:
                 json.dump(patient_info, f)
         else:
@@ -153,10 +615,53 @@ def tumor_info_extraction_entrypoint() -> None:
         help="Path to the input folder containing PETseg.nii.gz files",
         required=True,
     )
+    parser.add_argument(
+        "--pet-metric",
+        type=str,
+        nargs="+",
+        choices=["SUV", "SUL"],
+        default=["SUV", "SUL"],
+        help="PET metric(s) to use as input. Pass one or both: --pet-metric SUV SUL (default: SUV SUL)",
+    )
+    parser.add_argument(
+        "--mask-source",
+        type=str,
+        choices=list(MASK_SOURCES),
+        default="autopet",
+        help="Mask to compute on: 'autopet' (PETseg -> TumorStats) or 'revised' (physician label -> "
+        "TumorStatsRevised). Default: autopet.",
+    )
+    parser.add_argument(
+        "--label-dirpath",
+        type=str,
+        default=None,
+        help="Used with --mask-source revised. Omit to look for the label inside each study dir "
+        "(e.g. PETseg_revised.nii); set to a parallel labels root to look under "
+        "<label_dirpath>/<PatientID>/<study_date>/ (multi-timepoint) "
+        "or <label_dirpath>/<PatientID>/ (single-label-per-patient.",
+    )
+    parser.add_argument(
+        "--label-glob",
+        type=str,
+        default=DEFAULT_LABEL_GLOB,
+        help="Filename pattern of the revised label (wildcards allowed), used with --mask-source revised. "
+        f"Default: '{DEFAULT_LABEL_GLOB}'. Scheurer uses '*segmentation_Tumor.nii'.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of parallel worker processes (patients run in parallel). Default: 1 (serial).",
+    )
     args = parser.parse_args()
 
     TumorInfoExtraction(
         input_dirpath_processed=args.input_dirpath_processed,
+        pet_metric=args.pet_metric,
+        mask_source=args.mask_source,
+        label_dirpath=args.label_dirpath,
+        label_glob=args.label_glob,
+        workers=args.workers,
     ).run()
 
 

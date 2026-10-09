@@ -1,56 +1,58 @@
 import json
 import logging
 import os
+import pathlib as plb
 
 from totalsegmentator.config import get_version
 from totalsegmentator.nifti_ext_header import load_multilabel_nifti
 from totalsegmentator.python_api import totalsegmentator
 
-from .utils import natural_key
+from .utils import is_mr_filename, list_patient_dirs, load_mr_keywords
 
 logger = logging.getLogger(__name__)
 
 
 class TotalSegmentatorInference:
     def __init__(self, input_dirpath_processed: str | os.PathLike) -> None:
-        """Class to handle TotalSegmentator inference on CT.nii.gz files in a specified folder.
-        It processes each file, runs segmentation, extracts label mapping. Creates CTseg.nii.
-
-        Args:
-            input_dirpath_processed (str | os.PathLike): Directory containing the CT.nii.gz files. Can be nested.
-        """
+        """Run TotalSegmentator on CT.nii.gz files."""
         self.input_dirpath = input_dirpath_processed
 
     def run(self) -> None:
-        """
-        Recursively search the folder for CT.nii.gz files.
-        For each found file, create a 'CTseg' subfolder, run segmentation using ml option,
-        extract the label mapping from the segmentation output, and save a metadata JSON file.
-        """
+        """Process CT files: run segmentation, extract labels, save metadata."""
         if not os.path.isdir(self.input_dirpath):
             logger.error(f"Error: {self.input_dirpath} is not a valid directory.")
             return
 
         logger.info(f"Starting TotalSegmentator inference in {self.input_dirpath}")
-        top_dirs = [d for d in os.listdir(self.input_dirpath) if os.path.isdir(os.path.join(self.input_dirpath, d))]
-        top_dirs.sort(key=natural_key)
+        mr_keywords = load_mr_keywords()
+        top_dirs = list_patient_dirs(self.input_dirpath)
 
         for top_dir in top_dirs:
             top_dir_path = os.path.join(self.input_dirpath, top_dir)
 
-            for dirpath, _, filenames in os.walk(top_dir_path):
+            for dirpath, dirnames, filenames in os.walk(top_dir_path):
+                rel_parts = plb.Path(os.path.relpath(dirpath, self.input_dirpath)).parts
+                if len(rel_parts) != 2:
+                    continue
+                dirnames.clear()
+                patient_id, study_date = rel_parts
+                patient_dirpath = os.path.join(self.input_dirpath, patient_id)
+
                 for filename in filenames:
-                    # Determine if this is a CT or MR file and set parameters accordingly
+                    # Skip muscle/fat segmentations
+                    if filename.endswith("_muscle_fat.nii.gz"):
+                        continue
+
                     is_ct = filename == "CT.nii.gz"
                     is_mr = (
                         filename.endswith("nii.gz")
                         and not filename.startswith(("CT", "SUV", "PET"))
                         and not filename.endswith("seg.nii.gz")
+                        and is_mr_filename(filename, mr_keywords)
                     )
 
                     if not (is_ct or is_mr):
                         continue
-                    patient_id = os.path.basename(os.path.dirname(dirpath))
                     input_fpath = os.path.join(dirpath, filename)
                     if is_ct:
                         output_fpath = os.path.join(dirpath, "CTseg.nii.gz")
@@ -69,7 +71,6 @@ class TotalSegmentatorInference:
                         logger.info(f"Output file {output_fpath} already exists.")
                         continue
 
-                    patient_dirpath = os.path.dirname(dirpath)
                     patient_info = None
                     patient_info_path = os.path.join(patient_dirpath, "patient_info.json")
                     if os.path.isfile(patient_info_path):
@@ -82,7 +83,7 @@ class TotalSegmentatorInference:
 
                     logger.info(f"Processing file {filename} for patient {patient_id}.")
 
-                    # Run TotalSegmentator using the Python API with ml option and appropriate task.
+                    # Run segmentation
                     try:
                         totalsegmentator(
                             input_fpath,
@@ -98,7 +99,7 @@ class TotalSegmentatorInference:
                         logger.error(f"Error during segmentation for {input_fpath}:\n  {e}")
                         continue
 
-                    # Load the segmentation file to extract the label mapping from its extended header.
+                    # Extract label mapping from the seg header
                     try:
                         segmentation_img, label_map_dict = load_multilabel_nifti(output_fpath)
                         logger.info("Label mapping successfully loaded from segmentation file.")
@@ -106,7 +107,6 @@ class TotalSegmentatorInference:
                         logger.error(f"Error loading segmentation file {output_fpath}: {e}")
                         label_map_dict = {}
 
-                    # Prepare metadata with settings, task/model info, and the label mapping obtained.
                     seg_metadata = {
                         "settings": {"input_fpath": input_fpath, "task": task, "ml": True},
                         "model": "total",
@@ -114,7 +114,6 @@ class TotalSegmentatorInference:
                         "labels": label_map_dict,
                     }
                     if json_exists and patient_info is not None:
-                        study_date = dirpath.split(os.sep)[-1]
                         if modality == "CT":
                             series_index = 0
                         else:
@@ -122,7 +121,7 @@ class TotalSegmentatorInference:
                             # Find the index where the filename matches the MRPath value
                             series_index = None
                             for idx, serie in enumerate(mr_series):
-                                for _serie_name, serie_data in serie.items():
+                                for serie_data in serie.values():
                                     if "MRPath" in serie_data and filename in os.path.basename(serie_data["MRPath"]):
                                         series_index = idx
                                         break

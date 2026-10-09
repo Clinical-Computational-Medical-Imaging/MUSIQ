@@ -1,5 +1,5 @@
-![Fig. 1: Overview of the PET/CT workflow. MRI not included in the image.](./images/musiq.png) 
-# Multimodal Unified Segmentation & Image Quantification 
+![Fig. 1: Overview of the PET/CT workflow. MRI not included in the image.](./images/musiq.png)
+# Multimodal Unified Segmentation & Image Quantification
 
 This Python project provides an end-to-end pipeline for processing PET/CT and MRI scans retrieved from a PACS system. The pipeline supports DICOM to NIfTI conversion, segmentation, radiomics extraction, tumor quantification, and result aggregation.
 
@@ -11,76 +11,90 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
 1. **Interactive Series Selection & Conversion**
    - Allows interactive selection of PET and CT series per patient.
    - Converts DICOM series to NIfTI:
-     - `CT.nii` – Original CT scan as NIfTI
-     - `PET.nii` – Original PET scan as NIfTI
-     - `SUV.nii` – Standardized Uptake Value image as NIfTI
+     - `CT.nii.gz` – Original CT scan as NIfTI
+     - `PET.nii.gz` – Original PET scan as NIfTI
+     - `SUV.nii.gz` – Standardized Uptake Value image as NIfTI
      - `patient_info.json` - Dictionary with patient, study and serie information
      - `validation_results.csv` - List of studies flagged by user
+   - **Reference-consistent decay correction:** the SUV (and downstream SUL) factor decays the
+     injected activity to the *same* reference time the scanner corrected the PET pixels to, read
+     per series from the DICOM `DecayCorrection` tag (`START` / `ADMIN` / `NONE`). This avoids the
+     per–bed-position `AcquisitionTime` inflation (up to ~25%) and keeps SUV/SUL mutually
+     consistent. See [docs/suv-computation.md](docs/suv-computation.md).
 
-2. **PET Segmentation with AutoPET3**
-   - Segments PET scans using AutoPET3.
-   - Output:
-      - `CTres.nii`
-      - `PETseg.nii`
-      - Expands `patient_info.json` with serie information
-
-3. **CT Segmentation with TotalSegmentator**
+2. **CT Segmentation with TotalSegmentator**
    - Performs organ segmentation on CT images using TotalSegmentator.
    - Outputs:
-     - `CTseg.nii` – Segmentation mask
+     - `CTseg.nii.gz` – Segmentation mask
      - Expands `patient_info.json` with TS information
 
-4. **CT Segmentation with Moose**
+3. **CT Body Composition Analysis with TotalSegmentator** (`muscle_fat`, GPU)
+   - Performs muscle and fat segmentation using TotalSegmentator and computes body-composition
+     stats and the lean body mass (LBM).
+   - Outputs:
+      - `CT_muscle_fat.nii.gz` - Muscle and fat CT segmentation
+      - `MRI_muscle_fat.nii.gz` - Muscle and fat MRI segmentation
+      - Expands `patient_info.json` with muscle/fat stats and `PatientLBM`
+
+4. **SUL computation** (`sul`, CPU)
+   - Builds the lean-body-mass-corrected PET image from `PET.nii.gz` and the `PatientLBM` produced
+     by `muscle_fat`. CPU-only (no TotalSegmentator/torch), so it can run on a separate CPU node.
+     Must run after `muscle_fat` and before `autopet`/`radiomics` when SUL metrics are used.
+   - Outputs:
+      - `SUL.nii.gz` - SUV image corrected by the lean body mass
+      - Expands `patient_info.json` with `SULPath`
+
+5. **PET Segmentation with AutoPET3**
+   - Segments PET scans using AutoPET3.
+   - Output:
+      - `CTres.nii.gz`
+      - `PETseg.nii.gz` - SUV segmentations by AutoPET3
+      - `PETsegSUL.nii.gz` - SUL segmentations by AutoPET3
+      - Expands `patient_info.json` with series information
+
+6. **PET Segmentation with LION**
+   - Segments PET scans using [LION](https://github.com/ENHANCE-PET/LION) — a PET-only segmentation model (no CT required) trained on FDG (5,235 pts) and PSMA (2,046 pts) cohorts.
+   - Runs in a separate `.venv_lion` virtual environment due to dependency conflicts. Models download automatically on first run.
+   - Activated via `--tasks lion --lion-model fdg|psma --lion-venv .venv_lion`. The LION mask can be fed into radiomics/tumor via `--mask-source lion`.
+   - Output:
+      - `PETseg_LION.nii.gz` – SUV lesion segmentation by LION
+      - `PETsegSUL_LION.nii.gz` – SUL lesion segmentation by LION
+      - Expands `patient_info.json` with `PETsegLIONPath` / `PETsegSULLIONPath`; radiomics/tumor results land under `TumorStatsLION` / `TumorStatsLIONSUL`
+
+7. **CT Segmentation with CADS v1.0.0**
+   - Performs organ segmentation on CT images using the CADS model using the specified tasks and saves everything to a single file. The labels are set as the labelmap_all_structure  as shown here https://github.com/murong-xu/CADS/tree/main/cads/dataset_utils.
+   - Runs as a **staged pipeline** (CADS "Option 2"): preprocess (CPU) → inference (GPU) → restore+combine (CPU). The `cads` workflow task runs all three in sequence; for large cohorts the stages can be run as separate CPU/GPU jobs (see [docs/staged-cads.md](docs/staged-cads.md)). Intermediates live in a staging dir (default `<output>/cads_staging`) and are auto-removed once each `CTcads.nii.gz` is written.
+   - Output:
+      - `CTcads.nii.gz`
+      - Expands `patient_info.json` with CADS information
+
+
+8. **CT Segmentation with Moose**
    - Performs organ segmentation on CT images using Moose.
    - Moose can only take one CT per series.
    - Outputs:
-     - `CTmoose_organs.nii` – Segmentation mask
+     - `CTmoose_organs.nii.gz` – Segmentation mask
      - Expands `patient_info.json` with Moose information
 
-5. **Radiomics Extraction**
-   - Computes key radiomics metrics from PET and CT scans.
-   - Output: Extension of `patient_info.json`
-      - SUV (mean, max, peak median, std)
-      - Lesion count
-      - Total Metabolic Tumor Volume (TMTV)
-      - Total Metabolic Tumor Volume (TMTV) with thresholds
-         - 0.3, 0.4, 0.41, 0.5, 2.5, 3.0, 3.5, 4.0
-      - Total Lesion Glycolysis (TLG)
-      - Tumor Dissemination (Dmax)
-      - Tumor Dissemination standardized by patient's height and weight(SDmax)
-      - Surface Area
+9. **Body Composition Analysis with BOA (BCA)**
+   - Runs the UMEssen [Body-and-Organ-Analysis](https://github.com/UMEssen/Body-and-Organ-Analysis) BCA component on each `CT.nii.gz` via the `shipai/boa-cli` Docker image (no Python dependency added — BOA runs in its own container).
+   - Reuses MUSIQ's existing `CTseg.nii.gz` as BOA's `total` segmentation when present, so the 104-organ TotalSegmentator step is not recomputed. Run `totalsegmentator` before `boa`; disable reuse with `--boa-no-reuse-total`.
+   - Outputs (next to the other NIfTIs):
+     - `CTbca_tissues.nii.gz` – tissue (SAT/VAT/muscle/bone) segmentation
+     - `CTbca_body_regions.nii.gz` – body-region segmentation
+     - `boa/` subfolder with BOA's `output.xlsx`, optional `report.pdf`, JSON measurements and logs
+     - Expands `patient_info.json` with a `BCA` block and the segmentation paths
 
-6. **Tumor Size Analysis**
-   - Quantifies tumor volume per organ based on segmentations.
-   - Output:
-      - `CTsegres.nii` – Resampled segmentation mask to PT
-      - extension of `patient_info.json`
-         - Volume
-         - Organ overlap
-         - SUV (mean, max, peak median, std)
-         - Surface area
+10. **Radiomics Extraction**
+   - Computes radiomics metrics from SUV or SUL and CT and adds them to `patient_info.json`: SUV/SUL stats (mean, max, peak, median, std), lesion count, TMTV (also at thresholds 0.3/0.4/0.41/0.5/2.5/3.0/3.5/4.0), TLG, tumor dissemination (Dmax) and its height/weight-standardized form (SDmax), and surface area.
+   - **Mask source** (`--mask-source`, see [docs/mask-sources.md](docs/mask-sources.md)): `autopet` uses `PETseg.nii.gz`/`PETsegSUL.nii.gz` → `TumorStats`/`TumorStatsSUL`; `revised` uses the physician label → `TumorStatsRevised`; `lion` uses `PETseg_LION.nii.gz`/`PETsegSUL_LION.nii.gz` → `TumorStatsLION`/`TumorStatsLIONSUL`.
 
-7. **Optional Plotting**
+11. **Tumor Size Analysis**
+   - Quantifies tumor volume per organ. Outputs `CTsegres.nii.gz` (segmentation resampled to PET) and extends `patient_info.json` with per-organ volume, organ overlap, SUV/SUL stats and surface area.
+   - Same `--mask-source` behaviour as Radiomics (per-lesion results land under the matching `TumorStats*` key).
+
+12. **Optional Plotting**
    - Generates visualizations
-
----
-
-## Output
-Each patient folder includes:
-- `CT.nii`
-- `PET.nii`
-- `SUV.nii`
-- `CTres.nii`
-- `PETseg.nii`
-- `CTseg.nii`
-- `CTsegres.nii`
-- `patient_info.json`
-- `CTmoose_organs.nii`
-- Plots
-
-Summary for the whole cohort:
-- `validation_results.csv`
-- `cohort_results.json`
 
 ---
 
@@ -90,8 +104,9 @@ Eventually, the project and its output are structured as follows:
 
 ```
 musiq/
-├── autopet-3-submission/          # Cloned AutoPET3 repository
 ├── autopet-3-model/               # Downloaded AutoPET3 checkpoints
+├── autopet-3-submission/          # Cloned AutoPET3 repository
+├── CADS/                          # Downloaded CADS checkpoints
 ├── data/                          # Can be anywhere in your file system
 │   ├── raw/                       # Raw DICOM files from PACS
 │   │   ├── patient_id/
@@ -101,18 +116,27 @@ musiq/
 │   ├── processed/
 │   │   ├── patient_id/
 │   │   │   ├── plots/
-│   │   │   ├──series_id-1/
-│   │   │   │   ├── CT.json                     # CT DICOM tags
-│   │   │   │   ├── CT.nii                      # CT converted to nifti
-│   │   │   │   ├── CTmoose_organs.nii          # CT segmentation by Moose
-│   │   │   │   ├── CTres.nii                   # CT resampled to PET resolution
-│   │   │   │   ├── CTseg.json                  # CT segmentation metadata from totalsegmentator
-│   │   │   │   ├── CTseg.nii                   # CT segmentations from totalsegmentator
-│   │   │   │   ├── PET.nii                     # PET converted to nifti
-│   │   │   │   ├── PETseg.nii                  # PET segmentations from AutoPET3
-│   │   │   │   ├── SUV.nii                     # SUV map from PET
-│   │   │   ├──series_id-2/
-│   │   │   │   ├── ...
+│   │   │   ├── study_date_1/
+│   │   │   │   ├── CT.nii.gz                      # CT converted to nifti
+│   │   │   │   ├── CTbca_tissues.nii.gz           # CT tissue segmentation by BOA (BCA)
+│   │   │   │   ├── CTbca_body_regions.nii.gz      # CT body-region segmentation by BOA (BCA)
+│   │   │   │   ├── boa/                           # BOA outputs (xlsx, optional pdf, json, logs)
+│   │   │   │   ├── CTcads.nii.gz                  # CT segmentation by CADS
+│   │   │   │   ├── CTmoose_organs.nii.gz          # CT segmentation by Moose
+│   │   │   │   ├── CTmuscle_fat.nii.gz            # CT muscle and fat segmentation by TotalSegmentator
+│   │   │   │   ├── CTres.nii.gz                   # CT resampled to PET resolution
+│   │   │   │   ├── CTseg.nii.gz                   # CT segmentations by TotalSegmentator
+│   │   │   │   ├── PET.nii.gz                     # PET converted to nifti
+│   │   │   │   ├── PETseg.nii.gz                  # SUV segmentations by AutoPET3
+│   │   │   │   ├── PETsegSUL.nii.gz               # SUL segmentations by AutoPET3
+│   │   │   │   ├── PETseg_LION.nii.gz             # SUV segmentations by LION
+│   │   │   │   ├── PETsegSUL_LION.nii.gz          # SUL segmentations by LION
+│   │   │   │   ├── SUV.nii.gz                     # SUV map from PET
+│   │   │   │   ├── SUL.nii.gz                     # SUL map from PET
+│   │   │   ├── study_date_1/
+│   │   │   │   ├── t1_cor.nii.gz                  # MRI converted to nifti (exemplary)
+│   │   │   │   ├── t1_cor_muscle_fat.nii.gz       # MRI muscle and fat segmented by TotalSegmentator
+│   │   │   │   ├── t1_cor_seg.nii.gz              # MRI segmented by TotalSegmentator
 │   │   │   ├── patient_info.json
 │   │   ├── cohort_info.json
 │   │   ├── validation_results.csv
@@ -121,6 +145,7 @@ musiq/
 ├── setup.py
 ├── README.md
 ├── requirements.txt
+├── requirements_lion.txt
 ├── requirements_moose.txt
 
 ```
@@ -128,7 +153,7 @@ musiq/
 ---
 ## Standard Usage
 - Clone this repository and cd into it
-- Create the first virtual enviroment (tested with Python3.12) and install dependencies via the following commands:
+- Create the first virtual environment (tested with Python3.12) and install dependencies via the following commands:
 
 ```bash
 python3.12 -m venv .venv
@@ -137,10 +162,19 @@ git clone https://github.com/mic-dkfz/autopet-3-submission
 curl -L -o autoPET-3-LesionTracer.zip "https://zenodo.org/records/14007247/files/autoPET-3-LesionTracer.zip?download=1"
 unzip autoPET-3-LesionTracer.zip -d ./autopet-3-model/
 rm autoPET-3-LesionTracer.zip
+git clone https://github.com/murong-xu/CADS.git
+# Install torch/torchvision from the CUDA 12.8 (cu128) index first.
+# These are not pinned in pyproject.toml because the cu128 wheels are not on PyPI.
+# Requires an NVIDIA driver that supports CUDA 12.8 (driver >= ~570).
+pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu128
 pip install -r requirements.txt
+pip install TPTBox==0.3.0 fastremap fill_voids --no-deps
 ```
-
-- In order to use the pipeline with the moose extention we need a second virtual enviroment:
+- For the TotalSegmentator muscle and fat segmentation the TS license needs to be set:
+```bash
+totalseg_set_license -l aca_...
+```
+- In order to use the pipeline with the moose extension we need a second virtual enviroment:
 
 ```bash
 deactivate
@@ -150,14 +184,39 @@ pip install -r requirements_moose.txt
 pip install moosez --no-deps
 ```
 
+- In order to use the pipeline with the LION extension, create a third virtual environment:
+
+```bash
+deactivate
+python3.12 -m venv .venv_lion
+source .venv_lion/bin/activate
+pip install -r requirements_lion.txt
+deactivate
+```
+  `requirements_lion.txt` installs `lionz` and `musiq` (editable, via `-e .`) so the `musiq_lion_inference` console script is available in `.venv_lion`. LION downloads model weights automatically on first run (no manual checkpoint download needed). Pass `--lion-venv .venv_lion` when running the `lion` task.
+
+- The `boa` task runs in Docker, so it needs no virtual environment — just pull the image once (an NVIDIA GPU + Container Toolkit are required):
+```bash
+docker pull shipai/boa-cli
+```
+  Optionally download the BOA/TotalSegmentator weights to a local directory and pass it via `--boa-weights-path` (otherwise BOA downloads them on first run). Run `totalsegmentator` before `boa` so the existing `CTseg.nii.gz` is reused as BOA's `total` segmentation (disable with `--boa-no-reuse-total`).
+
+- **On an HPC cluster (Apptainer/Singularity):** pass `--boa-runtime apptainer --boa-sif /path/to/boa-cli.sif`, built once from the provided `boa-cli.def`. See **[docs/cluster.md](docs/cluster.md)** for the build steps and the glibc/weights/GPU caveats.
+
 - To start the whole workflow run:
 ```bash
-musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet totalsegmentator tumor moose
+musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet autopet_postprocessing totalsegmentator muscle_fat sul tumor moose cads boa --cads-tasks 556 558
 ```
+- To run CADS you can run the different tasks given on their repository or just run 'all'
 - See `pyproject.toml` to see commands for running only parts of the pipeline in a modular way.
 
+### Mask sources: automated vs. revised labels
+The `radiomics` and `tumor` stages can compute on the automated PET segmentation (`autopet`) and/or a physician label (`revised`), selected with `--mask-source`. See **[docs/mask-sources.md](docs/mask-sources.md)** for the key/metric mapping, the `--label-dirpath` / `--label-glob` options, and `--radiomics-workers`.
 
-- For development also install pre-commit hooks via
+### Large-scale staged CADS
+For large cohorts the three CADS stages (preprocess → inference → restore) can be run as separate CPU/GPU jobs instead of the single `--tasks cads` run. See **[docs/staged-cads.md](docs/staged-cads.md)**.
+
+### For development also install pre-commit hooks via
 ```bash
 pip install pre-commit
 pre-commit install
@@ -166,10 +225,10 @@ pre-commit install
 ---
 ## Docker Usage
 - Clone this repository and `cd` into it.
-- Make sure **Docker ≤ 19.03** is installed and running.  
+- Make sure **Docker >= 19.03** is installed and running.
   - For **Windows**, use Docker Desktop 4.37.1 or later and enable WSL integration.
 - An **NVIDIA GPU** is required.
-- **NVIDIA Container Toolkit** must be installed and configured for Docker (not required on Windows).  
+- **NVIDIA Container Toolkit** must be installed and configured for Docker (not required on Windows).
   Installation guide: [https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
 
 Before running the pipeline, replace:
@@ -185,7 +244,7 @@ docker run -it --rm --gpus all --name musiq_container \
   musiq_image musiq \
   --input-dirpath /data/input \
   --output-dirpath /data/output \
-  --tasks series_selection radiomics autopet totalsegmentator tumor moose
+  --tasks series_selection radiomics autopet totalsegmentator muscle_fat sul tumor moose
 ```
 If you are using Windows, it is recommended to add the following flags to reduce resource usage:
 ```bash
@@ -201,7 +260,23 @@ If you are using Windows, it is recommended to add the following flags to reduce
 - **Moose 3.0**
    - Ferrara D, Pires M, Gutschmayer S, Yu J, Abdelhafez YG, Abenavoli E et al. Sharing a whole-/total-body [18F]FDG-PET/CT dataset with CT-derived segmentations: an ENHANCE.PETinitiative. 2025.
    - Sundar LKS, Yu J, Muzik O, Kulterer OC, Fueger B, Kifjak D et al. Fully Automated,Semantic Segmentation of Whole-Body18 F-FDG PET/CT Images Based on Data-CentricArtificial Intelligence. J Nucl Med. 2022;63(12):1941–8.
-
+- **CADS**
+   - Xu, M., Amiranashvili, T., Navarro, F., Fritsak, M., Hamamci, I.E., Shit, S., Wittmann, B., Er, S., Christ, S.M., de la Rosa, E. and Deseoe, J., 2025. CADS: A Comprehensive Anatomical Dataset and Segmentation for Whole-Body Anatomy in Computed Tomography. arXiv preprint arXiv:2507.22953.
+- **LION (Lesion segmentation)**
+   - Shiyam Sundar, L. K., Pires, M., & Gutschmayer, S. LION: Automated Lesion Segmentation for Whole-Body PET. Zenodo. https://doi.org/10.5281/zenodo.12626789. https://github.com/ENHANCE-PET/LION
+- **BOA (Body and Organ Analysis)**
+   - Haubold, J., Baldini, G., Parmar, V., Schaarschmidt, B.M., Koitka, S., Kroll, L., van Landeghem, N., Umutlu, L., Forsting, M., Nensa, F. and Hosch, R., 2024. BOA: A CT-Based Body and Organ Analysis for Radiologists at the Point of Care. Investigative Radiology, 59(6), pp.433-441. https://github.com/UMEssen/Body-and-Organ-Analysis
+- **Test data (The Cancer Imaging Archive)**
+   - The real-DICOM integration test suite (see [test/README.md](test/README.md)) exercises the
+     DICOM → NIfTI conversion against small, public series pulled from
+     [The Cancer Imaging Archive (TCIA)](https://www.cancerimagingarchive.net/). Anyone using this
+     test data should cite TCIA itself plus each collection actually used:
+   - Clark, K., Vendt, B., Smith, K., Freymann, J., Kirby, J., Koppel, P., Moore, S., Phillips, S., Maffitt, D., Pringle, M., Tarbox, L. and Prior, F., 2013. The Cancer Imaging Archive (TCIA): maintaining and operating a public information repository. Journal of Digital Imaging, 26(6), pp.1045-1057. https://doi.org/10.1007/s10278-013-9622-7
+   - Zuley, M.L., Jarosz, R., Drake, B.F., Rancilio, D., Klim, A., Rieger-Christ, K. and Lemmerman, J., 2016. The Cancer Genome Atlas Prostate Adenocarcinoma Collection (TCGA-PRAD) (Version 4) [Data set]. The Cancer Imaging Archive. https://doi.org/10.7937/K9/TCIA.2016.YXOGLM4Y — also requires acknowledging "The results published or shown here are in whole or part based upon data generated by the TCGA Research Network: http://cancergenome.nih.gov/"
+   - Kinahan, P., Muzi, M., Bialecki, B., Herman, B. and Coombs, L., 2019. Data from the ACRIN 6668 Trial NSCLC-FDG-PET (Version 2) [Data set]. The Cancer Imaging Archive. https://doi.org/10.7937/tcia.2019.30ilqfcl
+   - Juvekar, P., Dorent, R., Kögl, F., Torio, E., Barr, C., Rigolo, L., Galvin, C., Jowkar, N., Kazi, A., Haouchine, N., Cheema, H., Navab, N., Pieper, S., Wells, W.M., Bi, W.L., Golby, A., Frisken, S. and Kapur, T., 2023. The Brain Resection Multimodal Imaging Database (ReMIND) (Version 1) [Data set]. The Cancer Imaging Archive. https://doi.org/10.7937/3RAG-D070
+   - Newitt, D.C., Partridge, S.C., Zhang, Z., Gibbs, J., Chenevert, T., Rosen, M., Bolan, P., Marques, H., Romanoff, J., Cimino, L., Joe, B.N., Umphrey, H., Ojeda-Fournier, H., Dogan, B., Oh, K.Y., Abe, H., Drukteinis, J., Esserman, L.J. and Hylton, N.M., 2021. ACRIN 6698/I-SPY2 Breast DWI [Data set]. The Cancer Imaging Archive. https://doi.org/10.7937/tcia.kk02-6d95
+   - Li, W., Newitt, D.C., Gibbs, J., Wilmes, L.J., Jones, E.F., Arasu, V.A., Strand, F., Onishi, N., Nguyen, A.A-T., Kornak, J., Joe, B.N., Price, E.R., Ojeda-Fournier, H., Eghtedari, M., Zamora, K.W., Woodard, S.A., Umphrey, H., Bernreuter, W., Nelson, M. and Hylton, N.M., 2022. I-SPY 2 Breast Dynamic Contrast Enhanced MRI Trial (ISPY2) (Version 1) [Data set]. The Cancer Imaging Archive. https://doi.org/10.7937/TCIA.D8Z0-9T85
 ---
 
 ## Reference
