@@ -278,16 +278,21 @@ class TotalSegmentatorMuscleFat:
                             .get("full_picture", {})
                             .get("total_fat_in_%")
                         )
-                        if fat_in_percent is None:
+                        if fat_in_percent is not None:
+                            lean_body_mass = weight * (1 - fat_in_percent / 100)
+                        else:
                             seg_path = total_seg_path(input_fpath)
                             if not os.path.isfile(seg_path):
                                 reason = f"seg not found at {seg_path}; run TotalSegmentator 'total' first"
                             else:
-                                reason = "arms beside body; LBM unreliable"
-                            logger.warning(f"Skipping LBM computation for {patient_id}: {reason}.")
-                            continue
+                                reason = "arms beside body"
+                            logger.warning(
+                                f"No body-composition fat% for {patient_id} ({reason}); falling back to James formula."
+                            )
+                            lean_body_mass = self._james_lbm(data, study_date, series_data, weight, patient_id)
+                            if lean_body_mass is None:
+                                continue
                         # LBM feeds the sul stage (via PatientLBM)
-                        lean_body_mass = weight * (1 - fat_in_percent / 100)
                         data["Studies"][study_date]["Modalities"][modality][series_index][series_name]["PatientLBM"] = (
                             lean_body_mass
                         )
@@ -386,17 +391,58 @@ class TotalSegmentatorMuscleFat:
             return
         if weight <= 0:
             return
-        fat_in_percent = series_data.get("body_composition_analysis", {}).get("full_picture", {}).get("total_fat_in_%")
-        if fat_in_percent is None:
-            return
 
-        lean_body_mass = weight * (1 - fat_in_percent / 100)
+        fat_in_percent = series_data.get("body_composition_analysis", {}).get("full_picture", {}).get("total_fat_in_%")
+        if fat_in_percent is not None:
+            lean_body_mass = weight * (1 - fat_in_percent / 100)
+        else:
+            lean_body_mass = self._james_lbm(data, study_date, series_data, weight, patient_id)
+            if lean_body_mass is None:
+                return
+
         if series_data.get("PatientLBM") == lean_body_mass:
             return  # already up to date
         series_data["PatientLBM"] = lean_body_mass
         with open(patient_info_path, "w") as f:
             json.dump(data, f)
         logger.info(f"Backfilled PatientLBM ({lean_body_mass:.2f}) for {patient_id} ({study_date}).")
+
+    @staticmethod
+    def _james_lbm(data: dict, study_date: str, series_data: dict, weight: float, patient_id: str) -> float | None:
+        """LBM via James formula (height in cm); fallback when body-composition fat% is unavailable.
+
+        Returns None (with a warning) if PatientSize/PatientSex are missing or implausible, or if the
+        formula yields a non-positive LBM (it breaks down at very high BMI).
+        """
+        sex = series_data.get("DICOM", {}).get("PatientSex") or data.get("PatientSex")
+        # PatientSize (0010,1020) is recorded at study level and is in meters per the DICOM standard
+        size = data.get("Studies", {}).get(study_date, {}).get("PatientSize")
+        try:
+            height = float(size)
+        except (TypeError, ValueError):
+            logger.warning(f"Invalid PatientSize {size!r} for {patient_id}, cannot apply James formula.")
+            return None
+        # Some scanners store PatientSize in cm instead of m; values > 3 cannot be meters
+        if height > 3:
+            logger.warning(f"PatientSize {size!r} for {patient_id} looks like cm, not m; treating it as cm.")
+            height_cm = height
+        else:
+            height_cm = height * 100
+        if not 100 <= height_cm <= 250:
+            logger.warning(f"Implausible PatientSize {size!r} for {patient_id}, cannot apply James formula.")
+            return None
+        if sex == "M":
+            lbm = 1.10 * weight - 128 * (weight / height_cm) ** 2
+        elif sex == "F":
+            lbm = 1.07 * weight - 148 * (weight / height_cm) ** 2
+        else:
+            logger.warning(f"PatientSex {sex!r} for {patient_id} is not M/F, cannot apply James formula.")
+            return None
+        if lbm <= 0:
+            logger.warning(f"James formula gave non-positive LBM ({lbm:.2f}) for {patient_id}, skipping.")
+            return None
+        logger.info(f"Using James formula LBM ({lbm:.2f}) for {patient_id} ({study_date}).")
+        return lbm
 
     def calc_size(
         self, path: os.PathLike, fat_img: nib.Nifti1Image, labels: dict[int, str], layers: list[str]
