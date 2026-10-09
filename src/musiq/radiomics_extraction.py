@@ -47,9 +47,9 @@ def resample_label_to_image_grid(label_fpath: str, target_fpath: str, work_dirpa
             os.remove(out_fpath)
 
 
-# Mask sources (``mask_source``): "auto" = pipeline PETseg/PETsegSUL, "revised" = physician label,
-# "lion" = LION PETseg_LION/PETsegSUL_LION.
-MASK_SOURCES = ("auto", "revised", "lion")
+# Mask sources (``mask_source``): "autopet" = pipeline PETseg/PETsegSUL mask, "revised" = physician
+# Tumor label (must share the SUV/PET grid).
+MASK_SOURCES = ("autopet", "revised", "lion", "postprocessed")
 DEFAULT_LABEL_GLOB = "PETseg_revised.nii"
 
 
@@ -70,6 +70,11 @@ def resolve_mask(
     if mask_source == "lion":
         fname = "PETseg_LION.nii.gz" if metric == "SUV" else "PETsegSUL_LION.nii.gz"
         key = "TumorStatsLION" if metric == "SUV" else "TumorStatsLIONSUL"
+        mask_path = os.path.join(study_dirpath, fname)
+        return (mask_path if os.path.exists(mask_path) else None), key
+    if mask_source == "postprocessed":
+        fname = "PETseg_postprocessed.nii.gz" if metric == "SUV" else "PETsegSUL_postprocessed.nii.gz"
+        key = "TumorStatsPostprocessed" if metric == "SUV" else "TumorStatsPostprocessedSUL"
         mask_path = os.path.join(study_dirpath, fname)
         return (mask_path if os.path.exists(mask_path) else None), key
     fname = "PETseg.nii.gz" if metric == "SUV" else "PETsegSUL.nii.gz"
@@ -131,7 +136,7 @@ class RadiomicsExtractor:
         self,
         input_dirpath_processed: str | os.PathLike,
         pet_metric: str | list[str] | None = None,
-        mask_source: str = "auto",
+        mask_source: str = "autopet",
         label_dirpath: str | os.PathLike | None = None,
         label_glob: str = DEFAULT_LABEL_GLOB,
         workers: int = 1,
@@ -144,7 +149,7 @@ class RadiomicsExtractor:
             Can be nested.
             pet_metric (str | list[str] | None): PET metric(s) to use as input.
                 Accepts "SUV", "SUL", or both. Defaults to ["SUV", "SUL"].
-            mask_source (str): "auto" (PETseg/PETsegSUL -> TumorStats/TumorStatsSUL) or
+            mask_source (str): "autopet" (PETseg/PETsegSUL -> TumorStats/TumorStatsSUL) or
                 "revised" (physician Tumor label -> TumorStatsRevised/TumorStatsRevisedSUL).
             label_dirpath (str | os.PathLike | None): used when mask_source="revised". None looks for the
                 label inside each study dir; a path looks under <label_dirpath>/<PatientID>/.
@@ -405,9 +410,10 @@ def radiomics_extraction_entrypoint() -> None:
         "--mask-source",
         type=str,
         choices=list(MASK_SOURCES),
-        default="auto",
-        help="Mask to compute on: 'auto' (PETseg -> TumorStats) or 'revised' (physician label -> "
-        "TumorStatsRevised). Default: auto.",
+        default="autopet",
+        help="Mask to compute on: 'autopet' (PETseg -> TumorStats), 'revised' (physician label -> TumorStatsRevised), "
+        "'lion' (PETseg_LION -> TumorStatsLION), 'postprocessed' (PETseg_postprocessed -> TumorStatsPostprocessed). "
+        "Default: autopet.",
     )
     parser.add_argument(
         "--label-dirpath",

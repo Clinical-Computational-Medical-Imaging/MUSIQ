@@ -87,7 +87,7 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
 
 10. **Radiomics Extraction**
    - Computes radiomics metrics from SUV or SUL and CT and adds them to `patient_info.json`: SUV/SUL stats (mean, max, peak, median, std), lesion count, TMTV (also at thresholds 0.3/0.4/0.41/0.5/2.5/3.0/3.5/4.0), TLG, tumor dissemination (Dmax) and its height/weight-standardized form (SDmax), and surface area.
-   - **Mask source** (`--mask-source`, see [docs/mask-sources.md](docs/mask-sources.md)): `auto` uses `PETseg.nii.gz`/`PETsegSUL.nii.gz` → `TumorStats`/`TumorStatsSUL`; `revised` uses the physician label → `TumorStatsRevised`; `lion` uses `PETseg_LION.nii.gz`/`PETsegSUL_LION.nii.gz` → `TumorStatsLION`/`TumorStatsLIONSUL`.
+   - **Mask source** (`--mask-source`, see [docs/mask-sources.md](docs/mask-sources.md)): `autopet` uses `PETseg.nii.gz`/`PETsegSUL.nii.gz` → `TumorStats`/`TumorStatsSUL`; `revised` uses the physician label → `TumorStatsRevised`; `lion` uses `PETseg_LION.nii.gz`/`PETsegSUL_LION.nii.gz` → `TumorStatsLION`/`TumorStatsLIONSUL`.
 
 11. **Tumor Size Analysis**
    - Quantifies tumor volume per organ. Outputs `CTsegres.nii.gz` (segmentation resampled to PET) and extends `patient_info.json` with per-organ volume, organ overlap, SUV/SUL stats and surface area.
@@ -205,13 +205,13 @@ docker pull shipai/boa-cli
 
 - To start the whole workflow run:
 ```bash
-musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet totalsegmentator muscle_fat sul tumor moose cads boa --cads-tasks 556 558
+musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet autopet_postprocessing totalsegmentator muscle_fat sul tumor moose cads boa --cads-tasks 556 558
 ```
 - To run CADS you can run the different tasks given on their repository or just run 'all'
 - See `pyproject.toml` to see commands for running only parts of the pipeline in a modular way.
 
 ### Mask sources: automated vs. revised labels
-The `radiomics` and `tumor` stages can compute on the automated PET segmentation (`auto`) and/or a physician label (`revised`), selected with `--mask-source`. See **[docs/mask-sources.md](docs/mask-sources.md)** for the key/metric mapping, the `--label-dirpath` / `--label-glob` options, and `--radiomics-workers`.
+The `radiomics` and `tumor` stages can compute on the automated PET segmentation (`autopet`) and/or a physician label (`revised`), selected with `--mask-source`. See **[docs/mask-sources.md](docs/mask-sources.md)** for the key/metric mapping, the `--label-dirpath` / `--label-glob` options, and `--radiomics-workers`.
 
 ### Large-scale staged CADS
 For large cohorts the three CADS stages (preprocess → inference → restore) can be run as separate CPU/GPU jobs instead of the single `--tasks cads` run. See **[docs/staged-cads.md](docs/staged-cads.md)**.
