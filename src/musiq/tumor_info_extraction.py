@@ -103,7 +103,7 @@ _CSTB_ORGAN_LABELS: frozenset[int] = frozenset(
     }
 )
 # Muscles (71-80, 116-119), subcutaneous tissue (158), thoracic cavity (161),
-# and CTcads background (0) all fall into "Outside" (clinically: lymph nodes in mHSPC).
+# and CTcads background (0) all fall into "Outside" (clinical assumption: lymph nodes).
 
 # Label name lookup for TopCADSLabel — mirrors labelmap_all_structure from CADS.
 _CADS_LABEL_NAMES: dict[int, str] = {
@@ -294,7 +294,7 @@ class TumorInfoExtraction:
         self,
         input_dirpath_processed: str | os.PathLike,
         pet_metric: str | list[str] | None = None,
-        mask_source: str = "auto",
+        mask_source: str = "autopet",
         label_dirpath: str | os.PathLike | None = None,
         label_glob: str = DEFAULT_LABEL_GLOB,
         workers: int = 1,
@@ -308,7 +308,7 @@ class TumorInfoExtraction:
             input_dirpath_processed (str | os.PathLike): Directory containing the CT.nii.gz file. Can be nested.
             pet_metric (str | list[str] | None): PET metric(s) to use as input.
                 Accepts "SUV", "SUL", or both. Defaults to ["SUV", "SUL"].
-            mask_source (str): "auto" (PETseg/PETsegSUL -> TumorStats/TumorStatsSUL) or
+            mask_source (str): "autopet" (PETseg/PETsegSUL -> TumorStats/TumorStatsSUL) or
                 "revised" (physician Tumor label -> TumorStatsRevised/TumorStatsRevisedSUL).
             label_dirpath (str | os.PathLike | None): used when mask_source="revised". None looks for the
                 label inside each study dir; a path looks under <label_dirpath>/<PatientID>/<study_date>/
@@ -438,10 +438,13 @@ class TumorInfoExtraction:
             with open(os.path.join(patient_dirpath, "patient_info.json")) as json_file:
                 patient_info = json.load(json_file)
 
+        pet_ref = os.path.join(study_dirpath, "PET.nii.gz")
+        if not os.path.exists(pet_ref):
+            pet_ref = suv_fpath  # datasets without PET.nii.gz (e.g. DEEP-PSMA); SUV is on the same grid
         if not os.path.exists(ctsegres_fpath):
             utils.resample_image(
                 source_img=os.path.join(study_dirpath, "CTseg.nii.gz"),
-                target_img=os.path.join(study_dirpath, "PET.nii.gz"),
+                target_img=pet_ref,
                 nii_output_dirpath=study_dirpath,
                 interpolation="nearest",
                 fill_value=0,
@@ -453,7 +456,7 @@ class TumorInfoExtraction:
         if os.path.exists(ctcads_fpath) and not os.path.exists(ctcadsres_fpath):
             utils.resample_image(
                 source_img=ctcads_fpath,
-                target_img=os.path.join(study_dirpath, "PET.nii.gz"),
+                target_img=pet_ref,
                 nii_output_dirpath=study_dirpath,
                 interpolation="nearest",
                 fill_value=0,
@@ -624,18 +627,18 @@ def tumor_info_extraction_entrypoint() -> None:
         "--mask-source",
         type=str,
         choices=list(MASK_SOURCES),
-        default="auto",
-        help="Mask to compute on: 'auto' (PETseg -> TumorStats) or 'revised' (physician label -> "
-        "TumorStatsRevised). Default: auto.",
+        default="autopet",
+        help="Mask to compute on: 'autopet' (PETseg -> TumorStats) or 'revised' (physician label -> "
+        "TumorStatsRevised). Default: autopet.",
     )
     parser.add_argument(
         "--label-dirpath",
         type=str,
         default=None,
         help="Used with --mask-source revised. Omit to look for the label inside each study dir "
-        "(e.g. MULTIPRO PETseg_revised.nii); set to a parallel labels root to look under "
-        "<label_dirpath>/<PatientID>/<study_date>/ (multi-timepoint, e.g. mHSPC) "
-        "or <label_dirpath>/<PatientID>/ (single-label-per-patient, e.g. Scheurer).",
+        "(e.g. PETseg_revised.nii); set to a parallel labels root to look under "
+        "<label_dirpath>/<PatientID>/<study_date>/ (multi-timepoint) "
+        "or <label_dirpath>/<PatientID>/ (single-label-per-patient.",
     )
     parser.add_argument(
         "--label-glob",

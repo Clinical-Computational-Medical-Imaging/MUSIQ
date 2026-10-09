@@ -87,7 +87,7 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
 
 10. **Radiomics Extraction**
    - Computes radiomics metrics from SUV or SUL and CT and adds them to `patient_info.json`: SUV/SUL stats (mean, max, peak, median, std), lesion count, TMTV (also at thresholds 0.3/0.4/0.41/0.5/2.5/3.0/3.5/4.0), TLG, tumor dissemination (Dmax) and its height/weight-standardized form (SDmax), and surface area.
-   - **Mask source** (`--mask-source`, see [docs/mask-sources.md](docs/mask-sources.md)): `auto` uses `PETseg.nii.gz`/`PETsegSUL.nii.gz` → `TumorStats`/`TumorStatsSUL`; `revised` uses the physician label → `TumorStatsRevised`; `lion` uses `PETseg_LION.nii.gz`/`PETsegSUL_LION.nii.gz` → `TumorStatsLION`/`TumorStatsLIONSUL`.
+   - **Mask source** (`--mask-source`, see [docs/mask-sources.md](docs/mask-sources.md)): `autopet` uses `PETseg.nii.gz`/`PETsegSUL.nii.gz` → `TumorStats`/`TumorStatsSUL`; `revised` uses the physician label → `TumorStatsRevised`; `lion` uses `PETseg_LION.nii.gz`/`PETsegSUL_LION.nii.gz` → `TumorStatsLION`/`TumorStatsLIONSUL`.
 
 11. **Tumor Size Analysis**
    - Quantifies tumor volume per organ. Outputs `CTsegres.nii.gz` (segmentation resampled to PET) and extends `patient_info.json` with per-organ volume, organ overlap, SUV/SUL stats and surface area.
@@ -205,13 +205,13 @@ docker pull shipai/boa-cli
 
 - To start the whole workflow run:
 ```bash
-musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet totalsegmentator muscle_fat sul tumor moose cads boa --cads-tasks 556 558
+musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet autopet_postprocessing totalsegmentator muscle_fat sul tumor moose cads boa --cads-tasks 556 558
 ```
 - To run CADS you can run the different tasks given on their repository or just run 'all'
 - See `pyproject.toml` to see commands for running only parts of the pipeline in a modular way.
 
 ### Mask sources: automated vs. revised labels
-The `radiomics` and `tumor` stages can compute on the automated PET segmentation (`auto`) and/or a physician label (`revised`), selected with `--mask-source`. See **[docs/mask-sources.md](docs/mask-sources.md)** for the key/metric mapping, the `--label-dirpath` / `--label-glob` options, and `--radiomics-workers`.
+The `radiomics` and `tumor` stages can compute on the automated PET segmentation (`autopet`) and/or a physician label (`revised`), selected with `--mask-source`. See **[docs/mask-sources.md](docs/mask-sources.md)** for the key/metric mapping, the `--label-dirpath` / `--label-glob` options, and `--radiomics-workers`.
 
 ### Large-scale staged CADS
 For large cohorts the three CADS stages (preprocess → inference → restore) can be run as separate CPU/GPU jobs instead of the single `--tasks cads` run. See **[docs/staged-cads.md](docs/staged-cads.md)**.
@@ -225,7 +225,7 @@ pre-commit install
 ---
 ## Docker Usage
 - Clone this repository and `cd` into it.
-- Make sure **Docker ≤ 19.03** is installed and running.
+- Make sure **Docker >= 19.03** is installed and running.
   - For **Windows**, use Docker Desktop 4.37.1 or later and enable WSL integration.
 - An **NVIDIA GPU** is required.
 - **NVIDIA Container Toolkit** must be installed and configured for Docker (not required on Windows).
@@ -266,6 +266,17 @@ If you are using Windows, it is recommended to add the following flags to reduce
    - Shiyam Sundar, L. K., Pires, M., & Gutschmayer, S. LION: Automated Lesion Segmentation for Whole-Body PET. Zenodo. https://doi.org/10.5281/zenodo.12626789. https://github.com/ENHANCE-PET/LION
 - **BOA (Body and Organ Analysis)**
    - Haubold, J., Baldini, G., Parmar, V., Schaarschmidt, B.M., Koitka, S., Kroll, L., van Landeghem, N., Umutlu, L., Forsting, M., Nensa, F. and Hosch, R., 2024. BOA: A CT-Based Body and Organ Analysis for Radiologists at the Point of Care. Investigative Radiology, 59(6), pp.433-441. https://github.com/UMEssen/Body-and-Organ-Analysis
+- **Test data (The Cancer Imaging Archive)**
+   - The real-DICOM integration test suite (see [test/README.md](test/README.md)) exercises the
+     DICOM → NIfTI conversion against small, public series pulled from
+     [The Cancer Imaging Archive (TCIA)](https://www.cancerimagingarchive.net/). Anyone using this
+     test data should cite TCIA itself plus each collection actually used:
+   - Clark, K., Vendt, B., Smith, K., Freymann, J., Kirby, J., Koppel, P., Moore, S., Phillips, S., Maffitt, D., Pringle, M., Tarbox, L. and Prior, F., 2013. The Cancer Imaging Archive (TCIA): maintaining and operating a public information repository. Journal of Digital Imaging, 26(6), pp.1045-1057. https://doi.org/10.1007/s10278-013-9622-7
+   - Zuley, M.L., Jarosz, R., Drake, B.F., Rancilio, D., Klim, A., Rieger-Christ, K. and Lemmerman, J., 2016. The Cancer Genome Atlas Prostate Adenocarcinoma Collection (TCGA-PRAD) (Version 4) [Data set]. The Cancer Imaging Archive. https://doi.org/10.7937/K9/TCIA.2016.YXOGLM4Y — also requires acknowledging "The results published or shown here are in whole or part based upon data generated by the TCGA Research Network: http://cancergenome.nih.gov/"
+   - Kinahan, P., Muzi, M., Bialecki, B., Herman, B. and Coombs, L., 2019. Data from the ACRIN 6668 Trial NSCLC-FDG-PET (Version 2) [Data set]. The Cancer Imaging Archive. https://doi.org/10.7937/tcia.2019.30ilqfcl
+   - Juvekar, P., Dorent, R., Kögl, F., Torio, E., Barr, C., Rigolo, L., Galvin, C., Jowkar, N., Kazi, A., Haouchine, N., Cheema, H., Navab, N., Pieper, S., Wells, W.M., Bi, W.L., Golby, A., Frisken, S. and Kapur, T., 2023. The Brain Resection Multimodal Imaging Database (ReMIND) (Version 1) [Data set]. The Cancer Imaging Archive. https://doi.org/10.7937/3RAG-D070
+   - Newitt, D.C., Partridge, S.C., Zhang, Z., Gibbs, J., Chenevert, T., Rosen, M., Bolan, P., Marques, H., Romanoff, J., Cimino, L., Joe, B.N., Umphrey, H., Ojeda-Fournier, H., Dogan, B., Oh, K.Y., Abe, H., Drukteinis, J., Esserman, L.J. and Hylton, N.M., 2021. ACRIN 6698/I-SPY2 Breast DWI [Data set]. The Cancer Imaging Archive. https://doi.org/10.7937/tcia.kk02-6d95
+   - Li, W., Newitt, D.C., Gibbs, J., Wilmes, L.J., Jones, E.F., Arasu, V.A., Strand, F., Onishi, N., Nguyen, A.A-T., Kornak, J., Joe, B.N., Price, E.R., Ojeda-Fournier, H., Eghtedari, M., Zamora, K.W., Woodard, S.A., Umphrey, H., Bernreuter, W., Nelson, M. and Hylton, N.M., 2022. I-SPY 2 Breast Dynamic Contrast Enhanced MRI Trial (ISPY2) (Version 1) [Data set]. The Cancer Imaging Archive. https://doi.org/10.7937/TCIA.D8Z0-9T85
 ---
 
 ## Reference
