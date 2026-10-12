@@ -58,7 +58,7 @@ class TotalSegmentatorMuscleFat:
                         is_mr = (
                             filename.endswith("nii.gz")
                             and not filename.startswith(("CT", "SUV", "PET"))
-                            and not filename.endswith("seg.nii.gz")
+                            and not filename.endswith(("seg.nii.gz", "seg_refined.nii.gz"))
                             and is_mr_filename(filename, mr_keywords)
                         )
 
