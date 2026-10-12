@@ -47,12 +47,13 @@ LACRIMAL_DILATE_VOX = 3  # dilate lacrimal labels by this many native-CT voxels 
 # survives nearest-neighbor resampling onto the PET grid
 
 MASK_CHOICES = [
-    "PETseg",  # SUV
-    "PETsegSUL",  # SUL
-    "PETseg_revised",
-]  # doctors' annotation (label mask)
+    "PETseg",  # AutoPET SUV
+    "PETsegSUL",  # AutoPET SUL
+    "PETseg_revised",  # doctors' annotation (label mask)
+    "PETseg_LION",  # LION (SUV only)
+]
 MASK_EXTS = (".nii.gz", ".nii")
-DEFAULT_MASKS = ["PETseg", "PETsegSUL", "PETseg_revised"]  # default if --masks not given
+DEFAULT_MASKS = ["PETseg", "PETsegSUL", "PETseg_revised", "PETseg_LION"]  # default if --masks not given
 OUT_SUFFIX = "_postprocessed"  # cleaned mask saved as <mask><suffix>.nii.gz
 REMOVED_SUFFIX = "_postprocessedRemoved"  # only the removed lesions, saved as <mask><suffix>.nii.gz
 CADS_FILE = "CTcads.nii.gz"

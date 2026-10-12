@@ -355,7 +355,9 @@ class TumorInfoExtraction:
                 if self.mask_source == "revised":
                     mask_desc = f"a '{self.label_glob}' label in {label_loc}"
                 elif self.mask_source == "lion":
-                    mask_desc = "PETseg_LION.nii.gz" if metric == "SUV" else "PETsegSUL_LION.nii.gz"
+                    mask_desc = "PETseg_LION.nii.gz"
+                elif self.mask_source == "lion_postprocessed":
+                    mask_desc = "PETseg_LION_postprocessed.nii.gz"
                 else:
                     mask_desc = "PETseg.nii.gz" if metric == "SUV" else "PETsegSUL.nii.gz"
                 msg = (
