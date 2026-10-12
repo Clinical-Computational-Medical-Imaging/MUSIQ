@@ -24,7 +24,6 @@ class LionInference:
         self,
         input_dirpath_processed: str | os.PathLike,
         lion_model: str = "fdg",
-        pet_metric: str | list[str] | None = None,
         lion_accelerator: str | None = None,
     ) -> None:
         """Walk the processed tree and run LION tumor segmentation on SUV NIfTIs.

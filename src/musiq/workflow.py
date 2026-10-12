@@ -316,7 +316,6 @@ class Workflow:
 
         if self.lion:
             logger.info("\n" + "#" * 50 + "\nStarting LION Inference\n" + "#" * 50)
-            metrics = self.pet_metric if isinstance(self.pet_metric, list) else [self.pet_metric]
             if self.lion_venv:
                 _lion_bin = plb.Path(self.lion_venv) / "bin/musiq_lion_inference"
             else:
@@ -327,8 +326,6 @@ class Workflow:
                 self.output_dirpath,
                 "--lion-model",
                 self.lion_model,
-                "--pet-metric",
-                *metrics,
             ]
             if self.lion_accelerator:
                 cmd += ["--lion-accelerator", self.lion_accelerator]
