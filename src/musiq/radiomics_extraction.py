@@ -68,9 +68,9 @@ def resolve_mask(
         key = "TumorStatsRevised" if metric == "SUV" else "TumorStatsRevisedSUL"
         return resolve_tumor_label(study_dirpath, label_dirpath, label_glob), key
     if mask_source == "lion":
-        fname = "PETseg_LION.nii.gz" if metric == "SUV" else "PETsegSUL_LION.nii.gz"
+        # Single mask from raw PET; key differs by metric since SUV/SUL stats are computed separately.
         key = "TumorStatsLION" if metric == "SUV" else "TumorStatsLIONSUL"
-        mask_path = os.path.join(study_dirpath, fname)
+        mask_path = os.path.join(study_dirpath, "PETseg_LION.nii.gz")
         return (mask_path if os.path.exists(mask_path) else None), key
     if mask_source == "postprocessed":
         fname = "PETseg_postprocessed.nii.gz" if metric == "SUV" else "PETsegSUL_postprocessed.nii.gz"
@@ -190,7 +190,7 @@ class RadiomicsExtractor:
                 if self.mask_source == "revised":
                     mask_desc = f"a '{self.label_glob}' label in {label_loc}"
                 elif self.mask_source == "lion":
-                    mask_desc = "PETseg_LION.nii.gz" if metric == "SUV" else "PETsegSUL_LION.nii.gz"
+                    mask_desc = "PETseg_LION.nii.gz"
                 else:
                     mask_desc = "PETseg.nii.gz" if metric == "SUV" else "PETsegSUL.nii.gz"
                 msg = f"No directories found with necessary files for {metric}: {necessary_files} plus {mask_desc}."
