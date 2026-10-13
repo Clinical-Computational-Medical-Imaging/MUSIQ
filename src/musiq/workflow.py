@@ -74,7 +74,7 @@ class Workflow:
             tasks (list[str] | None): List of tasks to run. If None, all tasks are run. Possible values are:
                 - "series_selection": Select series based on keywords.
                 - "autopet": Run autopet3 on PET images.
-                - "autopet_postprocessing": Run autopet postprocessing on PETseg masks.
+                - "postprocessing": Run postprocessing (lacrimal/arm/small-vox removal) on all PETseg masks.
                 - "totalsegmentator": Run TotalSegmentator on CT images.
                 - "moose": Run Moose on CT images.
                 - "radiomics": Extract radiomics features from selected series.
@@ -83,7 +83,7 @@ class Workflow:
                 - "cads": Run CADS on CT images.
                 - "boa": Run UMEssen BOA Body Composition Analysis (BCA) on CT images via Docker.
                 - "lion": Run LION lesion segmentation on PET images (requires a conda env with musiq_lion_inference).
-                - "lion_postprocessing": Run postprocessing (lacrimal/arm/small-vox removal) on LION masks.
+
             ct_primary_keywords (list[str] | None): Keywords for primary selection of CT series.
             ct_secondary_keywords (list[str] | None): Keywords for secondary selection of CT series.
             ct_exclusion_keywords (list[str] | None): Keywords to exclude CT series.
@@ -120,7 +120,7 @@ class Workflow:
                 "series_selection",
                 "radiomics",
                 "autopet",
-                "autopet_postprocessing",
+                "postprocessing",
                 "totalsegmentator",
                 "tumor",
                 "plot",
@@ -138,8 +138,7 @@ class Workflow:
                         "series_selection",
                         "radiomics",
                         "autopet",
-                        "autopet_postprocessing",
-                        "autopet_postprocess",
+                        "postprocessing",
                         "totalsegmentator",
                         "tumor",
                         "plot",
@@ -149,7 +148,6 @@ class Workflow:
                         "cads",
                         "boa",
                         "lion",
-                        "lion_postprocessing",
                     ]
                     for t in tasks or []
                 )
@@ -158,16 +156,14 @@ class Workflow:
                 raise ValueError(
                     "Invalid tasks specified. Possible values are: "
                     "'series_selection', 'radiomics', 'autopet', "
-                    "'autopet_postprocessing', 'totalsegmentator', "
+                    "'postprocessing', 'totalsegmentator', "
                     "'tumor', 'plot', 'moose', 'muscle_fat', 'sul', "
-                    "'cads', 'boa', 'lion', 'lion_postprocessing'."
+                    "'cads', 'boa', 'lion'."
                 )
 
         self.series_selection = "series_selection" in (tasks or [])
         self.autopet = "autopet" in (tasks or [])
-        self.autopet_postprocessing = "autopet_postprocessing" in (tasks or []) or "autopet_postprocess" in (
-            tasks or []
-        )
+        self.postprocessing = "postprocessing" in (tasks or [])
         self.cads = "cads" in (tasks or [])
         self.totalsegmentator = "totalsegmentator" in (tasks or [])
         self.muscle_fat = "muscle_fat" in (tasks or [])
@@ -178,7 +174,6 @@ class Workflow:
         self.plot = "plot" in (tasks or [])
         self.boa = "boa" in (tasks or [])
         self.lion = "lion" in (tasks or [])
-        self.lion_postprocessing = "lion_postprocessing" in (tasks or [])
         self.lion_model = lion_model
         self.lion_accelerator = lion_accelerator
         self.lion_conda_env = lion_conda_env
@@ -345,42 +340,8 @@ class Workflow:
                 use_cpu=self.cads_cpu,
             ).run()
 
-        # needs PETseg_LION from lion and CTcads from cads, so it must run after both
-        if self.lion_postprocessing:
-            from .autopet_postprocessing.arm_lesions import ArmLesionRemover
-            from .autopet_postprocessing.lacrimalRemoval import LacrimalRemover
-            from .autopet_postprocessing.smallVoxRemoval import SmallVoxRemover
-
-            _lion_masks = ["PETseg_LION"]
-            _mp = self.postprocessing_workers is not None
-            _workers = self.postprocessing_workers or 30
-
-            logger.info("\n" + "#" * 50 + "\nStarting LION Lacrimal Removal\n" + "#" * 50)
-            LacrimalRemover(
-                input_dirpath=self.output_dirpath,
-                masks=_lion_masks,
-                multiprocessing=_mp,
-                max_workers=_workers,
-            ).run()
-
-            logger.info("\n" + "#" * 50 + "\nStarting LION Arm Lesion Removal\n" + "#" * 50)
-            ArmLesionRemover(
-                input_dirpath=self.output_dirpath,
-                masks=_lion_masks,
-                multiprocessing=_mp,
-                max_workers=_workers,
-            ).run()
-
-            logger.info("\n" + "#" * 50 + "\nStarting LION Small Voxel Removal\n" + "#" * 50)
-            SmallVoxRemover(
-                input_dirpath=self.output_dirpath,
-                masks=_lion_masks,
-                multiprocessing=_mp,
-                max_workers=_workers,
-            ).run()
-
-        # needs PETseg from autopet and CTcads from cads, so it must run after both
-        if self.autopet_postprocessing:
+        # needs PETseg/PETseg_LION from autopet/lion and CTcads from cads, so it must run after both
+        if self.postprocessing:
             from .autopet_postprocessing.arm_lesions import ArmLesionRemover
             from .autopet_postprocessing.lacrimalRemoval import LacrimalRemover
             from .autopet_postprocessing.smallVoxRemoval import SmallVoxRemover
@@ -388,21 +349,21 @@ class Workflow:
             _mp = self.postprocessing_workers is not None
             _workers = self.postprocessing_workers or 30
 
-            logger.info("\n" + "#" * 50 + "\nStarting Autopet Lacrimal Removal\n" + "#" * 50)
+            logger.info("\n" + "#" * 50 + "\nStarting Lacrimal Removal\n" + "#" * 50)
             LacrimalRemover(
                 input_dirpath=self.output_dirpath,
                 multiprocessing=_mp,
                 max_workers=_workers,
             ).run()
 
-            logger.info("\n" + "#" * 50 + "\nStarting Autopet Arm Lesion Removal\n" + "#" * 50)
+            logger.info("\n" + "#" * 50 + "\nStarting Arm Lesion Removal\n" + "#" * 50)
             ArmLesionRemover(
                 input_dirpath=self.output_dirpath,
                 multiprocessing=_mp,
                 max_workers=_workers,
             ).run()
 
-            logger.info("\n" + "#" * 50 + "\nStarting Autopet Small Voxel Removal\n" + "#" * 50)
+            logger.info("\n" + "#" * 50 + "\nStarting Small Voxel Removal\n" + "#" * 50)
             SmallVoxRemover(
                 input_dirpath=self.output_dirpath,
                 multiprocessing=_mp,
@@ -494,8 +455,8 @@ def workflow_entrypoint():
         "--tasks",
         nargs="+",
         help="List of tasks to run. Possible values: series_selection, "
-        "radiomics, autopet, autopet_postprocessing, totalsegmentator, tumor, plot, moose, muscle_fat, "
-        "sul, cads, boa, lion, lion_postprocessing.",
+        "radiomics, autopet, postprocessing, totalsegmentator, tumor, plot, moose, muscle_fat, "
+        "sul, cads, boa, lion.",
         default=None,
     )
     parser.add_argument(
