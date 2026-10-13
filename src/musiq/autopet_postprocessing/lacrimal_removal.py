@@ -1,7 +1,7 @@
 """
 Choose which mask(s) to process by passing --masks when running the code:
   --masks PETseg                            # SUV only
-  --masks PETseg_revised                    # Helen's only
+  --masks PETseg_revised                    # doctors' annotation
   --masks PETseg PETsegSUL                  # both model masks
   --masks PETseg PETsegSUL PETseg_revised   # all three
 If --masks is not given, it defaults to PETseg PETsegSUL (SUV + SUL).
@@ -16,6 +16,7 @@ A PET lesion is removed if:
 
 import argparse
 import json
+import logging
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
@@ -32,10 +33,11 @@ from cads.dataset_utils.bodyparts_labelmaps import (  # noqa: E402
 from nibabel.processing import resample_from_to
 from scipy.ndimage import binary_dilation, distance_transform_edt
 
+logger = logging.getLogger(__name__)
+
 # --------------------------------------------------------------------------- #
 # Config
 # --------------------------------------------------------------------------- #
-# DATA_DIR            = Path("/data/Data2/MULTIPRO/processed/") #/home/amka26/Documents/test_data
 LACRIMAL_LABELS = [144, 145]  # CADS: Lacrimal gland L / R
 SUBCUTANEOUS_LABEL = 158  # CADS: Subcutaneous tissue
 ALLOWED_DOMINANT = {0, SUBCUTANEOUS_LABEL}  # background(0) / subcutaneous -> removable when near gland
@@ -152,13 +154,13 @@ class LacrimalRemover:
             if all(f in filenames for f in NECESSARY_FILES)
             and any(m + ext in filenames for m in self.masks for ext in MASK_EXTS)
         )
-        print(f"Found {len(sub_dirs)} session(s) with {NECESSARY_FILES} + any of {self.masks}", flush=True)
+        logger.info(f"Found {len(sub_dirs)} session(s) with {NECESSARY_FILES} + any of {self.masks}")
         if self.patient_id is not None:
             sub_dirs = [d for d in sub_dirs if Path(d).parent.name == self.patient_id]
-            print(f"Filtering to patient_id={self.patient_id}: {len(sub_dirs)} session(s)", flush=True)
+            logger.info(f"Filtering to patient_id={self.patient_id}: {len(sub_dirs)} session(s)")
         if self.limit is not None:
             sub_dirs = sub_dirs[: self.limit]
-            print(f"Limiting to first {len(sub_dirs)} session(s)", flush=True)
+            logger.info(f"Limiting to first {len(sub_dirs)} session(s)")
         if not sub_dirs:
             return
 
@@ -195,24 +197,22 @@ class LacrimalRemover:
             with open(tmp, "w") as f:
                 json.dump(summary, f, indent=2)
             tmp.replace(out_json)
-            print(
-                f"\nWrote {len(rows)} removed lesion(s) across {len(per_patient)} patient(s) -> {out_json}", flush=True
-            )
+            logger.info(f"\nWrote {len(rows)} removed lesion(s) across {len(per_patient)} patient(s) -> {out_json}")
         else:
-            print("\nNo lesions removed in any session.", flush=True)
-        print("Lacrimal removal done.", flush=True)
+            logger.warning("\nNo lesions removed in any session.")
+        logger.info("Lacrimal removal done.")
 
     def process_wrapper(self, dirpath):
         try:
             return self.process_patient(dirpath)
         except Exception as e:
-            print(f"  !! ERROR processing {dirpath}: {e}", flush=True)
+            logger.error(f"  !! ERROR processing {dirpath}: {e}")
             return []
 
     # ---- per-session work ----------------------------------------------- #
     def process_patient(self, dirpath):
         session = Path(dirpath)
-        print(f"\n=== {session.parent.name}/{session.name} ===", flush=True)
+        logger.info(f"\n=== {session.parent.name}/{session.name} ===")
         raw = nib.load(str(session / CADS_FILE))
 
         # native-resolution CADS work (dilation, native distance transform) is
@@ -243,7 +243,7 @@ class LacrimalRemover:
         # resample the already-computed native distance field onto this mask's grid
         dist, lac_found = resample_distance_to_grid(cads_img, dist_nat, mask_img)
         if not lac_found:
-            print(f"  [{mask_name}] no lacrimal voxels in native CADS - nothing to remove", flush=True)
+            logger.warning(f"  [{mask_name}] no lacrimal voxels in native CADS - nothing to remove")
 
         # lesions + vectorized per-lesion stats
         cc, n = cc3d.connected_components((data > 0).astype(np.int32), connectivity=CONNECTIVITY, return_N=True)
@@ -251,7 +251,7 @@ class LacrimalRemover:
         sizes = stats["voxel_counts"]
         boxes = stats["bounding_boxes"]
         lac_counts = np.bincount(cc.ravel(), weights=lac.ravel(), minlength=n + 1)
-        print(f"  [{mask_name}] lesions: {n}", flush=True)
+        logger.info(f"  [{mask_name}] lesions: {n}")
 
         rows, drop = [], []
         for lid in range(1, n + 1):
@@ -283,7 +283,7 @@ class LacrimalRemover:
             # verbose per-lesion line for EVERY lesion (calibration view)
             touches = {NAMES.get(int(v), int(v)): int(c) for v, c in zip(vals, counts, strict=False) if v != 0}
             tag = f"  <-- REMOVE ({reason})" if remove else ""
-            print(
+            logger.info(
                 f"    lesion {lid:>2}: {vox:>6} vox | lacrimal {in_lac:>5} "
                 f"({frac_lac:6.1%}) | dist {min_dist:5.1f}mm | bg {bg:4.0%} "
                 f"| touches {touches}{tag}",
@@ -327,8 +327,8 @@ class LacrimalRemover:
                 tmp_file = session / f"{stem}.tmp.nii.gz"
                 nib.save(nib.Nifti1Image(arr_out, mask_img.affine, mask_img.header), str(tmp_file))
                 tmp_file.replace(out_file)
-                print(f"  [{mask_name}] saved {out_file.name}", flush=True)
-        print(f"  [{mask_name}] {n} lesion(s), removed {len(drop)}", flush=True)
+                logger.info(f"  [{mask_name}] saved {out_file.name}")
+        logger.info(f"  [{mask_name}] {n} lesion(s), removed {len(drop)}")
         return rows
 
 

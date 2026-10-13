@@ -100,6 +100,7 @@ def _restore_one_case(job: dict) -> dict:
 
         nib.save(nib.Nifti1Image(seg_combined, affine), output_fpath)
     except Exception as e:  # don't let one bad case kill the pool
+        logger.exception(f"Failed to restore and combine CADS segmentation for case '{case}' in '{dirpath}'.")
         return {**result, "status": "error", "error": repr(e)}
 
     # Clean up this case's intermediates

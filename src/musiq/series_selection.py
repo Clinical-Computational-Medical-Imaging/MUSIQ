@@ -986,8 +986,10 @@ class SeriesSelection:
 
         Returns:
             tuple: Path to the NIfTI file and a dictionary of DICOM tags."""
-        first_dcm = os.listdir(MR_dcm_dirpath)[0]
-        ds = pydicom.dcmread(str(str(MR_dcm_dirpath) + "/" + first_dcm), stop_before_pixels=True)
+        dicom_files = list_dicom_files(MR_dcm_dirpath)
+        if not dicom_files:
+            raise FileNotFoundError(f"No DICOM files found in {MR_dcm_dirpath}")
+        ds = pydicom.dcmread(dicom_files[0])
         # dcm2niix names MR NIfTIs from `%p` (ProtocolName, falling back to SeriesDescription);
         # match on that plus the exact SeriesNumber (so series sharing a ProtocolName aren't
         # confused with each other) to detect existing output.

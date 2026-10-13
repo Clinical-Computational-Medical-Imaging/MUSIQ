@@ -51,6 +51,7 @@ class LionInference:
 
             return "cuda" if torch.cuda.is_available() else "cpu"
         except ImportError:
+            logger.warning("No torch found")
             return "cpu"
 
     def run(self) -> None:

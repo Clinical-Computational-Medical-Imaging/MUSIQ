@@ -71,4 +71,5 @@ consistent with the images on disk.
 
 - The factor assumes the standard Siemens-style quantitative calibration. `ADMIN` and `NONE` are handled
   for correctness/safety, but cohorts are overwhelmingly `START` in practice.
-- SUL additionally requires `PatientLBM` from the `muscle_fat` stage; without it the `sul` stage skips.
+- SUL uses the `PatientLBM` from the `muscle_fat` stage when `PatientLBM` does not exist the james formular
+  is used for calculation when the `PatientHeight` exists in DICOM.

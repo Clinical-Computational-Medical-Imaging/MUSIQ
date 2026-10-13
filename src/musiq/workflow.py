@@ -343,8 +343,8 @@ class Workflow:
         # needs PETseg/PETseg_LION from autopet/lion and CTcads from cads, so it must run after both
         if self.postprocessing:
             from .autopet_postprocessing.arm_lesions import ArmLesionRemover
-            from .autopet_postprocessing.lacrimalRemoval import LacrimalRemover
-            from .autopet_postprocessing.smallVoxRemoval import SmallVoxRemover
+            from .autopet_postprocessing.lacrimal_removal import LacrimalRemover
+            from .autopet_postprocessing.small_vox_removal import SmallVoxRemover
 
             _mp = self.postprocessing_workers is not None
             _workers = self.postprocessing_workers or 30
