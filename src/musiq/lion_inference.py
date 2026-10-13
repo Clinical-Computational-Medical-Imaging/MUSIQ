@@ -26,14 +26,15 @@ class LionInference:
         lion_model: str = "fdg",
         lion_accelerator: str | None = None,
     ) -> None:
-        """Walk the processed tree and run LION tumor segmentation on raw PET NIfTIs.
+        """Walk the processed tree and run LION tumor segmentation on SUV NIfTIs.
 
-        Produces PETseg_LION.nii.gz per study dir from PET.nii.gz (raw Bq/mL counts).
-        Updates patient_info.json with PETseg_LIONPath.
+        Produces PETseg_LION.nii.gz per study dir.
+        Updates patient_info.json with PETsegLIONPath.
 
         Args:
             input_dirpath_processed: Root of the processed output tree.
             lion_model: LION model — 'fdg' or 'psma'.
+            pet_metric: Ignored — LION only runs on SUV. Kept for interface compatibility.
             lion_accelerator: Device override — 'cuda', 'cpu', or 'mps'. Auto-detected when None.
         """
         if lion_model not in ("fdg", "psma"):
@@ -58,16 +59,18 @@ class LionInference:
         accelerator = self._resolve_accelerator()
         logger.info(f"LION accelerator: {accelerator}, model: {self.lion_model}")
 
+        petseg_fname = "PETseg_LION.nii.gz"
+        petseg_key = "PETseg_LIONPath"
         found_any = False
+
         for dirpath, dirnames, filenames in os.walk(self.input_dirpath):
             dirnames[:] = sorted([d for d in dirnames if d not in _RESERVED_DIRS], key=_natural_key)
-            if "PET.nii.gz" not in filenames:
+            if "SUV.nii.gz" not in filenames:
                 continue
             found_any = True
             patient_series = plb.Path(dirpath).parts[-2:]
             logger.info(f"Processing {patient_series[0]}/{patient_series[1]}")
 
-            petseg_fname = "PETseg_LION.nii.gz"
             if os.path.isfile(os.path.join(dirpath, petseg_fname)):
                 logger.info(f"Skipping {patient_series}: {petseg_fname} already exists.")
                 continue
@@ -83,9 +86,9 @@ class LionInference:
                 with open(json_fpath) as f:
                     patient_info = json.load(f)
 
-            input_fpath = os.path.join(dirpath, "PET.nii.gz")
+            input_fpath = os.path.join(dirpath, "SUV.nii.gz")
             with tempfile.TemporaryDirectory() as tmp:
-                # LION expects raw PET in Bq/mL; PT_ prefix is the moosez/lionz naming convention.
+                # LION Python API takes a file path (PT_-prefixed) and returns the output path.
                 pt_copy = os.path.join(tmp, "PT_input.nii.gz")
                 shutil.copy(input_fpath, pt_copy)
                 try:
@@ -95,14 +98,14 @@ class LionInference:
                     if not seg_fpath or not os.path.exists(seg_fpath):
                         logger.error(f"LION produced no output for {patient_series}.")
                         continue
+                    shutil.copy(seg_fpath, os.path.join(dirpath, petseg_fname))
+                    logger.info(f"Saved {petseg_fname} for {patient_series}.")
 
                     if flag_json_exists:
                         series_name = next(iter(patient_info["Studies"][study_date]["Modalities"]["PT"][0]))
                         patient_info["Studies"][study_date]["Modalities"]["PT"][0][series_name].update(
-                            {"PETseg_LIONPath": os.path.join(dirpath, petseg_fname)}
+                            {petseg_key: os.path.join(dirpath, petseg_fname)}
                         )
-                    shutil.copy(seg_fpath, os.path.join(dirpath, petseg_fname))
-                    logger.info(f"Saved {petseg_fname} for {patient_series}.")
                 except Exception as e:
                     logger.error(f"LION inference failed for {patient_series}: {e}")
                     continue
@@ -112,7 +115,7 @@ class LionInference:
                     json.dump(patient_info, f)
 
         if not found_any:
-            logger.warning(f"No PET.nii.gz files found under {self.input_dirpath}.")
+            logger.warning(f"No SUV.nii.gz files found under {self.input_dirpath}.")
 
 
 def lion_inference_entrypoint() -> None:
@@ -127,7 +130,7 @@ def lion_inference_entrypoint() -> None:
 
     import argparse
 
-    parser = argparse.ArgumentParser(description="Recursively run LION on all PET.nii.gz files in a processed tree.")
+    parser = argparse.ArgumentParser(description="Recursively run LION on all SUV.nii.gz files in a processed tree.")
     parser.add_argument("--input-dirpath-processed", required=True, help="Processed output tree root.")
     parser.add_argument(
         "--lion-model", type=str, default="fdg", choices=["fdg", "psma"], help="LION model (default: fdg)."

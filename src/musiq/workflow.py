@@ -63,7 +63,7 @@ class Workflow:
         lion_accelerator: str | None = None,
         lion_conda_env: str = "lion",
         lion_venv: str | None = None,
-        autopet_postprocessing_workers: int | None = None,
+        postprocessing_workers: int | None = None,
     ) -> None:
         """
         Run the MUSIQ workflow with the specified parameters.
@@ -83,6 +83,7 @@ class Workflow:
                 - "cads": Run CADS on CT images.
                 - "boa": Run UMEssen BOA Body Composition Analysis (BCA) on CT images via Docker.
                 - "lion": Run LION lesion segmentation on PET images (requires a conda env with musiq_lion_inference).
+                - "lion_postprocessing": Run postprocessing (lacrimal/arm/small-vox removal) on LION masks.
             ct_primary_keywords (list[str] | None): Keywords for primary selection of CT series.
             ct_secondary_keywords (list[str] | None): Keywords for secondary selection of CT series.
             ct_exclusion_keywords (list[str] | None): Keywords to exclude CT series.
@@ -101,13 +102,14 @@ class Workflow:
             pet_metric = ["SUV", "SUL"]
         self.pet_metric = pet_metric
         # mask_sources: 'autopet' (PETseg), 'revised' (physician label), 'lion' (PETseg_LION),
-        #              'postprocessed' (PETseg_postprocessed)
+        #              'postprocessed' (PETseg_postprocessed), 'lion_postprocessed' (PETseg_LION_postprocessed)
         if mask_sources is None:
             mask_sources = ["autopet"]
         for s in mask_sources:
-            if s not in ("autopet", "revised", "lion", "postprocessed"):
+            if s not in ("autopet", "revised", "lion", "postprocessed", "lion_postprocessed"):
                 raise ValueError(
-                    f"mask_sources entries must be 'autopet', 'revised', 'lion', or 'postprocessed', got '{s}'"
+                    f"mask_sources entries must be 'autopet', 'revised', 'lion', 'postprocessed', "
+                    f"or 'lion_postprocessed', got '{s}'"
                 )
         self.mask_sources = mask_sources
         self.label_dirpath = label_dirpath
@@ -147,6 +149,7 @@ class Workflow:
                         "cads",
                         "boa",
                         "lion",
+                        "lion_postprocessing",
                     ]
                     for t in tasks or []
                 )
@@ -157,7 +160,7 @@ class Workflow:
                     "'series_selection', 'radiomics', 'autopet', "
                     "'autopet_postprocessing', 'totalsegmentator', "
                     "'tumor', 'plot', 'moose', 'muscle_fat', 'sul', "
-                    "'cads', 'boa', 'lion'."
+                    "'cads', 'boa', 'lion', 'lion_postprocessing'."
                 )
 
         self.series_selection = "series_selection" in (tasks or [])
@@ -175,11 +178,12 @@ class Workflow:
         self.plot = "plot" in (tasks or [])
         self.boa = "boa" in (tasks or [])
         self.lion = "lion" in (tasks or [])
+        self.lion_postprocessing = "lion_postprocessing" in (tasks or [])
         self.lion_model = lion_model
         self.lion_accelerator = lion_accelerator
         self.lion_conda_env = lion_conda_env
         self.lion_venv = lion_venv
-        self.autopet_postprocessing_workers = autopet_postprocessing_workers
+        self.postprocessing_workers = postprocessing_workers
         self.boa_weights_path = boa_weights_path
         self.boa_image = boa_image
         self.boa_fast = boa_fast
@@ -341,14 +345,48 @@ class Workflow:
                 use_cpu=self.cads_cpu,
             ).run()
 
+        # needs PETseg_LION from lion and CTcads from cads, so it must run after both
+        if self.lion_postprocessing:
+            from .autopet_postprocessing.arm_lesions import ArmLesionRemover
+            from .autopet_postprocessing.lacrimalRemoval import LacrimalRemover
+            from .autopet_postprocessing.smallVoxRemoval import SmallVoxRemover
+
+            _lion_masks = ["PETseg_LION"]
+            _mp = self.postprocessing_workers is not None
+            _workers = self.postprocessing_workers or 30
+
+            logger.info("\n" + "#" * 50 + "\nStarting LION Lacrimal Removal\n" + "#" * 50)
+            LacrimalRemover(
+                input_dirpath=self.output_dirpath,
+                masks=_lion_masks,
+                multiprocessing=_mp,
+                max_workers=_workers,
+            ).run()
+
+            logger.info("\n" + "#" * 50 + "\nStarting LION Arm Lesion Removal\n" + "#" * 50)
+            ArmLesionRemover(
+                input_dirpath=self.output_dirpath,
+                masks=_lion_masks,
+                multiprocessing=_mp,
+                max_workers=_workers,
+            ).run()
+
+            logger.info("\n" + "#" * 50 + "\nStarting LION Small Voxel Removal\n" + "#" * 50)
+            SmallVoxRemover(
+                input_dirpath=self.output_dirpath,
+                masks=_lion_masks,
+                multiprocessing=_mp,
+                max_workers=_workers,
+            ).run()
+
         # needs PETseg from autopet and CTcads from cads, so it must run after both
         if self.autopet_postprocessing:
             from .autopet_postprocessing.arm_lesions import ArmLesionRemover
             from .autopet_postprocessing.lacrimalRemoval import LacrimalRemover
             from .autopet_postprocessing.smallVoxRemoval import SmallVoxRemover
 
-            _mp = self.autopet_postprocessing_workers is not None
-            _workers = self.autopet_postprocessing_workers or 30
+            _mp = self.postprocessing_workers is not None
+            _workers = self.postprocessing_workers or 30
 
             logger.info("\n" + "#" * 50 + "\nStarting Autopet Lacrimal Removal\n" + "#" * 50)
             LacrimalRemover(
@@ -401,7 +439,7 @@ class Workflow:
             logger.info("\n" + "#" * 50 + "\nStarting Radiomics Computation\n" + "#" * 50)
             for source in self.mask_sources:
                 # Revised runs on SUV only (drawn once, independent of metric); all others run both.
-                metric = self.pet_metric if source in ("autopet", "lion", "postprocessed") else ["SUV"]
+                metric = self.pet_metric if source in ("autopet", "postprocessed") else ["SUV"]
                 RadiomicsExtractor(
                     input_dirpath_processed=self.output_dirpath,
                     pet_metric=metric,
@@ -416,7 +454,7 @@ class Workflow:
             logger.info("\n" + "#" * 50 + "\nStarting Tumor Info Extraction\n" + "#" * 50)
             for source in self.mask_sources:
                 # Revised runs on SUV only (drawn once, independent of metric); all others run both.
-                metric = self.pet_metric if source in ("autopet", "lion", "postprocessed") else ["SUV"]
+                metric = self.pet_metric if source in ("autopet", "postprocessed") else ["SUV"]
                 TumorInfoExtraction(
                     input_dirpath_processed=self.output_dirpath,
                     pet_metric=metric,
@@ -457,7 +495,7 @@ def workflow_entrypoint():
         nargs="+",
         help="List of tasks to run. Possible values: series_selection, "
         "radiomics, autopet, autopet_postprocessing, totalsegmentator, tumor, plot, moose, muscle_fat, "
-        "sul, cads, boa, lion.",
+        "sul, cads, boa, lion, lion_postprocessing.",
         default=None,
     )
     parser.add_argument(
@@ -521,12 +559,13 @@ def workflow_entrypoint():
         dest="mask_sources",
         type=str,
         nargs="+",
-        choices=["autopet", "revised", "lion", "postprocessed"],
+        choices=["autopet", "revised", "lion", "postprocessed", "lion_postprocessed"],
         default=["autopet"],
         help="Mask(s) for radiomics/tumor: 'autopet' (PETseg -> TumorStats[SUL]), 'revised' "
-        "(physician label -> TumorStatsRevised, SUV only), 'lion' (PETseg_LION -> TumorStatsLION[SUL]), "
-        "'postprocessed' (PETseg_postprocessed -> TumorStatsPostprocessed[SUL]). "
-        "Pass multiple: --mask-source autopet postprocessed (default: autopet).",
+        "(physician label -> TumorStatsRevised, SUV only), 'lion' (PETseg_LION -> TumorStatsLION, SUV only), "
+        "'postprocessed' (PETseg_postprocessed -> TumorStatsPostprocessed[SUL]), "
+        "'lion_postprocessed' (PETseg_LION_postprocessed -> TumorStatsLIONPostprocessed, SUV only). "
+        "Pass multiple: --mask-source autopet lion_postprocessed (default: autopet).",
     )
     parser.add_argument(
         "--label-dirpath",
@@ -551,10 +590,10 @@ def workflow_entrypoint():
         "Default: 1 (serial).",
     )
     parser.add_argument(
-        "--autopet-postprocessing-workers",
+        "--postprocessing-workers",
         type=int,
         default=None,
-        help="Enable parallel AutoPET postprocessing with this many worker processes. Omit for sequential.",
+        help="Enable parallel postprocessing (autopet and lion) with this many worker processes. Omit for sequential.",
     )
     parser.add_argument(
         "--boa-weights-path",
@@ -650,7 +689,7 @@ def workflow_entrypoint():
         lion_accelerator=args.lion_accelerator,
         lion_conda_env=args.lion_conda_env,
         lion_venv=args.lion_venv,
-        autopet_postprocessing_workers=args.autopet_postprocessing_workers,
+        postprocessing_workers=args.postprocessing_workers,
     ).run()
 
 
