@@ -516,11 +516,9 @@ class TotalSegmentatorMuscleFat:
     def _arms_down(seg_data: np.ndarray, name_to_label: dict[str, int], affine: np.ndarray) -> bool:
         """Decide whether the arms lie beside the body. Deliberately biased towards True.
 
-        Checked per side; one arm down is enough. A side counts as "down" if either
-          1) the humerus median lies below the scapula top — with raised arms the shaft runs up
-             alongside the head, so most of the bone sits above the scapula; a humerus that leaves
-             the FOV early still hangs downwards, so this also works for truncated arms, or
-          2) the humerus reaches below the bottom of T4.
+        Checked per side; one arm down is enough. A side counts as "down" if the humerus 5th percentile
+        lies below the T5 5th percentile (≈ bottom of T5); percentiles instead of min so a few stray
+        voxels at the bone ends do not trigger it.
         Each bone is reduced to its largest connected component to ignore stray mislabelled voxels.
         If no humerus is found at all, arms are assumed down.
         """
@@ -536,7 +534,7 @@ class TotalSegmentatorMuscleFat:
             # NIfTI world space is RAS+, so index 2 is always the S/I axis regardless of voxel orientation.
             return (np.c_[coords, np.ones(len(coords))] @ affine.T)[:, 2]
 
-        t4_z = world_z("vertebrae_T4")
+        t5_z = world_z("vertebrae_T5")
         humerus_found = False
         for side in ("left", "right"):
             hum_z = world_z(f"humerus_{side}")
@@ -544,13 +542,8 @@ class TotalSegmentatorMuscleFat:
                 continue
             humerus_found = True
 
-            scap_z = world_z(f"scapula_{side}")
-            if scap_z.size and np.median(hum_z) < scap_z.max():
-                logger.info(f"humerus_{side} median below scapula_{side} top -> arms down.")
-                return True
-
-            if t4_z.size and hum_z.min() < t4_z.min():
-                logger.info(f"humerus_{side} reaches below vertebrae_T4 -> arms down.")
+            if t5_z.size and np.percentile(hum_z, 5) < np.percentile(t5_z, 5):
+                logger.info(f"humerus_{side} reaches below vertebrae_T5 -> arms down.")
                 return True
 
         if not humerus_found:
