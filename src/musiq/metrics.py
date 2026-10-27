@@ -42,7 +42,7 @@ def calculate_hu_statistics(ct_nifti_path, segmented_nifti_path):
             "HUmedian": np.median(hu_values_organ),
         }
     else:
-        print(f"Mask is empty or has no valid data points.")
+        print("Mask is empty or has no valid data points.")
         return {}  # Return an empty list
 
 

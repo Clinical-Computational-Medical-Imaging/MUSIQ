@@ -44,7 +44,7 @@ See `README.md` for the exact clone/curl/unzip sequence and the Docker path.
 ## Architecture
 
 The pipeline is a sequence of independent **task stages**, orchestrated by `Workflow` in `src/musiq/workflow.py`. Each stage is selected by name via `--tasks`; valid names are
-`series_selection, radiomics, autopet, totalsegmentator, muscle_fat, sul, tumor, plot, moose, cads, boa`.
+`series_selection, radiomics, autopet, totalsegmentator, muscle_fat, sul, tumor, plot, moose, cads, boa, lion`.
 The default order when `--tasks` is omitted is fixed in `Workflow.__init__`.
 
 Every stage follows the same module pattern (`<stage>_inference.py` / `<stage>_extraction.py`):
