@@ -1,13 +1,18 @@
-# Mask sources: automated vs. revised labels
+# Mask sources
 
-The `radiomics` and `tumor` stages compute on one or both mask sources, chosen with `--mask-source`:
+The `radiomics` and `tumor` stages compute on one or more mask sources, chosen with `--mask-source`:
 
 | `--mask-source` | Mask used | JSON keys | Metrics |
 | --- | --- | --- | --- |
 | `autopet` (default) | automated `PETseg.nii.gz` / `PETsegSUL.nii.gz` | `TumorStats` / `TumorStatsSUL` | per `--pet-metric` (SUV and/or SUL) |
 | `revised` | physician label (see `--label-dirpath` / `--label-glob` below) | `TumorStatsRevised` | SUV only (the manual label is drawn once, independent of SUV/SUL) |
+| `lion` | `PETseg_LION.nii.gz` from the `lion` task | `TumorStatsLION` | SUV only (LION has no SUL mask) |
+| `postprocessed` | `PETseg_postprocessed.nii.gz` / `PETsegSUL_postprocessed.nii.gz` | `TumorStatsPostprocessed` / `TumorStatsPostprocessedSUL` | per `--pet-metric` (SUV and/or SUL) |
+| `lion_postprocessed` | `PETseg_LION_postprocessed.nii.gz` | `TumorStatsLIONPostprocessed` | SUV only |
 
-Pass both to compute everything in a single call — the sources run **sequentially** so their distinct keys never collide, and the automated `TumorStats*` are left untouched by the revised pass:
+The two `*_postprocessed` sources need the `postprocessing` task (which needs `cads`) to have run first. The list of sources lives in `src/musiq/mask_sources.py`.
+
+Pass several to compute everything in a single call — the sources run **sequentially** so their distinct keys never collide, and the automated `TumorStats*` are left untouched by the revised pass:
 
 ```bash
 musiq --input-dirpath /data/raw --output-dirpath /data/processed \

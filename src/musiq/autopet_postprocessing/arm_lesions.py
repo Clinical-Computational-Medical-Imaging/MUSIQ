@@ -1,7 +1,7 @@
 """
 Flag/remove above-shoulder ARM lesions, using CADS labels.
 
-Pipeline order:  lacrimalRemoval.py  ->  arm_lesions.py  ->  smallVoxRemoval.py
+Pipeline order:  lacrimal_removal.py  ->  arm_lesions.py  ->  small_vox_removal.py
 This script reads <mask>_postprocessed.nii.gz (the lacrimal-cleaned mask) and updates it IN PLACE
 (pass --no-save to only log). It never touches the original mask.
 
@@ -10,7 +10,7 @@ Choose which mask(s) to process by passing --masks:
   --masks PETseg_revised                    # doctors' annotation
   --masks PETseg PETsegSUL                  # both model masks
   --masks PETseg PETsegSUL PETseg_revised   # all three
-If --masks is not given, it defaults to PETseg PETsegSUL (SUV + SUL).
+If --masks is not given, it defaults to PETseg PETsegSUL PETseg_revised PETseg_LION (missing masks are skipped).
 
 Intended for arms-up acquisitions where the forearm/hand fold over the head, so
 physiologic arm/skin uptake lands in the same axial slices as the head.
@@ -37,8 +37,8 @@ Per session and mask (skipped with --no-save):
   <mask>_postprocessedRemoved.nii.gz the arm lesions are ADDED to it, so it holds every lesion removed so far
                                       (lacrimal + arm), labels kept, 0 elsewhere. No separate arm file is made.
 Rerunning on the same _postprocessed is safe: nothing more is removed and the removed-lesions file is unchanged.
-If lacrimalRemoval.py is rerun (it rebuilds _postprocessed and _postprocessedRemoved from the original mask), run
-this script and smallVoxRemoval.py again afterwards.
+If lacrimal_removal.py is rerun (it rebuilds _postprocessed and _postprocessedRemoved from the original mask), run
+this script and small_vox_removal.py again afterwards.
 
 Remove + save:  python3 -u arm_lesions.py --input-dirpath /path/to/processed --masks PETseg_revised
 Log only:       python3 -u arm_lesions.py --input-dirpath /path/to/processed --masks PETseg_revised --no-save
@@ -227,7 +227,7 @@ class ArmLesionRemover:
         tag = f"{session.parent.name}/{session.name}"
         in_path = session / f"{mask_name}{OUT_SUFFIX}.nii.gz"
         if not in_path.exists():
-            logger.info(f"  [{mask_name}] no {in_path.name} (run lacrimalRemoval.py first) - skipped")
+            logger.info(f"  [{mask_name}] no {in_path.name} (run lacrimal_removal.py first) - skipped")
             return []
 
         model_img = nib.squeeze_image(nib.load(str(in_path)))

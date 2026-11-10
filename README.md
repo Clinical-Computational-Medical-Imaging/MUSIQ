@@ -55,11 +55,10 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
 6. **PET Segmentation with LION**
    - Segments PET scans using [LION](https://github.com/ENHANCE-PET/LION) — a PET-only segmentation model (no CT required) trained on FDG (5,235 pts) and PSMA (2,046 pts) cohorts.
    - Runs in a separate `.venv_lion` virtual environment due to dependency conflicts. Models download automatically on first run.
-   - Activated via `--tasks lion --lion-model fdg|psma --lion-venv .venv_lion`. The LION mask can be fed into radiomics/tumor via `--mask-source lion`.
+   - Activated via `--tasks lion --lion-model fdg|psma --lion-venv .venv_lion`. The LION mask can be fed into radiomics/tumor via `--mask-source lion` (or `lion_postprocessed` after the `postprocessing` task).
    - Output:
-      - `PETseg_LION.nii.gz` – SUV lesion segmentation by LION
-      - `PETsegSUL_LION.nii.gz` – SUL lesion segmentation by LION
-      - Expands `patient_info.json` with `PETsegLIONPath` / `PETsegSULLIONPath`; radiomics/tumor results land under `TumorStatsLION` / `TumorStatsLIONSUL`
+      - `PETseg_LION.nii.gz` – lesion segmentation by LION (SUV only, there is no SUL variant)
+      - Expands `patient_info.json` with `PETseg_LIONPath`; radiomics/tumor results land under `TumorStatsLION`
 
 7. **CT Segmentation with CADS v1.0.0**
    - Performs organ segmentation on CT images using the CADS model using the specified tasks and saves everything to a single file. The labels are set as the labelmap_all_structure  as shown here https://github.com/murong-xu/CADS/tree/main/cads/dataset_utils.
@@ -68,15 +67,23 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
       - `CTcads.nii.gz`
       - Expands `patient_info.json` with CADS information
 
+8. **PET Mask Post-processing**
+   - Removes likely false-positive lesions from the PET masks using the CADS labels, in three steps: lacrimal-gland lesions → above-shoulder arm lesions (arms-up scans) → small lesions (≤ 2 voxels) outside the prostate.
+   - Activated via `--tasks postprocessing` (standalone: `musiq_autopet_postprocess`). Parallelise with `--postprocessing-workers N`.
+   - Requires `CTcads.nii.gz` from the `cads` task and the `CADS/` repo cloned into the repo root (see Standard Usage). Processes `PETseg`, `PETsegSUL`, `PETseg_revised` and `PETseg_LION`, skipping masks that do not exist. The original masks are never modified.
+   - Output (per mask):
+      - `<mask>_postprocessed.nii.gz` – cleaned mask
+      - `<mask>_postprocessedRemoved.nii.gz` – only the removed lesions
+   - Use the cleaned masks in radiomics/tumor via `--mask-source postprocessed` / `lion_postprocessed`.
 
-8. **CT Segmentation with Moose**
+9. **CT Segmentation with Moose**
    - Performs organ segmentation on CT images using Moose.
    - Moose can only take one CT per series.
    - Outputs:
      - `CTmoose_organs.nii.gz` – Segmentation mask
      - Expands `patient_info.json` with Moose information
 
-9. **Body Composition Analysis with BOA (BCA)**
+10. **Body Composition Analysis with BOA (BCA)**
    - Runs the UMEssen [Body-and-Organ-Analysis](https://github.com/UMEssen/Body-and-Organ-Analysis) BCA component on each `CT.nii.gz` via the `shipai/boa-cli` Docker image (no Python dependency added — BOA runs in its own container).
    - Reuses MUSIQ's existing `CTseg.nii.gz` as BOA's `total` segmentation when present, so the 104-organ TotalSegmentator step is not recomputed. Run `totalsegmentator` before `boa`; disable reuse with `--boa-no-reuse-total`.
    - Outputs (next to the other NIfTIs):
@@ -85,15 +92,15 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
      - `boa/` subfolder with BOA's `output.xlsx`, optional `report.pdf`, JSON measurements and logs
      - Expands `patient_info.json` with a `BCA` block and the segmentation paths
 
-10. **Radiomics Extraction**
+11. **Radiomics Extraction**
    - Computes radiomics metrics from SUV or SUL and CT and adds them to `patient_info.json`: SUV/SUL stats (mean, max, peak, median, std), lesion count, TMTV (also at thresholds 0.3/0.4/0.41/0.5/2.5/3.0/3.5/4.0), TLG, tumor dissemination (Dmax) and its height/weight-standardized form (SDmax), and surface area.
-   - **Mask source** (`--mask-source`, see [docs/mask-sources.md](docs/mask-sources.md)): `autopet` uses `PETseg.nii.gz`/`PETsegSUL.nii.gz` → `TumorStats`/`TumorStatsSUL`; `revised` uses the physician label → `TumorStatsRevised`; `lion` uses `PETseg_LION.nii.gz`/`PETsegSUL_LION.nii.gz` → `TumorStatsLION`/`TumorStatsLIONSUL`.
+   - **Mask source** (`--mask-source`, see [docs/mask-sources.md](docs/mask-sources.md)): `autopet` uses `PETseg.nii.gz`/`PETsegSUL.nii.gz` → `TumorStats`/`TumorStatsSUL`; `revised` uses the physician label → `TumorStatsRevised`; `lion` uses `PETseg_LION.nii.gz` → `TumorStatsLION`; `postprocessed` uses `PETseg_postprocessed.nii.gz`/`PETsegSUL_postprocessed.nii.gz` → `TumorStatsPostprocessed`/`TumorStatsPostprocessedSUL`; `lion_postprocessed` uses `PETseg_LION_postprocessed.nii.gz` → `TumorStatsLIONPostprocessed`. Only `autopet` and `postprocessed` run on SUL; all others are SUV only.
 
-11. **Tumor Size Analysis**
+12. **Tumor Size Analysis**
    - Quantifies tumor volume per organ. Outputs `CTsegres.nii.gz` (segmentation resampled to PET) and extends `patient_info.json` with per-organ volume, organ overlap, SUV/SUL stats and surface area.
    - Same `--mask-source` behaviour as Radiomics (per-lesion results land under the matching `TumorStats*` key).
 
-12. **Optional Plotting**
+13. **Optional Plotting**
    - Generates visualizations
 
 ---
@@ -106,7 +113,7 @@ Eventually, the project and its output are structured as follows:
 musiq/
 ├── autopet-3-model/               # Downloaded AutoPET3 checkpoints
 ├── autopet-3-submission/          # Cloned AutoPET3 repository
-├── CADS/                          # Downloaded CADS checkpoints
+├── CADS/                          # Cloned CADS repository (needed by cads and postprocessing)
 ├── data/                          # Can be anywhere in your file system
 │   ├── raw/                       # Raw DICOM files from PACS
 │   │   ├── patient_id/
@@ -130,7 +137,8 @@ musiq/
 │   │   │   │   ├── PETseg.nii.gz                  # SUV segmentations by AutoPET3
 │   │   │   │   ├── PETsegSUL.nii.gz               # SUL segmentations by AutoPET3
 │   │   │   │   ├── PETseg_LION.nii.gz             # SUV segmentations by LION
-│   │   │   │   ├── PETsegSUL_LION.nii.gz          # SUL segmentations by LION
+│   │   │   │   ├── <mask>_postprocessed.nii.gz    # cleaned mask from the postprocessing task
+│   │   │   │   ├── <mask>_postprocessedRemoved.nii.gz  # lesions removed by the postprocessing task
 │   │   │   │   ├── SUV.nii.gz                     # SUV map from PET
 │   │   │   │   ├── SUL.nii.gz                     # SUL map from PET
 │   │   │   ├── study_date_1/
@@ -205,13 +213,13 @@ docker pull shipai/boa-cli
 
 - To start the whole workflow run:
 ```bash
-musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet autopet_postprocessing totalsegmentator muscle_fat sul tumor moose cads boa --cads-tasks 556 558
+musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet totalsegmentator muscle_fat sul tumor moose cads postprocessing boa --cads-tasks 556 558
 ```
 - To run CADS you can run the different tasks given on their repository or just run 'all'
 - See `pyproject.toml` to see commands for running only parts of the pipeline in a modular way.
 
-### Mask sources: automated vs. revised labels
-The `radiomics` and `tumor` stages can compute on the automated PET segmentation (`autopet`) and/or a physician label (`revised`), selected with `--mask-source`. See **[docs/mask-sources.md](docs/mask-sources.md)** for the key/metric mapping, the `--label-dirpath` / `--label-glob` options, and `--radiomics-workers`.
+### Mask sources
+The `radiomics` and `tumor` stages can compute on the automated PET segmentation (`autopet`), a physician label (`revised`), the LION segmentation (`lion`) and the cleaned masks from the `postprocessing` task (`postprocessed`, `lion_postprocessed`), selected with `--mask-source`. See **[docs/mask-sources.md](docs/mask-sources.md)** for the key/metric mapping, the `--label-dirpath` / `--label-glob` options, and `--radiomics-workers`.
 
 ### Large-scale staged CADS
 For large cohorts the three CADS stages (preprocess → inference → restore) can be run as separate CPU/GPU jobs instead of the single `--tasks cads` run. See **[docs/staged-cads.md](docs/staged-cads.md)**.

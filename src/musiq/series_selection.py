@@ -924,7 +924,8 @@ class SeriesSelection:
                 return None
             try:
                 ds = pydicom.dcmread(os.path.join(s["SeriesPath"], files[0]), stop_before_pixels=True)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Cannot read {s['SeriesPath']} for dynamic-MR detection: {e}")
                 return None
             if "DYNAMIC" in [str(x).upper() for x in getattr(ds, "ImageType", [])]:
                 dynamic_marker = True

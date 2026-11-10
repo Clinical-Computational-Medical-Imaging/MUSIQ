@@ -24,7 +24,12 @@ musiq --input-dirpath /data/raw --output-dirpath /data/processed \
 
 Each task is also exposed as its own console script (see `[project.scripts]` in `pyproject.toml`, e.g. `musiq_cads_inference`, `musiq_autopet_inference`) so individual stages can be run in isolation.
 
-**Tests:** `pyproject.toml` configures pytest (`testpaths = ["tests"]`, coverage on, `filterwarnings = ["error"]`), but there is currently **no `tests/` directory** — there are no tests to run yet.
+**Tests:** live in `test/` (`test/unit/` and `test/integration/`, currently covering `series_selection` and `utils`). `pyproject.toml` configures pytest (`testpaths = ["test"]`, coverage on, `filterwarnings = ["error"]`, so any warning fails a test). Install the test deps with `pip install -e .[testing]`, then:
+
+```bash
+pytest                 # all tests
+pytest test/unit -q    # unit tests only
+```
 
 ## Environment setup (critical for running anything)
 
@@ -44,8 +49,8 @@ See `README.md` for the exact clone/curl/unzip sequence and the Docker path.
 ## Architecture
 
 The pipeline is a sequence of independent **task stages**, orchestrated by `Workflow` in `src/musiq/workflow.py`. Each stage is selected by name via `--tasks`; valid names are
-`series_selection, radiomics, autopet, totalsegmentator, muscle_fat, sul, tumor, plot, moose, cads, boa, lion`.
-The default order when `--tasks` is omitted is fixed in `Workflow.__init__`.
+`series_selection, radiomics, autopet, postprocessing, totalsegmentator, muscle_fat, sul, tumor, plot, moose, cads, boa, lion`.
+The default task set when `--tasks` is omitted is defined in `Workflow.__init__`; the execution order is always the fixed order of the blocks in `Workflow.run()`, regardless of the order passed to `--tasks`. `postprocessing` (package `autopet_postprocessing/`: lacrimal → arm → small-vox removal) needs `CTcads.nii.gz` and the PET masks, so it runs after `autopet`/`lion` and `cads`, and writes `<mask>_postprocessed.nii.gz`.
 
 Every stage follows the same module pattern (`<stage>_inference.py` / `<stage>_extraction.py`):
 - A class (e.g. `AutopetInference`, `CadsInference`, `RadiomicsExtractor`) constructed with `input_dirpath_processed` and stage-specific args, with a `run()` method.
@@ -68,6 +73,7 @@ Most quantification runs for one or both of `SUV` and `SUL` (`--pet-metric`, def
 
 ### Shared helpers
 
-- `utils.py` — DICOM→NIfTI conversion (`run_dcm2niix`, `run_dicom2nifti`), SUV factor computation, resampling (`resample_image`), connected components, PET metric computation, `make_json_safe` (DICOM/NumPy → JSON), keyword setup, and `create_logger` (logs to `./logger/` and stdout).
+- `utils.py` — DICOM→NIfTI conversion (`run_dcm2niix`), DICOM file listing (`list_dicom_files`, use it instead of `os.listdir()[0]`), SUV factor computation, resampling (`resample_image`), connected components, PET metric computation, `make_json_safe` (DICOM/NumPy → JSON), keyword setup, and `create_logger` (logs to `./logger/` and stdout).
+- `mask_sources.py` — dependency-free constants for `--mask-source` (`MASK_SOURCES`, `SUL_CAPABLE_SOURCES`) and the `_postprocessed` file suffixes. Used by the workflow, radiomics, tumor and postprocessing stages; add new mask sources here, not as string literals.
 - `metrics.py` — radiomics math (TMTV with multiple thresholds, TLG, Dmax/SDmax, SUVpeak, surface area). **Excluded from ruff** — do not expect it to follow the lint rules and avoid reformatting it.
 - `config.yaml` — default `SERIES_KEYWORDS` (PRIMARY/SECONDARY/EXCLUSION per CT/PT/MR modality) used by `series_selection` to auto-pick which DICOM series to convert when no keyword CLI args are passed.

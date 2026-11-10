@@ -223,7 +223,8 @@ def _slice_normal_and_extent(dicom_dirpath: str | os.PathLike) -> tuple[np.ndarr
                 ds = pydicom.dcmread(entry.path, stop_before_pixels=True)
                 ipp = np.asarray(ds.ImagePositionPatient, dtype=float)
                 iop = np.asarray(ds.ImageOrientationPatient, dtype=float)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Skipping {entry.path} for slice geometry: {e}")
                 continue
             if normal_lps is None:
                 normal_lps = np.cross(iop[:3], iop[3:6])
@@ -402,7 +403,8 @@ def select_dominant_ct_acquisition(
                 ds = pydicom.dcmread(entry.path, stop_before_pixels=True)
                 ipp = np.asarray(ds.ImagePositionPatient, dtype=float)
                 iop = np.asarray(ds.ImageOrientationPatient, dtype=float)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Skipping {entry.path} for CT acquisition selection: {e}")
                 continue
             if normal_lps is None:
                 normal_lps = np.cross(iop[:3], iop[3:6])
@@ -691,7 +693,8 @@ def resolve_pet_decay_reference(dicom_dirpath: str | os.PathLike, ds=None) -> tu
     for f in list_dicom_files(dicom_dirpath):
         try:
             d = pydicom.dcmread(f, stop_before_pixels=True, specific_tags=[(0x0008, 0x0032)])
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Skipping {f} for earliest AcquisitionTime: {e}")
             continue
         at = getattr(d, "AcquisitionTime", None)
         if at is not None and (earliest is None or time_to_seconds(at) < time_to_seconds(earliest)):

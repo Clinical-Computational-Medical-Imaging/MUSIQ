@@ -10,6 +10,7 @@ import pandas as pd
 from nilearn.image.resampling import BoundingBoxError
 
 from . import metrics
+from .mask_sources import MASK_SOURCES, POSTPROCESSED_SUFFIX
 from .utils import RESERVED_PROCESSED_DIRS, get_spacing_from_niftipath, make_json_safe, resample_image
 
 logger = logging.getLogger(__name__)
@@ -47,9 +48,7 @@ def resample_label_to_image_grid(label_fpath: str, target_fpath: str, work_dirpa
             os.remove(out_fpath)
 
 
-# Mask sources (``mask_source``): "autopet" = pipeline PETseg/PETsegSUL mask, "revised" = physician
-# Tumor label (must share the SUV/PET grid).
-MASK_SOURCES = ("autopet", "revised", "lion", "postprocessed", "lion_postprocessed")
+# Mask sources (``mask_source``) are defined in mask_sources.py.
 DEFAULT_LABEL_GLOB = "PETseg_revised.nii"
 
 
@@ -71,12 +70,13 @@ def resolve_mask(
         mask_path = os.path.join(study_dirpath, "PETseg_LION.nii.gz")
         return (mask_path if os.path.exists(mask_path) else None), "TumorStatsLION"
     if mask_source == "postprocessed":
-        fname = "PETseg_postprocessed.nii.gz" if metric == "SUV" else "PETsegSUL_postprocessed.nii.gz"
+        stem = "PETseg" if metric == "SUV" else "PETsegSUL"
+        fname = f"{stem}{POSTPROCESSED_SUFFIX}.nii.gz"
         key = "TumorStatsPostprocessed" if metric == "SUV" else "TumorStatsPostprocessedSUL"
         mask_path = os.path.join(study_dirpath, fname)
         return (mask_path if os.path.exists(mask_path) else None), key
     if mask_source == "lion_postprocessed":
-        mask_path = os.path.join(study_dirpath, "PETseg_LION_postprocessed.nii.gz")
+        mask_path = os.path.join(study_dirpath, f"PETseg_LION{POSTPROCESSED_SUFFIX}.nii.gz")
         return (mask_path if os.path.exists(mask_path) else None), "TumorStatsLIONPostprocessed"
     fname = "PETseg.nii.gz" if metric == "SUV" else "PETsegSUL.nii.gz"
     key = "TumorStats" if metric == "SUV" else "TumorStatsSUL"

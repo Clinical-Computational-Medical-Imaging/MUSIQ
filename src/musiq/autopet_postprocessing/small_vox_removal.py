@@ -1,6 +1,6 @@
 """
 Remove small lesions (<= SMALL_VOX_MAX voxels) that lie outside the prostate.
-Run this AFTER lacrimalRemoval.py: it reads <mask>_postprocessed.nii.gz (the lacrimal-cleaned
+Run this AFTER lacrimal_removal.py and arm_lesions.py: it reads <mask>_postprocessed.nii.gz (the lacrimal-cleaned
 mask) and never touches the original mask or the lacrimal outputs.
 
 Choose which mask(s) to process by passing --masks:
@@ -8,19 +8,20 @@ Choose which mask(s) to process by passing --masks:
   --masks PETseg_revised                    # doctors' annotation
   --masks PETseg PETsegSUL                  # both model masks
   --masks PETseg PETsegSUL PETseg_revised   # all three
-If --masks is not given, it defaults to PETseg PETsegSUL (SUV + SUL).
+If --masks is not given, it defaults to PETseg PETsegSUL PETseg_revised PETseg_LION (missing masks are skipped).
 
 Per session and mask:
   <mask>_postprocessed.nii.gz         updated IN PLACE: the small lesions are removed from it
   <mask>_postprocessedRemoved.nii.gz  the small lesions are ADDED to it, so it holds every lesion removed so far
                                       (lacrimal + arm + small), labels kept, 0 elsewhere. No separate file is made.
 Rerunning this script on the same _postprocessed is safe: nothing more is removed and the removed-lesions
-file is unchanged. If lacrimalRemoval.py is rerun (which rebuilds _postprocessed and _postprocessedRemoved from
+file is unchanged. If lacrimal_removal.py is rerun (which rebuilds _postprocessed and _postprocessedRemoved from
 the original mask), run arm_lesions.py and this script again afterwards.
 Pass --no-save to only log and write nothing.
 
 for running from the terminal: SmallVoxRemover("/path/to/processed", multiprocessing=True, max_workers=5).run()
-for running from SLURM: python3 smallVoxRemoval.py --input-dirpath /path/to/processed --masks PETseg_revised
+for running from SLURM: python3 small_vox_removal.py --input-dirpath /path/to/processed --masks PETseg_revised
+all three steps in order: musiq_autopet_postprocess --input-dirpath /path/to/processed
 """
 
 import argparse
@@ -185,7 +186,7 @@ class SmallVoxRemover:
         tag = f"{session.parent.name}/{session.name}"
         in_path = session / f"{mask_name}{OUT_SUFFIX}.nii.gz"
         if not in_path.exists():
-            logger.warning(f"  [{mask_name}] no {in_path.name} (run lacrimalRemoval.py first) - skipped")
+            logger.warning(f"  [{mask_name}] no {in_path.name} (run lacrimal_removal.py first) - skipped")
             return []
 
         mask_img = nib.squeeze_image(nib.load(str(in_path)))

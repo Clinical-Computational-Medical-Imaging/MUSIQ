@@ -4,7 +4,7 @@ Choose which mask(s) to process by passing --masks when running the code:
   --masks PETseg_revised                    # doctors' annotation
   --masks PETseg PETsegSUL                  # both model masks
   --masks PETseg PETsegSUL PETseg_revised   # all three
-If --masks is not given, it defaults to PETseg PETsegSUL (SUV + SUL).
+If --masks is not given, it defaults to PETseg PETsegSUL PETseg_revised PETseg_LION (missing masks are skipped).
 
 Remove lacrimal-gland FP from masks, using CADS labels.
 
@@ -33,6 +33,8 @@ from cads.dataset_utils.bodyparts_labelmaps import (  # noqa: E402
 from nibabel.processing import resample_from_to
 from scipy.ndimage import binary_dilation, distance_transform_edt
 
+from musiq.mask_sources import POSTPROCESSED_REMOVED_SUFFIX, POSTPROCESSED_SUFFIX
+
 logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
@@ -56,8 +58,8 @@ MASK_CHOICES = [
 ]
 MASK_EXTS = (".nii.gz", ".nii")
 DEFAULT_MASKS = ["PETseg", "PETsegSUL", "PETseg_revised", "PETseg_LION"]  # default if --masks not given
-OUT_SUFFIX = "_postprocessed"  # cleaned mask saved as <mask><suffix>.nii.gz
-REMOVED_SUFFIX = "_postprocessedRemoved"  # only the removed lesions, saved as <mask><suffix>.nii.gz
+OUT_SUFFIX = POSTPROCESSED_SUFFIX  # cleaned mask saved as <mask><suffix>.nii.gz
+REMOVED_SUFFIX = POSTPROCESSED_REMOVED_SUFFIX  # only the removed lesions, saved as <mask><suffix>.nii.gz
 CADS_FILE = "CTcads.nii.gz"
 NECESSARY_FILES = [CADS_FILE]
 
@@ -339,7 +341,7 @@ def lacrimal_removal_entrypoint():
     parser.add_argument(
         "--input-dirpath",
         type=str,
-        required=True,  # default=str(DATA_DIR)
+        required=True,
         help="Processed data root; searched recursively for sessions with CTcads + PETseg.",
     )
     parser.add_argument(
