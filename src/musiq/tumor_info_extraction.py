@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 from . import metrics, utils
 from .radiomics_extraction import (
+    _SUV_ONLY_SOURCES,
     DEFAULT_LABEL_GLOB,
     MASK_SOURCES,
     resample_label_to_image_grid,
@@ -67,7 +68,7 @@ _CSTB_ORGAN_LABELS: frozenset[int] = frozenset(
         106,
         109,
         110,
-        111,
+        # 111 prostate is its own compartment — see _CSTB_PROSTATE_LABELS
         112,
         113,
         114,
@@ -102,6 +103,16 @@ _CSTB_ORGAN_LABELS: frozenset[int] = frozenset(
         157,
     }
 )
+_CSTB_PROSTATE_LABELS: frozenset[int] = frozenset({111})
+
+# Compartment definitions for CSTB. "Outside" is the implicit remainder (muscles, background,
+# subcutaneous tissue — assumed lymph nodes in clinical interpretation).
+_CSTB_COMPARTMENTS: dict[str, frozenset[int]] = {
+    "Bone": _CSTB_BONE_LABELS,
+    "Organs": _CSTB_ORGAN_LABELS,
+    "Prostate": _CSTB_PROSTATE_LABELS,
+}
+
 # Muscles (71-80, 116-119), subcutaneous tissue (158), thoracic cavity (161),
 # and CTcads background (0) all fall into "Outside" (clinical assumption: lymph nodes).
 
@@ -358,6 +369,8 @@ class TumorInfoExtraction:
                     mask_desc = "PETseg_LION.nii.gz"
                 elif self.mask_source == "lion_postprocessed":
                     mask_desc = "PETseg_LION_postprocessed.nii.gz"
+                elif self.mask_source == "autopet_postprocessed":
+                    mask_desc = "PETseg_postprocessed.nii.gz" if metric == "SUV" else "PETsegSUL_postprocessed.nii.gz"
                 else:
                     mask_desc = "PETseg.nii.gz" if metric == "SUV" else "PETsegSUL.nii.gz"
                 msg = (
@@ -365,8 +378,10 @@ class TumorInfoExtraction:
                     f"{', '.join(required_files)} plus {mask_desc} are required in each patient/study directory."
                 )
                 if metric == "SUL":
-                    msg += " SUL.nii.gz and PETsegSUL.nii.gz are created by the muscle-fat and autopet tasks — "
-                    "make sure both have been run first."
+                    msg += (
+                        " SUL.nii.gz and PETsegSUL.nii.gz are created by the muscle-fat and autopet tasks"
+                        " — make sure both have been run first."
+                    )
                 logger.warning(msg)
                 continue
 
@@ -559,30 +574,46 @@ class TumorInfoExtraction:
                 comp_fracs, top_label = utils.compute_lesion_compartment_fractions(
                     tumor_mask,
                     ctcadsres_array[crop],
-                    _CSTB_BONE_LABELS,
-                    _CSTB_ORGAN_LABELS,
+                    _CSTB_COMPARTMENTS,
                     _CADS_LABEL_NAMES,
                 )
                 entry["CompartmentFractions"] = comp_fracs
-                entry["PrimaryCompartment"] = max(comp_fracs, key=comp_fracs.get)
+                entry["PrimaryCompartment"] = (
+                    max(comp_fracs, key=comp_fracs.get) if any(v > 0 for v in comp_fracs.values()) else None
+                )
                 entry["TopCADSLabel"] = top_label
             results.append(entry)
 
         if ctcadsres_array is not None:
+            # Voxel-level CSTB: all metrics derived from the actual voxels in each compartment.
+            # LesionCount = distinct lesions with ≥1 voxel in the compartment (can sum to > N total).
+            # SUVpeak is the exception: it is a whole-lesion property (sphere neighbourhood), so we
+            # take the max SUVpeak among lesions that have any voxel in the compartment.
             cstb: dict[str, dict] = {}
-            for comp in ("Bone", "Organs", "Outside"):
+            comp_results = [r for r in results if "CompartmentFractions" in r]
+            tumor_mask_full = petseg_array > 0
+            all_named_labels = frozenset().union(*_CSTB_COMPARTMENTS.values())
+            for comp, label_set in [*_CSTB_COMPARTMENTS.items(), ("Outside", None)]:
+                if label_set is None:
+                    comp_mask = tumor_mask_full & ~np.isin(ctcadsres_array, sorted(all_named_labels))
+                else:
+                    comp_mask = tumor_mask_full & np.isin(ctcadsres_array, sorted(label_set))
+                suv_vox = suv_array[comp_mask]
+                tmtv = int(comp_mask.sum()) * voxel_volume_cc
+                tlg = float(suv_vox.sum()) * voxel_volume_cc if suv_vox.size > 0 else 0.0
+                lesion_ids = set(np.unique(labeled_tumors[comp_mask]).tolist()) - {0}
+                suvpeak_vals = [
+                    r["PETMetrics"]["SUVpeak"]
+                    for r in comp_results
+                    if r["TumorID"] in lesion_ids and r["PETMetrics"].get("SUVpeak") is not None
+                ]
                 cstb[comp] = {
-                    "TMTV_cm3": sum(
-                        r["Volume_cm3"] * r["CompartmentFractions"][comp]
-                        for r in results
-                        if "CompartmentFractions" in r
-                    ),
-                    "TLG": sum(
-                        r["Volume_cm3"] * r["PETMetrics"]["SUVmean"] * r["CompartmentFractions"][comp]
-                        for r in results
-                        if "CompartmentFractions" in r and r["PETMetrics"].get("SUVmean") is not None
-                    ),
-                    "LesionCount": sum(1 for r in results if r.get("PrimaryCompartment") == comp),
+                    "TMTV_cm3": tmtv,
+                    "TLG": tlg,
+                    "SUVmean": tlg / tmtv if tmtv > 0 else None,
+                    "SUVmax": float(suv_vox.max()) if suv_vox.size > 0 else None,
+                    "SUVpeak": max(suvpeak_vals) if suvpeak_vals else None,
+                    "LesionCount": len(lesion_ids),
                 }
 
         if json_exists:
@@ -628,10 +659,10 @@ def tumor_info_extraction_entrypoint() -> None:
     parser.add_argument(
         "--mask-source",
         type=str,
+        nargs="+",
         choices=list(MASK_SOURCES),
-        default="autopet",
-        help="Mask to compute on: 'autopet' (PETseg -> TumorStats) or 'revised' (physician label -> "
-        "TumorStatsRevised). Default: autopet.",
+        default=["autopet"],
+        help="Mask(s) to compute on. Pass multiple: --mask-source autopet lion. Default: autopet.",
     )
     parser.add_argument(
         "--label-dirpath",
@@ -657,14 +688,16 @@ def tumor_info_extraction_entrypoint() -> None:
     )
     args = parser.parse_args()
 
-    TumorInfoExtraction(
-        input_dirpath_processed=args.input_dirpath_processed,
-        pet_metric=args.pet_metric,
-        mask_source=args.mask_source,
-        label_dirpath=args.label_dirpath,
-        label_glob=args.label_glob,
-        workers=args.workers,
-    ).run()
+    for source in args.mask_source:
+        metric = ["SUV"] if source in _SUV_ONLY_SOURCES else args.pet_metric
+        TumorInfoExtraction(
+            input_dirpath_processed=args.input_dirpath_processed,
+            pet_metric=metric,
+            mask_source=source,
+            label_dirpath=args.label_dirpath,
+            label_glob=args.label_glob,
+            workers=args.workers,
+        ).run()
 
 
 if __name__ == "__main__":
