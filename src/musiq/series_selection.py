@@ -19,6 +19,7 @@ from .utils import (
     convert_pet,
     extract_dicom_data,
     find_mr_niftis,
+    get_spacing_from_niftipath,
     list_dicom_files,
     make_json_safe,
     mr_nifti_exists,
@@ -646,11 +647,13 @@ class SeriesSelection:
                 random_part = "".join(random.choices(chars, k=5))
                 dicom_tags["SeriesDescription"] = f"Missing_SeriesDesc_{random_part}"
 
+            spacing = list(get_spacing_from_niftipath(out_fpath)) if os.path.isfile(out_fpath) else None
             paths_and_dicom_tags = {
                 dicom_tags["SeriesDescription"]: {
                     "InputDirPath": str(dicom_input_dirpath),
                     f"{modality.upper()}Path": out_fpath,
                     **({"SUVPath": suv_fpath} if suv_fpath is not None else {}),
+                    **({"VoxelSpacingMm": spacing} if spacing is not None else {}),
                     "DICOM": dicom_tags,
                 }
             }

@@ -281,7 +281,7 @@ def calculate_patient_level_dissemination(maskarray: np.ndarray, spacing: tuple)
         maskarray (np.ndarray): numpy array for 3D mask image
 
     Returns:
-        np.float64: dissemination value in cm
+        np.float64: dissemination value in mm
     """
     maskarray = maskarray.astype(np.int8)
     nonzero_voxels = np.argwhere(maskarray == 1)
@@ -304,7 +304,7 @@ def calculate_patient_level_dissemination(maskarray: np.ndarray, spacing: tuple)
         except QhullError:
             candidates = points
 
-    dmax = float(pdist(candidates).max()) / 10  # converting to cm
+    dmax = float(pdist(candidates).max())
     del maskarray
     del nonzero_voxels
     return np.float64(dmax)

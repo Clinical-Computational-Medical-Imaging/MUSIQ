@@ -582,32 +582,31 @@ def compute_tumor_organ_overlap(tumor_mask: np.ndarray, organ_mask: np.ndarray, 
 def compute_lesion_compartment_fractions(
     tumor_mask: np.ndarray,
     ctcadsres_crop: np.ndarray,
-    bone_labels: frozenset[int],
-    organ_labels: frozenset[int],
+    named_label_sets: dict[str, frozenset[int]],
     label_names: dict[int, str],
 ) -> tuple[dict[str, float], str | None]:
-    """Classify lesion voxels into Bone/Organs/Outside using resampled CTcads.
+    """Classify lesion voxels into named compartments + Outside using resampled CTcads.
 
     Returns (fractions_dict, top_cads_label_name).
-    fractions_dict keys: "Bone", "Organs", "Outside" — sum to 1.0.
+    fractions_dict has one key per entry in named_label_sets plus "Outside"; values sum to 1.0
+    when the mask is non-empty, 0.0 for each key otherwise.
     top_cads_label_name: most-frequent non-zero CADS label within the lesion (None if all background).
     """
+    zero_fracs = {**{name: 0.0 for name in named_label_sets}, "Outside": 0.0}
     total = int(tumor_mask.sum())
     if total == 0:
-        return {"Bone": 0.0, "Organs": 0.0, "Outside": 1.0}, None
+        return zero_fracs, None
     labels_in = ctcadsres_crop[tumor_mask > 0]
-    bone_vox = int(np.isin(labels_in, sorted(bone_labels)).sum())
-    organ_vox = int(np.isin(labels_in, sorted(organ_labels)).sum())
-    fracs = {
-        "Bone": bone_vox / total,
-        "Organs": organ_vox / total,
-        "Outside": (total - bone_vox - organ_vox) / total,
+    named_counts = {
+        name: int(np.isin(labels_in, sorted(label_set)).sum()) for name, label_set in named_label_sets.items()
     }
+    fracs = {name: count / total for name, count in named_counts.items()}
+    fracs["Outside"] = (total - sum(named_counts.values())) / total
     nonzero = labels_in[labels_in > 0]
     top_label_name: str | None = None
     if nonzero.size > 0:
-        unique, counts = np.unique(nonzero, return_counts=True)
-        top_label_name = label_names.get(int(unique[np.argmax(counts)]))
+        unique, label_counts = np.unique(nonzero, return_counts=True)
+        top_label_name = label_names.get(int(unique[np.argmax(label_counts)]))
     return fracs, top_label_name
 
 
