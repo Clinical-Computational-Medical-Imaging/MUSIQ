@@ -28,6 +28,7 @@ class TotalSegmentatorMuscleFat:
     def __init__(self, input_dirpath_processed: os.PathLike | str) -> None:
         """Compute muscle/fat body composition and LBM from CT (and segmentation-only for MR)."""
         self.input_dirpath = input_dirpath_processed
+        self.layers = ["whole_FOV", "l3", "glut_to_c6"]
 
     def run(self) -> None:
         """Process all CT/MR images: segment, compute body composition, record stats."""
@@ -210,10 +211,9 @@ class TotalSegmentatorMuscleFat:
                                 "ts_version": get_version(),
                             }
 
-                            layers = ["full_picture", "l3", "glut_to_c6"]
                             # calc_size loads image+seg once, measures every layer (arms masked out first);
                             # fallback recorded for missing seg/landmark
-                            layer_results = self.calc_size(input_fpath, segmentation_img, label_map_dict, layers)
+                            layer_results = self.calc_size(input_fpath, segmentation_img, label_map_dict, self.layers)
 
                             if json_exists and patient_info is not None:
                                 series_name = next(
@@ -222,7 +222,6 @@ class TotalSegmentatorMuscleFat:
                                 analysis_dict = patient_info["Studies"][study_date]["Modalities"][modality][
                                     series_index
                                 ][series_name].setdefault("body_composition_analysis", {})
-                                analysis_dict[seg_path_key] = output_fpath
                                 analysis_dict[metadata_key] = seg_metadata
                                 for layer, calculation in layer_results.items():
                                     analysis_dict.setdefault(layer, {}).update(calculation)
@@ -274,24 +273,26 @@ class TotalSegmentatorMuscleFat:
                                 f"Non-positive PatientWeight ({weight}) for {patient_id}, skipping LBM computation."
                             )
                             continue
-                        fat_in_percent = (
-                            series_data.get("body_composition_analysis", {})
-                            .get("full_picture", {})
-                            .get("total_fat_in_%")
-                        )
-                        if fat_in_percent is None:
-                            seg_path = total_seg_path(input_fpath)
-                            if not os.path.isfile(seg_path):
-                                reason = f"seg not found at {seg_path}; run TotalSegmentator 'total' first"
-                            else:
-                                reason = "arms beside body; LBM unreliable"
-                            logger.warning(f"Skipping LBM computation for {patient_id}: {reason}.")
-                            continue
-                        # LBM feeds the sul stage (via PatientLBM)
-                        lean_body_mass = weight * (1 - fat_in_percent / 100)
-                        data["Studies"][study_date]["Modalities"][modality][series_index][series_name]["PatientLBM"] = (
-                            lean_body_mass
-                        )
+
+                        for layer in self.layers:
+                            fat_in_percent = (
+                                series_data.get("body_composition_analysis", {}).get(layer, {}).get("total_fat_in_%")
+                            )
+                            if fat_in_percent is None:
+                                # Only whole_FOV feeds SUL; missing l3/glut_to_c6 landmarks are expected
+                                if layer == "whole_FOV":
+                                    seg_path = total_seg_path(input_fpath)
+                                    if not os.path.isfile(seg_path):
+                                        reason = f"seg not found at {seg_path}; run TotalSegmentator 'total' first"
+                                    else:
+                                        reason = "arms beside body; LBM unreliable"
+                                    logger.warning(f"Skipping LBM computation for {patient_id}: {reason}.")
+                                continue
+                            # LBM feeds the sul stage (via LBM_in_kg)
+                            lean_body_mass = weight * (1 - fat_in_percent / 100)
+                            series_data.get("body_composition_analysis", {}).get(layer, {})["LBM_in_kg"] = (
+                                lean_body_mass
+                            )
 
                         with open(patient_info_path, "w") as f:
                             json.dump(data, f)
@@ -365,7 +366,7 @@ class TotalSegmentatorMuscleFat:
         patient_id: str,
         series_index: int = 0,
     ) -> None:
-        """Recompute and store PatientLBM if weight/fat% changed since first run (idempotent)."""
+        """Recompute and store LBM_in_kg if weight/fat% changed since first run (idempotent)."""
         if not os.path.isfile(patient_info_path):
             return
         with open(patient_info_path) as f:
@@ -387,17 +388,22 @@ class TotalSegmentatorMuscleFat:
             return
         if weight <= 0:
             return
-        fat_in_percent = series_data.get("body_composition_analysis", {}).get("full_picture", {}).get("total_fat_in_%")
-        if fat_in_percent is None:
+        bca = series_data.get("body_composition_analysis", {})
+        changed = False
+        for layer in self.layers:
+            fat_in_percent = bca.get(layer, {}).get("total_fat_in_%")
+            if fat_in_percent is None:
+                continue
+            lean_body_mass = weight * (1 - fat_in_percent / 100)
+            if bca[layer].get("LBM_in_kg") == lean_body_mass:
+                continue  # already up to date
+            bca[layer]["LBM_in_kg"] = lean_body_mass
+            changed = True
+        if not changed:
             return
-
-        lean_body_mass = weight * (1 - fat_in_percent / 100)
-        if series_data.get("PatientLBM") == lean_body_mass:
-            return  # already up to date
-        series_data["PatientLBM"] = lean_body_mass
         with open(patient_info_path, "w") as f:
             json.dump(data, f)
-        logger.info(f"Backfilled PatientLBM ({lean_body_mass:.2f}) for {patient_id} ({study_date}).")
+        logger.info(f"Backfilled LBM_in_kg for {patient_id} ({study_date}).")
 
     def calc_size(
         self, path: os.PathLike, fat_img: nib.Nifti1Image, labels: dict[int, str], layers: list[str]
@@ -448,7 +454,7 @@ class TotalSegmentatorMuscleFat:
         results: dict[str, dict] = {}
         for i, layer in enumerate(layers):
             fat_data = fat_full.copy()
-            # Axial (array axis 0) bounds defining the layer; default is the full extent (full_picture).
+            # Axial (array axis 0) bounds defining the layer; default is the full extent (whole_FOV).
             z_lo, z_hi = 0, fat_data.shape[0] - 1
 
             if layer == "l3":

@@ -34,10 +34,10 @@ This Python project provides an end-to-end pipeline for processing PET/CT and MR
    - Outputs:
       - `CT_muscle_fat.nii.gz` - Muscle and fat CT segmentation
       - `MRI_muscle_fat.nii.gz` - Muscle and fat MRI segmentation
-      - Expands `patient_info.json` with muscle/fat stats and `PatientLBM`
+      - Expands `patient_info.json` with muscle/fat stats and `LBM_in_kg`
 
 4. **SUL computation** (`sul`, CPU)
-   - Builds the lean-body-mass-corrected PET image from `PET.nii.gz` and the `PatientLBM` produced
+   - Builds the lean-body-mass-corrected PET image from `PET.nii.gz` and the `LBM_in_kg` produced
      by `muscle_fat`. CPU-only (no TotalSegmentator/torch), so it can run on a separate CPU node.
      Must run after `muscle_fat` and before `autopet`/`radiomics` when SUL metrics are used.
    - Outputs:
