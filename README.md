@@ -205,6 +205,7 @@ docker pull shipai/boa-cli
 
 - To start the whole workflow run:
 ```bash
+export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 musiq --input-dirpath /data/raw --output-dirpath /data/processed --tasks series_selection radiomics autopet autopet_postprocessing totalsegmentator muscle_fat sul tumor moose cads boa --cads-tasks 556 558
 ```
 - To run CADS you can run the different tasks given on their repository or just run 'all'

@@ -287,7 +287,6 @@ class LacrimalRemover:
                 f"    lesion {lid:>2}: {vox:>6} vox | lacrimal {in_lac:>5} "
                 f"({frac_lac:6.1%}) | dist {min_dist:5.1f}mm | bg {bg:4.0%} "
                 f"| touches {touches}{tag}",
-                flush=True,
             )
 
             if not remove:

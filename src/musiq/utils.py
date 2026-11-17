@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import pathlib as plb
@@ -478,6 +479,40 @@ def run_dcm2niix(input_folder: str | os.PathLike, output_folder: str | os.PathLi
         logger.error(f"Error during dcm2niix: {e}")
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
+
+
+# Matches a JSON string value terminated by an unescaped backslash directly before the closing quote
+# (e.g. `"Bv38f\",`). Correctly escaped backslashes (`\\"`) are excluded by the lookbehind.
+_DCM2NIIX_LONE_BACKSLASH = re.compile(r'(?<!\\)\\"(,?)[ \t]*$', flags=re.MULTILINE)
+
+
+def load_dcm2niix_sidecar(json_fpath: str | os.PathLike) -> dict:
+    """Load a dcm2niix JSON sidecar with tolerance for known formatting defects.
+
+    Some dcm2niix versions write multi-valued DICOM tags (e.g. Siemens ``ConvolutionKernel``) with
+    an unescaped trailing backslash, which renders the sidecar invalid JSON. Such values are
+    repaired before parsing. Control characters embedded in DICOM tag values are accepted via
+    ``strict=False``.
+
+    Args:
+        json_fpath: Path to the dcm2niix JSON sidecar.
+
+    Returns:
+        The parsed sidecar as a dictionary.
+
+    Raises:
+        json.JSONDecodeError: If the sidecar cannot be parsed after repair.
+    """
+    with open(json_fpath) as f:
+        raw = f.read()
+    try:
+        return json.loads(raw, strict=False)
+    except json.JSONDecodeError as e:
+        repaired = _DCM2NIIX_LONE_BACKSLASH.sub(r'\\\\"\1', raw)
+        if repaired == raw:
+            raise
+        logger.warning(f"Repaired invalid dcm2niix sidecar {json_fpath} (unescaped trailing backslash): {e}")
+        return json.loads(repaired, strict=False)
 
 
 def normalize_dcm2niix_name(name: str | None) -> str:

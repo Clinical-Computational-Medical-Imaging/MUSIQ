@@ -141,19 +141,16 @@ class SmallVoxRemover:
                 tmp.replace(out_json)
                 logger.info(
                     f"\nWrote {len(rows)} removed lesion(s) across {len(per_patient)} patient(s) -> {out_json}",
-                    flush=True,
                 )
             else:
                 logger.warning(
                     f"\n(--no-save) {len(rows)} lesion(s) would be removed across {len(per_patient)} patient(s)",
-                    flush=True,
                 )
 
             for r in rows:
                 logger.info(
                     f"  {r['patient_id']}/{r['session']} [{r['mask_name']}] lesion {r['component_id']}: "
                     f"{r['voxels']} vox, touches {r['touches']}",
-                    flush=True,
                 )
         else:
             logger.warning("\nNo lesions removed in any session.")
@@ -202,7 +199,6 @@ class SmallVoxRemover:
         cc, n = cc3d.connected_components((data > 0).astype(np.int32), connectivity=CONNECTIVITY, return_N=True)
         logger.info(
             f"  [{mask_name}] input {in_path.name} | prostate vox on PET grid: {int(prostate.sum())} | lesions: {n}",
-            flush=True,
         )
         if n:
             stats = cc3d.statistics(cc)
@@ -226,7 +222,6 @@ class SmallVoxRemover:
             flag = "  <-- REMOVE (small, outside prostate)" if remove else ""
             logger.info(
                 f"    [{tag}] lesion {lid:>2}: {vox:>6} vox | in prostate {in_prostate:>5} | touches {touches}{flag}",
-                flush=True,
             )
 
             if not remove:

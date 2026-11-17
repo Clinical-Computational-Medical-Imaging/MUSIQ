@@ -20,6 +20,7 @@ from .utils import (
     extract_dicom_data,
     find_mr_niftis,
     list_dicom_files,
+    load_dcm2niix_sidecar,
     make_json_safe,
     mr_nifti_exists,
     repair_slice_direction_from_dicom,
@@ -685,8 +686,7 @@ class SeriesSelection:
             image_type = []
             sidecar = f.with_suffix("").with_suffix(".json")
             if sidecar.is_file():
-                with open(sidecar) as jf:
-                    image_type = [str(x).upper() for x in json.load(jf).get("ImageType", [])]
+                image_type = [str(x).upper() for x in load_dcm2niix_sidecar(sidecar).get("ImageType", [])]
             primary = "PRIMARY" in image_type and "SECONDARY" not in image_type
             is_eq1 = f.name.endswith("_Eq_1.nii.gz")
             shape = nib.load(str(f)).shape
@@ -737,8 +737,7 @@ class SeriesSelection:
             image_type = []
             sidecar = f.with_suffix("").with_suffix(".json")
             if sidecar.is_file():
-                with open(sidecar) as jf:
-                    image_type = [str(x).upper() for x in json.load(jf).get("ImageType", [])]
+                image_type = [str(x).upper() for x in load_dcm2niix_sidecar(sidecar).get("ImageType", [])]
             primary = "PRIMARY" in image_type and "SECONDARY" not in image_type
             shape = nib.load(str(f)).shape
             n_slices = shape[2] if len(shape) >= 3 else 0
@@ -795,10 +794,13 @@ class SeriesSelection:
                     logger.error(f"CT affine sanity-check failed for {out_fpath}: {e}")
                 # read the sidecar matching the chosen volume (same stem)
                 jsn = self._find_sidecar(nii, tmp)
-                with open(jsn) as json_file:
-                    # strict=False tolerates control characters that some scanners embed in
-                    # DICOM tags (e.g. ConvolutionKernel on Siemens NAEOTOM / LowD CT series).
-                    dicom_tags = json.loads(json_file.read(), strict=False)
+                try:
+                    dicom_tags = load_dcm2niix_sidecar(jsn)
+                except json.JSONDecodeError as e:
+                    # The CT NIfTI has already been written at this point. Fall back to the DICOM
+                    # headers so that the patient record remains complete and consistent.
+                    logger.error(f"Invalid dcm2niix sidecar {jsn} ({e}); reading CT tags from DICOM instead.")
+                    dicom_tags = extract_dicom_data(plb.Path(CT_dcm_dirpath), self.dicom_tags)
         else:
             logger.info(f"CT NIfTI already exists at {out_fpath}")
             dicom_tags = extract_dicom_data(plb.Path(CT_dcm_dirpath), self.dicom_tags)
@@ -872,8 +874,7 @@ class SeriesSelection:
                 shutil.copyfile(nii, out_pet_fpath)
                 # read the sidecar matching the chosen volume (same stem) before falling back
                 sidecar = self._find_sidecar(nii, tmp)
-                with open(sidecar) as json_file:
-                    dicom_tags = json.load(json_file)
+                dicom_tags = load_dcm2niix_sidecar(sidecar)
 
         if os.path.isfile(out_suv_fpath):
             logger.info(f"SUV NIfTI already exists at {out_suv_fpath}; not regenerating.")
@@ -1043,8 +1044,7 @@ class SeriesSelection:
             nii_path = os.path.join(output_dirpath, nii.name)
             shutil.copy(nii, nii_path)
             jsn = self._find_sidecar(nii, tmp)
-            with open(jsn) as json_file:
-                dicom_tags = json.load(json_file)
+            dicom_tags = load_dcm2niix_sidecar(jsn)
         return nii_path, dicom_tags
 
     @staticmethod

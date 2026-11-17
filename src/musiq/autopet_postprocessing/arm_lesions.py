@@ -167,7 +167,6 @@ class ArmLesionRemover:
             logger.info(
                 f"Arm processing: excluded {before - len(sub_dirs)} session(s) "
                 f"for {len(ARM_EXCLUDED_PATIENTS)} listed patient(s)",
-                flush=True,
             )
 
         if self.patient_id is not None:
@@ -196,7 +195,6 @@ class ArmLesionRemover:
                 f"  {r['session']} [{r['mask_name']}] lesion {r['component_id']}: {r['voxels']} vox, "
                 f"SI {r['centroid_si']} (humerus edge {r['humerus_edge_si']}), "
                 f"bg {r['background_fraction']:.0%}, organs {r['organs']}",
-                flush=True,
             )
         logger.info("\nArm lesion processing done.")
 
@@ -249,7 +247,6 @@ class ArmLesionRemover:
         logger.info(
             f"  [{mask_name}] input {in_path.name} | anchor={anchor} | SI axis={si_axis} | "
             f"head_dir={'+' if head_dir > 0 else '-'} | humerus edge={hum_edge}",
-            flush=True,
         )
 
         cc, n = cc3d.connected_components((data > 0).astype(np.int32), connectivity=CONNECTIVITY, return_N=True)
@@ -292,7 +289,6 @@ class ArmLesionRemover:
                 f"    [{tag}] lesion {lid:>2}: {vox:>6} vox | SI {centroid_si:6.1f} "
                 f"(edge {hum_edge}) | above={str(above):5} | bg {background_fraction:4.0%} "
                 f"| CSF dist {skull_ignore_min_dist:5.1f}mm | touches {touches}{mark}",
-                flush=True,
             )
 
             if not flag:
@@ -342,7 +338,6 @@ class ArmLesionRemover:
         logger.info(
             f"  [{mask_name}] removed {len(drop_ids)} -> updated {in_path.name} (in place), "
             f"added to {removed_file.name}",
-            flush=True,
         )
         return rows
 
