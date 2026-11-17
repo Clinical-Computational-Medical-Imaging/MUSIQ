@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 class SulInference:
     """Compute the lean-body-mass-corrected PET (SUL) image for each PET/CT study.
 
-    CPU-only (no torch): reads ``PatientLBM`` from the muscle_fat stage and writes ``SUL.nii.gz``.
-    Idempotent: skips a study when SUL.nii.gz exists, there is no PET.nii.gz, or PatientLBM is absent.
+    CPU-only (no torch): reads ``LBM_in_kg`` from the muscle_fat stage and writes ``SUL.nii.gz``.
+    Idempotent: skips a study when SUL.nii.gz exists, there is no PET.nii.gz, or LBM_in_kg is absent.
     """
 
     def __init__(self, input_dirpath_processed: str | os.PathLike) -> None:
@@ -64,10 +64,11 @@ class SulInference:
         with open(patient_info_path) as f:
             data = json.load(f)
 
-        lbm = self._patient_lbm(data, study_date)
+        # selct layer whose fa%t defines: ["whole_FOV", "l3", "glut_to_c6"]
+        lbm = self._patient_lbm(data, study_date, layer="whole_FOV")
         if lbm is None:
             logger.warning(
-                f"No PatientLBM for {patient_id} ({study_date}) — run muscle_fat first, or "
+                f"No LBM_in_kg for {patient_id} ({study_date}) — run muscle_fat first, or "
                 "PatientWeight/body-composition was unavailable. Skipping SUL."
             )
             return
@@ -95,12 +96,12 @@ class SulInference:
             json.dump(data, f)
 
     @staticmethod
-    def _patient_lbm(data: dict, study_date: str) -> float | None:
-        """Return the ``PatientLBM`` recorded on the CT series (series 0) by the muscle_fat stage."""
+    def _patient_lbm(data: dict, study_date: str, layer: str) -> float | None:
+        """Return the ``LBM_in_kg`` recorded on the CT series (series 0) by the muscle_fat stage."""
         try:
             ct_series = data["Studies"][study_date]["Modalities"]["CT"][0]
             series_name = next(iter(ct_series))
-            return ct_series[series_name].get("PatientLBM")
+            return ct_series[series_name]["body_composition_analysis"][layer].get("LBM_in_kg")
         except (KeyError, IndexError, StopIteration, TypeError):
             return None
 

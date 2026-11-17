@@ -11,9 +11,9 @@ from scipy import ndimage
 from tqdm import tqdm
 
 from . import metrics, utils
+from .mask_sources import MASK_SOURCES
 from .radiomics_extraction import (
     DEFAULT_LABEL_GLOB,
-    MASK_SOURCES,
     resample_label_to_image_grid,
     resolve_mask,
 )

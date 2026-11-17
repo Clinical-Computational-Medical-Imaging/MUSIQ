@@ -5,6 +5,7 @@ import pathlib as plb
 import platform
 import subprocess
 
+from .mask_sources import MASK_SOURCES, SUL_CAPABLE_SOURCES
 from .utils import RESERVED_PROCESSED_DIRS, create_logger, setup_series_keywords
 
 _REPO_ROOT = plb.Path(__file__).parent.parent.parent
@@ -106,11 +107,8 @@ class Workflow:
         if mask_sources is None:
             mask_sources = ["autopet"]
         for s in mask_sources:
-            if s not in ("autopet", "revised", "lion", "postprocessed", "lion_postprocessed"):
-                raise ValueError(
-                    f"mask_sources entries must be 'autopet', 'revised', 'lion', 'postprocessed', "
-                    f"or 'lion_postprocessed', got '{s}'"
-                )
+            if s not in MASK_SOURCES:
+                raise ValueError(f"mask_sources entries must be one of {MASK_SOURCES}, got '{s}'")
         self.mask_sources = mask_sources
         self.label_dirpath = label_dirpath
         self.label_glob = label_glob
@@ -399,8 +397,8 @@ class Workflow:
 
             logger.info("\n" + "#" * 50 + "\nStarting Radiomics Computation\n" + "#" * 50)
             for source in self.mask_sources:
-                # Revised runs on SUV only (drawn once, independent of metric); all others run both.
-                metric = self.pet_metric if source in ("autopet", "postprocessed") else ["SUV"]
+                # Only autopet/postprocessed have an SUL mask; revised and the LION sources run on SUV only.
+                metric = self.pet_metric if source in SUL_CAPABLE_SOURCES else ["SUV"]
                 RadiomicsExtractor(
                     input_dirpath_processed=self.output_dirpath,
                     pet_metric=metric,
@@ -414,8 +412,8 @@ class Workflow:
 
             logger.info("\n" + "#" * 50 + "\nStarting Tumor Info Extraction\n" + "#" * 50)
             for source in self.mask_sources:
-                # Revised runs on SUV only (drawn once, independent of metric); all others run both.
-                metric = self.pet_metric if source in ("autopet", "postprocessed") else ["SUV"]
+                # Only autopet/postprocessed have an SUL mask; revised and the LION sources run on SUV only.
+                metric = self.pet_metric if source in SUL_CAPABLE_SOURCES else ["SUV"]
                 TumorInfoExtraction(
                     input_dirpath_processed=self.output_dirpath,
                     pet_metric=metric,
@@ -520,7 +518,7 @@ def workflow_entrypoint():
         dest="mask_sources",
         type=str,
         nargs="+",
-        choices=["autopet", "revised", "lion", "postprocessed", "lion_postprocessed"],
+        choices=list(MASK_SOURCES),
         default=["autopet"],
         help="Mask(s) for radiomics/tumor: 'autopet' (PETseg -> TumorStats[SUL]), 'revised' "
         "(physician label -> TumorStatsRevised, SUV only), 'lion' (PETseg_LION -> TumorStatsLION, SUV only), "

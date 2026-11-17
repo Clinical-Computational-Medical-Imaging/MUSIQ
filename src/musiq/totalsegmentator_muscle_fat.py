@@ -3,6 +3,7 @@ import logging
 import os
 import pathlib as plb
 
+import cc3d
 import nibabel as nib
 import numpy as np
 from totalsegmentator.nifti_ext_header import load_multilabel_nifti
@@ -27,6 +28,7 @@ class TotalSegmentatorMuscleFat:
     def __init__(self, input_dirpath_processed: os.PathLike | str) -> None:
         """Compute muscle/fat body composition and LBM from CT (and segmentation-only for MR)."""
         self.input_dirpath = input_dirpath_processed
+        self.layers = ["whole_FOV", "l3", "glut_to_c6"]
 
     def run(self) -> None:
         """Process all CT/MR images: segment, compute body composition, record stats."""
@@ -209,10 +211,9 @@ class TotalSegmentatorMuscleFat:
                                 "ts_version": get_version(),
                             }
 
-                            layers = ["full_picture", "l3", "glut_to_c6"]
                             # calc_size loads image+seg once, measures every layer (arms masked out first);
                             # fallback recorded for missing seg/landmark
-                            layer_results = self.calc_size(input_fpath, segmentation_img, label_map_dict, layers)
+                            layer_results = self.calc_size(input_fpath, segmentation_img, label_map_dict, self.layers)
 
                             if json_exists and patient_info is not None:
                                 series_name = next(
@@ -221,7 +222,6 @@ class TotalSegmentatorMuscleFat:
                                 analysis_dict = patient_info["Studies"][study_date]["Modalities"][modality][
                                     series_index
                                 ][series_name].setdefault("body_composition_analysis", {})
-                                analysis_dict[seg_path_key] = output_fpath
                                 analysis_dict[metadata_key] = seg_metadata
                                 for layer, calculation in layer_results.items():
                                     analysis_dict.setdefault(layer, {}).update(calculation)
@@ -273,24 +273,26 @@ class TotalSegmentatorMuscleFat:
                                 f"Non-positive PatientWeight ({weight}) for {patient_id}, skipping LBM computation."
                             )
                             continue
-                        fat_in_percent = (
-                            series_data.get("body_composition_analysis", {})
-                            .get("full_picture", {})
-                            .get("total_fat_in_%")
-                        )
-                        if fat_in_percent is None:
-                            seg_path = total_seg_path(input_fpath)
-                            if not os.path.isfile(seg_path):
-                                reason = f"seg not found at {seg_path}; run TotalSegmentator 'total' first"
-                            else:
-                                reason = "arms beside body; LBM unreliable"
-                            logger.warning(f"Skipping LBM computation for {patient_id}: {reason}.")
-                            continue
-                        # LBM feeds the sul stage (via PatientLBM)
-                        lean_body_mass = weight * (1 - fat_in_percent / 100)
-                        data["Studies"][study_date]["Modalities"][modality][series_index][series_name]["PatientLBM"] = (
-                            lean_body_mass
-                        )
+
+                        for layer in self.layers:
+                            fat_in_percent = (
+                                series_data.get("body_composition_analysis", {}).get(layer, {}).get("total_fat_in_%")
+                            )
+                            if fat_in_percent is None:
+                                # Only whole_FOV feeds SUL; missing l3/glut_to_c6 landmarks are expected
+                                if layer == "whole_FOV":
+                                    seg_path = total_seg_path(input_fpath)
+                                    if not os.path.isfile(seg_path):
+                                        reason = f"seg not found at {seg_path}; run TotalSegmentator 'total' first"
+                                    else:
+                                        reason = "arms beside body; LBM unreliable"
+                                    logger.warning(f"Skipping LBM computation for {patient_id}: {reason}.")
+                                continue
+                            # LBM feeds the sul stage (via LBM_in_kg)
+                            lean_body_mass = weight * (1 - fat_in_percent / 100)
+                            series_data.get("body_composition_analysis", {}).get(layer, {})["LBM_in_kg"] = (
+                                lean_body_mass
+                            )
 
                         with open(patient_info_path, "w") as f:
                             json.dump(data, f)
@@ -364,7 +366,7 @@ class TotalSegmentatorMuscleFat:
         patient_id: str,
         series_index: int = 0,
     ) -> None:
-        """Recompute and store PatientLBM if weight/fat% changed since first run (idempotent)."""
+        """Recompute and store LBM_in_kg if weight/fat% changed since first run (idempotent)."""
         if not os.path.isfile(patient_info_path):
             return
         with open(patient_info_path) as f:
@@ -386,17 +388,22 @@ class TotalSegmentatorMuscleFat:
             return
         if weight <= 0:
             return
-        fat_in_percent = series_data.get("body_composition_analysis", {}).get("full_picture", {}).get("total_fat_in_%")
-        if fat_in_percent is None:
+        bca = series_data.get("body_composition_analysis", {})
+        changed = False
+        for layer in self.layers:
+            fat_in_percent = bca.get(layer, {}).get("total_fat_in_%")
+            if fat_in_percent is None:
+                continue
+            lean_body_mass = weight * (1 - fat_in_percent / 100)
+            if bca[layer].get("LBM_in_kg") == lean_body_mass:
+                continue  # already up to date
+            bca[layer]["LBM_in_kg"] = lean_body_mass
+            changed = True
+        if not changed:
             return
-
-        lean_body_mass = weight * (1 - fat_in_percent / 100)
-        if series_data.get("PatientLBM") == lean_body_mass:
-            return  # already up to date
-        series_data["PatientLBM"] = lean_body_mass
         with open(patient_info_path, "w") as f:
             json.dump(data, f)
-        logger.info(f"Backfilled PatientLBM ({lean_body_mass:.2f}) for {patient_id} ({study_date}).")
+        logger.info(f"Backfilled LBM_in_kg for {patient_id} ({study_date}).")
 
     def calc_size(
         self, path: os.PathLike, fat_img: nib.Nifti1Image, labels: dict[int, str], layers: list[str]
@@ -431,22 +438,10 @@ class TotalSegmentatorMuscleFat:
         if z_axis is None:
             raise ValueError("No head-to-toe axis found")
 
-        humerus = np.isin(seg_data, [name_to_label["humerus_left"], name_to_label["humerus_right"]])
-        coords = np.argwhere(humerus)
-        if coords.size == 0:
-            logger.error("No humerus found")
-        else:
-            coords_h = np.c_[coords, np.ones(len(coords))]
-            hum_z_min = np.percentile((coords_h @ affine.T)[:, z_axis], 5)
-
-            t4_coords = np.argwhere(seg_data == name_to_label["vertebrae_T4"])
-            coords_h_t4 = np.c_[t4_coords, np.ones(len(t4_coords))]
-            t4_z_max = np.percentile((coords_h_t4 @ affine.T)[:, z_axis], 95)
-
-            if hum_z_min < t4_z_max - 100:
-                logger.warning("Arms are beside the body, removing arms before measuring.")
-                fat_img = self.remove_arms(fat_img, seg_data, name_to_label, affine, z_axis, path)
-                nib.save(fat_img, os.path.join(os.path.dirname(path), "CTbody_masked.nii.gz"))
+        if self._arms_down(seg_data, name_to_label, affine):
+            logger.warning("Arms are beside the body, removing arms before measuring.")
+            fat_img = self.remove_arms(fat_img, seg_data, name_to_label, affine, z_axis, path)
+            nib.save(fat_img, os.path.join(os.path.dirname(path), "CTbody_masked.nii.gz"))
 
         voxel_volume = np.prod(fat_img.header.get_zooms())
         fat_full = np.asanyarray(fat_img.dataobj)
@@ -459,7 +454,7 @@ class TotalSegmentatorMuscleFat:
         results: dict[str, dict] = {}
         for i, layer in enumerate(layers):
             fat_data = fat_full.copy()
-            # Axial (array axis 0) bounds defining the layer; default is the full extent (full_picture).
+            # Axial (array axis 0) bounds defining the layer; default is the full extent (whole_FOV).
             z_lo, z_hi = 0, fat_data.shape[0] - 1
 
             if layer == "l3":
@@ -522,6 +517,45 @@ class TotalSegmentatorMuscleFat:
             results[layer] = result_dict
 
         return results
+
+    @staticmethod
+    def _arms_down(seg_data: np.ndarray, name_to_label: dict[str, int], affine: np.ndarray) -> bool:
+        """Decide whether the arms lie beside the body. Deliberately biased towards True.
+
+        Checked per side; one arm down is enough. A side counts as "down" if the humerus 5th percentile
+        lies below the T5 5th percentile (≈ bottom of T5); percentiles instead of min so a few stray
+        voxels at the bone ends do not trigger it.
+        Each bone is reduced to its largest connected component to ignore stray mislabelled voxels.
+        If no humerus is found at all, arms are assumed down.
+        """
+
+        def world_z(label_name: str) -> np.ndarray:
+            """World z (mm, increasing superiorly) of the largest component of a label; empty if absent."""
+            mask = seg_data == name_to_label[label_name]
+            if not mask.any():
+                return np.empty(0)
+            components = cc3d.connected_components(mask, connectivity=26)
+            largest = np.argmax(np.bincount(components.ravel())[1:]) + 1
+            coords = np.argwhere(components == largest)
+            # NIfTI world space is RAS+, so index 2 is always the S/I axis regardless of voxel orientation.
+            return (np.c_[coords, np.ones(len(coords))] @ affine.T)[:, 2]
+
+        t5_z = world_z("vertebrae_T5")
+        humerus_found = False
+        for side in ("left", "right"):
+            hum_z = world_z(f"humerus_{side}")
+            if hum_z.size == 0:
+                continue
+            humerus_found = True
+
+            if t5_z.size and np.percentile(hum_z, 5) < np.percentile(t5_z, 5):
+                logger.info(f"humerus_{side} reaches below vertebrae_T5 -> arms down.")
+                return True
+
+        if not humerus_found:
+            logger.warning("No humerus found; assuming arms beside the body.")
+            return True
+        return False
 
     def remove_arms(
         self, tissue_img: nib.Nifti1Image, organ_img, labels, affine, z_axis, input_fpath: os.PathLike
