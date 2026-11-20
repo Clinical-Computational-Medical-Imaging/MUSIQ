@@ -151,6 +151,7 @@ class BoaInference:
         try:
             os.symlink(os.path.join("..", "CTseg.nii.gz"), total_path)
         except OSError:
+            logger.warning(f"Could not create symlink for {total_path}. Falling back to copying CTseg.nii.gz.")
             shutil.copy2(ctseg_path, total_path)
         logger.info(f"Seeded {total_path} from CTseg.nii.gz so BOA reuses the total segmentation.")
 

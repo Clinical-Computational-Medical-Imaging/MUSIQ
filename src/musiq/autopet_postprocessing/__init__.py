@@ -1,9 +1,9 @@
 import argparse
 
 from .arm_lesions import ArmLesionRemover
-from .lacrimalRemoval import DEFAULT_MASKS as _DEFAULT_MASKS
-from .lacrimalRemoval import MASK_CHOICES, MIN_LAC_VOX_DEFAULT, NEAR_MM_DEFAULT, LacrimalRemover
-from .smallVoxRemoval import SMALL_VOX_MAX_DEFAULT, SmallVoxRemover
+from .lacrimal_removal import DEFAULT_MASKS as _DEFAULT_MASKS
+from .lacrimal_removal import MASK_CHOICES, MIN_LAC_VOX_DEFAULT, NEAR_MM_DEFAULT, LacrimalRemover
+from .small_vox_removal import SMALL_VOX_MAX_DEFAULT, SmallVoxRemover
 
 
 def autopet_postprocessing_entrypoint() -> None:
