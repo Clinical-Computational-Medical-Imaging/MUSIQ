@@ -64,7 +64,7 @@ class SulInference:
         with open(patient_info_path) as f:
             data = json.load(f)
 
-        # selct layer whose fa%t defines: ["whole_FOV", "l3", "glut_to_c6"]
+        # define layer which defines fat %: ["whole_FOV", "l3", "glut_to_c6"]
         lbm = self._patient_lbm(data, study_date, layer="whole_FOV")
         if lbm is None:
             logger.warning(
