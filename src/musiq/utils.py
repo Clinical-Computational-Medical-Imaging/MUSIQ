@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import pathlib as plb
@@ -223,7 +224,8 @@ def _slice_normal_and_extent(dicom_dirpath: str | os.PathLike) -> tuple[np.ndarr
                 ds = pydicom.dcmread(entry.path, stop_before_pixels=True)
                 ipp = np.asarray(ds.ImagePositionPatient, dtype=float)
                 iop = np.asarray(ds.ImageOrientationPatient, dtype=float)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Skipping {entry.path} for slice geometry: {e}")
                 continue
             if normal_lps is None:
                 normal_lps = np.cross(iop[:3], iop[3:6])
@@ -402,7 +404,8 @@ def select_dominant_ct_acquisition(
                 ds = pydicom.dcmread(entry.path, stop_before_pixels=True)
                 ipp = np.asarray(ds.ImagePositionPatient, dtype=float)
                 iop = np.asarray(ds.ImageOrientationPatient, dtype=float)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Skipping {entry.path} for CT acquisition selection: {e}")
                 continue
             if normal_lps is None:
                 normal_lps = np.cross(iop[:3], iop[3:6])
@@ -478,6 +481,40 @@ def run_dcm2niix(input_folder: str | os.PathLike, output_folder: str | os.PathLi
         logger.error(f"Error during dcm2niix: {e}")
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
+
+
+# Matches a JSON string value terminated by an unescaped backslash directly before the closing quote
+# (e.g. `"Bv38f\",`). Correctly escaped backslashes (`\\"`) are excluded by the lookbehind.
+_DCM2NIIX_LONE_BACKSLASH = re.compile(r'(?<!\\)\\"(,?)[ \t]*$', flags=re.MULTILINE)
+
+
+def load_dcm2niix_sidecar(json_fpath: str | os.PathLike) -> dict:
+    """Load a dcm2niix JSON sidecar with tolerance for known formatting defects.
+
+    Some dcm2niix versions write multi-valued DICOM tags (e.g. Siemens ``ConvolutionKernel``) with
+    an unescaped trailing backslash, which renders the sidecar invalid JSON. Such values are
+    repaired before parsing. Control characters embedded in DICOM tag values are accepted via
+    ``strict=False``.
+
+    Args:
+        json_fpath: Path to the dcm2niix JSON sidecar.
+
+    Returns:
+        The parsed sidecar as a dictionary.
+
+    Raises:
+        json.JSONDecodeError: If the sidecar cannot be parsed after repair.
+    """
+    with open(json_fpath) as f:
+        raw = f.read()
+    try:
+        return json.loads(raw, strict=False)
+    except json.JSONDecodeError as e:
+        repaired = _DCM2NIIX_LONE_BACKSLASH.sub(r'\\\\"\1', raw)
+        if repaired == raw:
+            raise
+        logger.warning(f"Repaired invalid dcm2niix sidecar {json_fpath} (unescaped trailing backslash): {e}")
+        return json.loads(repaired, strict=False)
 
 
 def normalize_dcm2niix_name(name: str | None) -> str:
@@ -582,32 +619,31 @@ def compute_tumor_organ_overlap(tumor_mask: np.ndarray, organ_mask: np.ndarray, 
 def compute_lesion_compartment_fractions(
     tumor_mask: np.ndarray,
     ctcadsres_crop: np.ndarray,
-    bone_labels: frozenset[int],
-    organ_labels: frozenset[int],
+    named_label_sets: dict[str, frozenset[int]],
     label_names: dict[int, str],
 ) -> tuple[dict[str, float], str | None]:
-    """Classify lesion voxels into Bone/Organs/Outside using resampled CTcads.
+    """Classify lesion voxels into named compartments + Outside using resampled CTcads.
 
     Returns (fractions_dict, top_cads_label_name).
-    fractions_dict keys: "Bone", "Organs", "Outside" — sum to 1.0.
+    fractions_dict has one key per entry in named_label_sets plus "Outside"; values sum to 1.0
+    when the mask is non-empty, 0.0 for each key otherwise.
     top_cads_label_name: most-frequent non-zero CADS label within the lesion (None if all background).
     """
+    zero_fracs = {**{name: 0.0 for name in named_label_sets}, "Outside": 0.0}
     total = int(tumor_mask.sum())
     if total == 0:
-        return {"Bone": 0.0, "Organs": 0.0, "Outside": 1.0}, None
+        return zero_fracs, None
     labels_in = ctcadsres_crop[tumor_mask > 0]
-    bone_vox = int(np.isin(labels_in, sorted(bone_labels)).sum())
-    organ_vox = int(np.isin(labels_in, sorted(organ_labels)).sum())
-    fracs = {
-        "Bone": bone_vox / total,
-        "Organs": organ_vox / total,
-        "Outside": (total - bone_vox - organ_vox) / total,
+    named_counts = {
+        name: int(np.isin(labels_in, sorted(label_set)).sum()) for name, label_set in named_label_sets.items()
     }
+    fracs = {name: count / total for name, count in named_counts.items()}
+    fracs["Outside"] = (total - sum(named_counts.values())) / total
     nonzero = labels_in[labels_in > 0]
     top_label_name: str | None = None
     if nonzero.size > 0:
-        unique, counts = np.unique(nonzero, return_counts=True)
-        top_label_name = label_names.get(int(unique[np.argmax(counts)]))
+        unique, label_counts = np.unique(nonzero, return_counts=True)
+        top_label_name = label_names.get(int(unique[np.argmax(label_counts)]))
     return fracs, top_label_name
 
 
@@ -691,7 +727,8 @@ def resolve_pet_decay_reference(dicom_dirpath: str | os.PathLike, ds=None) -> tu
     for f in list_dicom_files(dicom_dirpath):
         try:
             d = pydicom.dcmread(f, stop_before_pixels=True, specific_tags=[(0x0008, 0x0032)])
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Skipping {f} for earliest AcquisitionTime: {e}")
             continue
         at = getattr(d, "AcquisitionTime", None)
         if at is not None and (earliest is None or time_to_seconds(at) < time_to_seconds(earliest)):

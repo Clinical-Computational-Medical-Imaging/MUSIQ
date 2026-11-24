@@ -1,16 +1,16 @@
 """
 Flag/remove above-shoulder ARM lesions, using CADS labels.
 
-Pipeline order:  lacrimalRemoval.py  ->  arm_lesions.py  ->  smallVoxRemoval.py
+Pipeline order:  lacrimal_removal.py  ->  arm_lesions.py  ->  small_vox_removal.py
 This script reads <mask>_postprocessed.nii.gz (the lacrimal-cleaned mask) and updates it IN PLACE
 (pass --no-save to only log). It never touches the original mask.
 
 Choose which mask(s) to process by passing --masks:
   --masks PETseg                            # SUV only
-  --masks PETseg_revised                    # Helen's only
+  --masks PETseg_revised                    # doctors' annotation
   --masks PETseg PETsegSUL                  # both model masks
   --masks PETseg PETsegSUL PETseg_revised   # all three
-If --masks is not given, it defaults to PETseg PETsegSUL (SUV + SUL).
+If --masks is not given, it defaults to PETseg PETsegSUL PETseg_revised PETseg_LION (missing masks are skipped).
 
 Intended for arms-up acquisitions where the forearm/hand fold over the head, so
 physiologic arm/skin uptake lands in the same axial slices as the head.
@@ -37,14 +37,15 @@ Per session and mask (skipped with --no-save):
   <mask>_postprocessedRemoved.nii.gz the arm lesions are ADDED to it, so it holds every lesion removed so far
                                       (lacrimal + arm), labels kept, 0 elsewhere. No separate arm file is made.
 Rerunning on the same _postprocessed is safe: nothing more is removed and the removed-lesions file is unchanged.
-If lacrimalRemoval.py is rerun (it rebuilds _postprocessed and _postprocessedRemoved from the original mask), run
-this script and smallVoxRemoval.py again afterwards.
+If lacrimal_removal.py is rerun (it rebuilds _postprocessed and _postprocessedRemoved from the original mask), run
+this script and small_vox_removal.py again afterwards.
 
 Remove + save:  python3 -u arm_lesions.py --input-dirpath /path/to/processed --masks PETseg_revised
 Log only:       python3 -u arm_lesions.py --input-dirpath /path/to/processed --masks PETseg_revised --no-save
 """
 
 import argparse
+import logging
 import os
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -55,7 +56,7 @@ import numpy as np
 from scipy.ndimage import distance_transform_edt
 
 # data discovery / config / helpers shared with the lacrimal step
-from musiq.autopet_postprocessing.lacrimalRemoval import (
+from musiq.autopet_postprocessing.lacrimal_removal import (
     DEFAULT_MASKS,
     MASK_CHOICES,
     NAMES,
@@ -63,6 +64,8 @@ from musiq.autopet_postprocessing.lacrimalRemoval import (
     REMOVED_SUFFIX,
     resample_cads_to_grid,
 )
+
+logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
 # Config
@@ -156,30 +159,27 @@ class ArmLesionRemover:
             for dirpath, _, filenames in os.walk(self.input_dirpath)
             if CADS_FILENAME in filenames and any(f"{m}{OUT_SUFFIX}.nii.gz" in filenames for m in self.masks)
         )
-        print(
-            f"Found {len(sub_dirs)} session(s) with {CADS_FILENAME} + <mask>{OUT_SUFFIX} for {self.masks}", flush=True
-        )
+        logger.info(f"Found {len(sub_dirs)} session(s) with {CADS_FILENAME} + <mask>{OUT_SUFFIX} for {self.masks}")
 
         if ARM_EXCLUDED_PATIENTS:
             before = len(sub_dirs)
             sub_dirs = [d for d in sub_dirs if Path(d).parent.name not in ARM_EXCLUDED_PATIENTS]
-            print(
+            logger.info(
                 f"Arm processing: excluded {before - len(sub_dirs)} session(s) "
                 f"for {len(ARM_EXCLUDED_PATIENTS)} listed patient(s)",
-                flush=True,
             )
 
         if self.patient_id is not None:
             sub_dirs = [d for d in sub_dirs if Path(d).parent.name == self.patient_id]
-            print(f"Filtering to patient_id={self.patient_id}: {len(sub_dirs)} session(s)", flush=True)
+            logger.info(f"Filtering to patient_id={self.patient_id}: {len(sub_dirs)} session(s)")
         if self.limit is not None:
             sub_dirs = sub_dirs[: self.limit]
-            print(f"Limiting to first {len(sub_dirs)} session(s)", flush=True)
+            logger.info(f"Limiting to first {len(sub_dirs)} session(s)")
         if not sub_dirs:
             return
 
         mode = "updating _postprocessed in place" if self.save_mask else "--no-save (no mask writing)"
-        print(f"Mode: {mode}", flush=True)
+        logger.info(f"Mode: {mode}")
 
         if self.multiprocessing:
             with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
@@ -189,27 +189,26 @@ class ArmLesionRemover:
 
         rows = [r for res in results if res for r in res]
         verb = "Removed" if self.save_mask else "Flagged (--no-save)"
-        print(f"\n{verb} {len(rows)} arm lesion(s) across {len(sub_dirs)} session(s):", flush=True)
+        logger.info(f"\n{verb} {len(rows)} arm lesion(s) across {len(sub_dirs)} session(s):")
         for r in rows:
-            print(
+            logger.info(
                 f"  {r['session']} [{r['mask_name']}] lesion {r['component_id']}: {r['voxels']} vox, "
                 f"SI {r['centroid_si']} (humerus edge {r['humerus_edge_si']}), "
                 f"bg {r['background_fraction']:.0%}, organs {r['organs']}",
-                flush=True,
             )
-        print("\nArm lesion processing done.", flush=True)
+        logger.info("\nArm lesion processing done.")
 
     def process_wrapper(self, dirpath):
         try:
             return self.process_patient(dirpath)
         except Exception as e:
-            print(f"  !! ERROR processing {dirpath}: {e}", flush=True)
+            logger.error(f"  !! ERROR processing {dirpath}: {e}")
             return []
 
     # ---- per-session work ----------------------------------------------- #
     def process_patient(self, dirpath):
         session = Path(dirpath)
-        print(f"\n=== {session.parent.name}/{session.name} ===", flush=True)
+        logger.info(f"\n=== {session.parent.name}/{session.name} ===")
 
         # CTcadsres.nii.gz is already resampled to match the PET grid, and
         # CSF/gray-matter are large enough to survive that resampling, so we
@@ -226,7 +225,7 @@ class ArmLesionRemover:
         tag = f"{session.parent.name}/{session.name}"
         in_path = session / f"{mask_name}{OUT_SUFFIX}.nii.gz"
         if not in_path.exists():
-            print(f"  [{mask_name}] no {in_path.name} (run lacrimalRemoval.py first) - skipped", flush=True)
+            logger.info(f"  [{mask_name}] no {in_path.name} (run lacrimal_removal.py first) - skipped")
             return []
 
         model_img = nib.squeeze_image(nib.load(str(in_path)))
@@ -243,12 +242,11 @@ class ArmLesionRemover:
         # establish head/arm orientation from the anchors (label-guided)
         si_axis, head_dir, hum_edge, ok, anchor = head_direction(cads_arr)
         if not ok:
-            print(f"  [{mask_name}] humerus and/or head anchor missing - skipping arm rule", flush=True)
+            logger.warning(f"  [{mask_name}] humerus and/or head anchor missing - skipping arm rule")
             return []
-        print(
+        logger.info(
             f"  [{mask_name}] input {in_path.name} | anchor={anchor} | SI axis={si_axis} | "
             f"head_dir={'+' if head_dir > 0 else '-'} | humerus edge={hum_edge}",
-            flush=True,
         )
 
         cc, n = cc3d.connected_components((data > 0).astype(np.int32), connectivity=CONNECTIVITY, return_N=True)
@@ -256,7 +254,7 @@ class ArmLesionRemover:
         voxel_counts = stats["voxel_counts"]
         bboxes = stats["bounding_boxes"]
         centroids = stats["centroids"]
-        print(f"  [{mask_name}] lesions: {n}", flush=True)
+        logger.info(f"  [{mask_name}] lesions: {n}")
 
         rows, drop_ids = [], []
         for lid in range(1, n + 1):
@@ -287,11 +285,10 @@ class ArmLesionRemover:
                 mark = f"  <-- SUPPRESSED (CSF dist {skull_ignore_min_dist:.1f}mm - skull region)"
             else:
                 mark = ""
-            print(
+            logger.info(
                 f"    [{tag}] lesion {lid:>2}: {vox:>6} vox | SI {centroid_si:6.1f} "
                 f"(edge {hum_edge}) | above={str(above):5} | bg {background_fraction:4.0%} "
                 f"| CSF dist {skull_ignore_min_dist:5.1f}mm | touches {touches}{mark}",
-                flush=True,
             )
 
             if not flag:
@@ -316,11 +313,11 @@ class ArmLesionRemover:
 
         # update _postprocessed in place + save the removed lesions (skipped with --no-save)
         if not self.save_mask:
-            print(f"  [{mask_name}] flagged {len(drop_ids)} (--no-save; no files written)", flush=True)
+            logger.warning(f"  [{mask_name}] flagged {len(drop_ids)} (--no-save; no files written)")
             return rows
 
         if not drop_ids:
-            print(f"  [{mask_name}] nothing to remove; {in_path.name} kept", flush=True)
+            logger.warning(f"  [{mask_name}] nothing to remove; {in_path.name} kept")
             return rows
 
         # the arm lesions are ADDED to the shared <mask>_postprocessedRemoved file (one file holds every
@@ -338,10 +335,9 @@ class ArmLesionRemover:
         # so a rerun finds them again and merges them again (no lesion can end up in neither file)
         save_atomic(removed_arr.astype(dtype), model_img, removed_file)
         save_atomic(np.where(removed, 0, data).astype(dtype), model_img, in_path)
-        print(
+        logger.info(
             f"  [{mask_name}] removed {len(drop_ids)} -> updated {in_path.name} (in place), "
             f"added to {removed_file.name}",
-            flush=True,
         )
         return rows
 

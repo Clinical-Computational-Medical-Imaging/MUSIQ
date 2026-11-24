@@ -10,6 +10,9 @@ import pandas as pd
 from nilearn.image.resampling import BoundingBoxError
 
 from . import metrics
+
+# Mask sources (``mask_source``): "autopet" = pipeline PETseg/PETsegSUL mask, "revised" = physician
+from .mask_sources import MASK_SOURCES, POSTPROCESSED_SUFFIX
 from .utils import RESERVED_PROCESSED_DIRS, get_spacing_from_niftipath, make_json_safe, resample_image
 
 logger = logging.getLogger(__name__)
@@ -47,9 +50,8 @@ def resample_label_to_image_grid(label_fpath: str, target_fpath: str, work_dirpa
             os.remove(out_fpath)
 
 
-# Mask sources (``mask_source``): "autopet" = pipeline PETseg/PETsegSUL mask, "revised" = physician
-# Tumor label (must share the SUV/PET grid).
-MASK_SOURCES = ("autopet", "revised", "lion", "postprocessed", "lion_postprocessed")
+# Mask sources that only provide an SUV mask (see mask_sources.MASK_SOURCES for all sources).
+_SUV_ONLY_SOURCES: frozenset[str] = frozenset({"revised", "lion", "lion_postprocessed"})
 DEFAULT_LABEL_GLOB = "PETseg_revised.nii"
 
 
@@ -70,13 +72,13 @@ def resolve_mask(
     if mask_source == "lion":
         mask_path = os.path.join(study_dirpath, "PETseg_LION.nii.gz")
         return (mask_path if os.path.exists(mask_path) else None), "TumorStatsLION"
-    if mask_source == "postprocessed":
+    if mask_source == "autopet_postprocessed":
         fname = "PETseg_postprocessed.nii.gz" if metric == "SUV" else "PETsegSUL_postprocessed.nii.gz"
         key = "TumorStatsPostprocessed" if metric == "SUV" else "TumorStatsPostprocessedSUL"
         mask_path = os.path.join(study_dirpath, fname)
         return (mask_path if os.path.exists(mask_path) else None), key
     if mask_source == "lion_postprocessed":
-        mask_path = os.path.join(study_dirpath, "PETseg_LION_postprocessed.nii.gz")
+        mask_path = os.path.join(study_dirpath, f"PETseg_LION{POSTPROCESSED_SUFFIX}.nii.gz")
         return (mask_path if os.path.exists(mask_path) else None), "TumorStatsLIONPostprocessed"
     fname = "PETseg.nii.gz" if metric == "SUV" else "PETsegSUL.nii.gz"
     key = "TumorStats" if metric == "SUV" else "TumorStatsSUL"
@@ -190,10 +192,12 @@ class RadiomicsExtractor:
                 label_loc = "the study dir" if not self.label_dirpath else self.label_dirpath
                 if self.mask_source == "revised":
                     mask_desc = f"a '{self.label_glob}' label in {label_loc}"
-                elif self.mask_source == "lion":
-                    mask_desc = "PETseg_LION.nii.gz"
                 elif self.mask_source == "lion_postprocessed":
                     mask_desc = "PETseg_LION_postprocessed.nii.gz"
+                elif self.mask_source == "lion":
+                    mask_desc = "PETseg_LION.nii.gz"
+                elif self.mask_source == "autopet_postprocessed":
+                    mask_desc = "PETseg_postprocessed.nii.gz" if metric == "SUV" else "PETsegSUL_postprocessed.nii.gz"
                 else:
                     mask_desc = "PETseg.nii.gz" if metric == "SUV" else "PETsegSUL.nii.gz"
                 msg = f"No directories found with necessary files for {metric}: {necessary_files} plus {mask_desc}."
@@ -332,7 +336,7 @@ class RadiomicsExtractor:
             "TMTV": lambda: metrics.calculate_patient_level_tmtv(gtarray, spacing),
             "TLG": lambda: metrics.calculate_patient_level_tlg(ptarray, gtarray, spacing),
             "Dmax": lambda: _dmax(),
-            "SDmax": lambda: _dmax() / std_factor if std_factor else "NAN",
+            "SDmax": lambda: _dmax() / 10 / std_factor if std_factor else "NAN",
             "SurfaceArea": lambda: metrics.calculate_patient_level_surface_area(gtarray, spacing),
             "MTV2.5": lambda: metrics.calculate_patient_level_mtv_psmatv(ptarray, gtarray, 2.5, spacing),
             "MTV3.0": lambda: metrics.calculate_patient_level_mtv_psmatv(ptarray, gtarray, 3.0, spacing),
@@ -412,11 +416,14 @@ def radiomics_extraction_entrypoint() -> None:
     parser.add_argument(
         "--mask-source",
         type=str,
+        nargs="+",
         choices=list(MASK_SOURCES),
-        default="autopet",
-        help="Mask to compute on: 'autopet' (PETseg -> TumorStats), 'revised' (physician label -> TumorStatsRevised), "
-        "'lion' (PETseg_LION -> TumorStatsLION), 'postprocessed' (PETseg_postprocessed -> TumorStatsPostprocessed). "
-        "Default: autopet.",
+        default=["autopet"],
+        help="Mask(s) to compute on: 'autopet' (PETseg -> TumorStats[SUL]), 'autopet_postprocessed' "
+        "(PETseg_postprocessed -> TumorStatsPostprocessed[SUL]), 'revised' (physician label -> TumorStatsRevised, "
+        "SUV only), 'lion' (PETseg_LION -> TumorStatsLION, SUV only), 'lion_postprocessed' "
+        "(PETseg_LION_postprocessed -> TumorStatsLIONPostprocessed, SUV only). "
+        "Pass multiple: --mask-source autopet lion. Default: autopet.",
     )
     parser.add_argument(
         "--label-dirpath",
@@ -442,14 +449,16 @@ def radiomics_extraction_entrypoint() -> None:
     )
     args = parser.parse_args()
 
-    RadiomicsExtractor(
-        input_dirpath_processed=args.input_dirpath_processed,
-        pet_metric=args.pet_metric,
-        mask_source=args.mask_source,
-        label_dirpath=args.label_dirpath,
-        label_glob=args.label_glob,
-        workers=args.workers,
-    ).run()
+    for source in args.mask_source:
+        metric = ["SUV"] if source in _SUV_ONLY_SOURCES else args.pet_metric
+        RadiomicsExtractor(
+            input_dirpath_processed=args.input_dirpath_processed,
+            pet_metric=metric,
+            mask_source=source,
+            label_dirpath=args.label_dirpath,
+            label_glob=args.label_glob,
+            workers=args.workers,
+        ).run()
 
 
 if __name__ == "__main__":

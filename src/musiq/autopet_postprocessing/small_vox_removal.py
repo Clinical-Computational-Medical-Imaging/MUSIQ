@@ -1,30 +1,32 @@
 """
 Remove small lesions (<= SMALL_VOX_MAX voxels) that lie outside the prostate.
-Run this AFTER lacrimalRemoval.py: it reads <mask>_postprocessed.nii.gz (the lacrimal-cleaned
+Run this AFTER lacrimal_removal.py and arm_lesions.py: it reads <mask>_postprocessed.nii.gz (the lacrimal-cleaned
 mask) and never touches the original mask or the lacrimal outputs.
 
 Choose which mask(s) to process by passing --masks:
   --masks PETseg                            # SUV only
-  --masks PETseg_revised                    # Helen's only
+  --masks PETseg_revised                    # doctors' annotation
   --masks PETseg PETsegSUL                  # both model masks
   --masks PETseg PETsegSUL PETseg_revised   # all three
-If --masks is not given, it defaults to PETseg PETsegSUL (SUV + SUL).
+If --masks is not given, it defaults to PETseg PETsegSUL PETseg_revised PETseg_LION (missing masks are skipped).
 
 Per session and mask:
   <mask>_postprocessed.nii.gz         updated IN PLACE: the small lesions are removed from it
   <mask>_postprocessedRemoved.nii.gz  the small lesions are ADDED to it, so it holds every lesion removed so far
                                       (lacrimal + arm + small), labels kept, 0 elsewhere. No separate file is made.
 Rerunning this script on the same _postprocessed is safe: nothing more is removed and the removed-lesions
-file is unchanged. If lacrimalRemoval.py is rerun (which rebuilds _postprocessed and _postprocessedRemoved from
+file is unchanged. If lacrimal_removal.py is rerun (which rebuilds _postprocessed and _postprocessedRemoved from
 the original mask), run arm_lesions.py and this script again afterwards.
 Pass --no-save to only log and write nothing.
 
 for running from the terminal: SmallVoxRemover("/path/to/processed", multiprocessing=True, max_workers=5).run()
-for running from SLURM: python3 smallVoxRemoval.py --input-dirpath /path/to/processed --masks PETseg_revised
+for running from SLURM: python3 small_vox_removal.py --input-dirpath /path/to/processed --masks PETseg_revised
+all three steps in order: musiq_autopet_postprocess --input-dirpath /path/to/processed
 """
 
 import argparse
 import json
+import logging
 import os
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -34,7 +36,7 @@ import nibabel as nib
 import numpy as np
 
 # data discovery / config / helpers shared with the lacrimal step
-from musiq.autopet_postprocessing.lacrimalRemoval import (
+from musiq.autopet_postprocessing.lacrimal_removal import (
     CADS_FILE,
     CONNECTIVITY,
     DEFAULT_MASKS,
@@ -44,6 +46,9 @@ from musiq.autopet_postprocessing.lacrimalRemoval import (
     REMOVED_SUFFIX,
     resample_cads_to_grid,
 )
+
+logger = logging.getLogger(__name__)
+
 
 # --------------------------------------------------------------------------- #
 # Config
@@ -88,13 +93,13 @@ class SmallVoxRemover:
             for dirpath, _, filenames in os.walk(self.input_dirpath)
             if CADS_FILE in filenames and any(f"{m}{OUT_SUFFIX}.nii.gz" in filenames for m in self.masks)
         )
-        print(f"Found {len(sub_dirs)} session(s) with {CADS_FILE} + <mask>{OUT_SUFFIX} for {self.masks}", flush=True)
+        logger.info(f"Found {len(sub_dirs)} session(s) with {CADS_FILE} + <mask>{OUT_SUFFIX} for {self.masks}")
         if self.patient_id is not None:
             sub_dirs = [d for d in sub_dirs if Path(d).parent.name == self.patient_id]
-            print(f"Filtering to patient_id={self.patient_id}: {len(sub_dirs)} session(s)", flush=True)
+            logger.info(f"Filtering to patient_id={self.patient_id}: {len(sub_dirs)} session(s)")
         if self.limit is not None:
             sub_dirs = sub_dirs[: self.limit]
-            print(f"Limiting to first {len(sub_dirs)} session(s)", flush=True)
+            logger.info(f"Limiting to first {len(sub_dirs)} session(s)")
         if not sub_dirs:
             return
 
@@ -135,37 +140,34 @@ class SmallVoxRemover:
                 with open(tmp, "w") as f:
                     json.dump(summary, f, indent=2)
                 tmp.replace(out_json)
-                print(
+                logger.info(
                     f"\nWrote {len(rows)} removed lesion(s) across {len(per_patient)} patient(s) -> {out_json}",
-                    flush=True,
                 )
             else:
-                print(
+                logger.warning(
                     f"\n(--no-save) {len(rows)} lesion(s) would be removed across {len(per_patient)} patient(s)",
-                    flush=True,
                 )
 
             for r in rows:
-                print(
+                logger.info(
                     f"  {r['patient_id']}/{r['session']} [{r['mask_name']}] lesion {r['component_id']}: "
                     f"{r['voxels']} vox, touches {r['touches']}",
-                    flush=True,
                 )
         else:
-            print("\nNo lesions removed in any session.", flush=True)
-        print("Small-voxel removal done.", flush=True)
+            logger.warning("\nNo lesions removed in any session.")
+        logger.info("Small-voxel removal done.")
 
     def process_wrapper(self, dirpath):
         try:
             return self.process_patient(dirpath)
         except Exception as e:
-            print(f"  !! ERROR processing {dirpath}: {e}", flush=True)
+            logger.error(f"  !! ERROR processing {dirpath}: {e}")
             return []
 
     # ---- per-session work ----------------------------------------------- #
     def process_patient(self, dirpath):
         session = Path(dirpath)
-        print(f"\n=== {session.parent.name}/{session.name} ===", flush=True)
+        logger.info(f"\n=== {session.parent.name}/{session.name} ===")
 
         # load CADS once per session and reuse for every mask
         cads_img = nib.squeeze_image(nib.load(str(session / CADS_FILE)))
@@ -181,7 +183,7 @@ class SmallVoxRemover:
         tag = f"{session.parent.name}/{session.name}"
         in_path = session / f"{mask_name}{OUT_SUFFIX}.nii.gz"
         if not in_path.exists():
-            print(f"  [{mask_name}] no {in_path.name} (run lacrimalRemoval.py first) - skipped", flush=True)
+            logger.warning(f"  [{mask_name}] no {in_path.name} (run lacrimal_removal.py first) - skipped")
             return []
 
         mask_img = nib.squeeze_image(nib.load(str(in_path)))
@@ -196,9 +198,8 @@ class SmallVoxRemover:
 
         # lesions + vectorized per-lesion stats
         cc, n = cc3d.connected_components((data > 0).astype(np.int32), connectivity=CONNECTIVITY, return_N=True)
-        print(
+        logger.info(
             f"  [{mask_name}] input {in_path.name} | prostate vox on PET grid: {int(prostate.sum())} | lesions: {n}",
-            flush=True,
         )
         if n:
             stats = cc3d.statistics(cc)
@@ -220,9 +221,8 @@ class SmallVoxRemover:
 
             # verbose per-lesion line for EVERY lesion (calibration view)
             flag = "  <-- REMOVE (small, outside prostate)" if remove else ""
-            print(
+            logger.info(
                 f"    [{tag}] lesion {lid:>2}: {vox:>6} vox | in prostate {in_prostate:>5} | touches {touches}{flag}",
-                flush=True,
             )
 
             if not remove:
@@ -258,8 +258,8 @@ class SmallVoxRemover:
             # so a rerun finds them again and merges them again (no lesion can end up in neither file)
             save_atomic(removed_arr.astype(dtype), mask_img, removed_file)
             save_atomic(np.where(removed, 0, data).astype(dtype), mask_img, in_path)
-            print(f"  [{mask_name}] updated {in_path.name} (in place), added to {removed_file.name}", flush=True)
-        print(f"  [{mask_name}] {n} lesion(s), removed {len(drop)}", flush=True)
+            logger.info(f"  [{mask_name}] updated {in_path.name} (in place), added to {removed_file.name}")
+        logger.info(f"  [{mask_name}] {n} lesion(s), removed {len(drop)}")
         return rows
 
 

@@ -12,10 +12,10 @@ authors = [
 description = "MUSIQ - Multimodal Unified Segmentation & Image Quantification. A Python package for radiomics feature extraction from medical images, specifically PET/CT and MRI scans."
 license = {file = "LICENSE"}
 readme = "README.md"
-version = "0.1.1"
+version = "1.0.0"
 requires-python = ">=3.12"
 classifiers = [
-    "Development Status :: Development Status :: 4",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Healthcare Industry",
@@ -85,9 +85,6 @@ dependencies= [
     "pyarrow==20.0.0",
     "pydicom==3.0.1",
     "pyparsing==3.2.3",
-    "pytest==9.0.2",
-    "pytest.cov==7.0.0",
-    "pytest-mock==3.15.1",
     "python-dateutil==2.9.0.post0",
     "python-gdcm==3.0.25",
     "pytz==2025.2",
@@ -98,7 +95,6 @@ dependencies= [
     "scikit-learn==1.7.0",
     "scipy==1.16.0",
     "seaborn==0.13.2",
-    "setuptools==80.9.0",
     "simpleitk==2.5.2",
     "six==1.17.0",
     "sympy==1.14.0",
@@ -130,7 +126,7 @@ musiq_cads_restore = "musiq.cads_inference:cads_restore_entrypoint"
 musiq_lion_inference = "musiq.lion_inference:lion_inference_entrypoint"
 musiq_moose_inference = "musiq.moose_inference:moose_inference_entrypoint"
 musiq_plot_summary = "musiq.plot_summary:plot_summary_entrypoint"
-musiq_extraction = "musiq.radiomics_extraction:radiomics_extraction_entrypoint"
+musiq_radiomics = "musiq.radiomics_extraction:radiomics_extraction_entrypoint"
 musiq_series_selection = "musiq.series_selection:series_selection_entrypoint"
 musiq_totalsegmentator_inference = "musiq.totalsegmentator_inference:totalsegmentator_inference_entrypoint"
 musiq_totalsegmentator_muscle_fat = "musiq.totalsegmentator_muscle_fat:totalsegmentator_muscle_fat_entrypoint"
@@ -149,7 +145,11 @@ where = ["src"]
 repository = "https://github.com/Clinical-Computational-Medical-Imaging/MUSIQ"
 
 [project.optional-dependencies]
-testing = ["setuptools", "pytest", "pytest-cov"]
+testing = [
+    "setuptools==80.9.0",
+    "pytest==9.0.2",
+    "pytest-mock==3.15.1",
+    "pytest-cov==7.0.0"]
 pre-commit = ["pre-commit", "ruff"]
 
 [tool.pytest.ini_options]

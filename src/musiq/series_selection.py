@@ -19,7 +19,9 @@ from .utils import (
     convert_pet,
     extract_dicom_data,
     find_mr_niftis,
+    get_spacing_from_niftipath,
     list_dicom_files,
+    load_dcm2niix_sidecar,
     make_json_safe,
     mr_nifti_exists,
     repair_slice_direction_from_dicom,
@@ -646,11 +648,13 @@ class SeriesSelection:
                 random_part = "".join(random.choices(chars, k=5))
                 dicom_tags["SeriesDescription"] = f"Missing_SeriesDesc_{random_part}"
 
+            spacing = list(get_spacing_from_niftipath(out_fpath)) if os.path.isfile(out_fpath) else None
             paths_and_dicom_tags = {
                 dicom_tags["SeriesDescription"]: {
                     "InputDirPath": str(dicom_input_dirpath),
                     f"{modality.upper()}Path": out_fpath,
                     **({"SUVPath": suv_fpath} if suv_fpath is not None else {}),
+                    **({"VoxelSpacingMm": spacing} if spacing is not None else {}),
                     "DICOM": dicom_tags,
                 }
             }
@@ -685,8 +689,7 @@ class SeriesSelection:
             image_type = []
             sidecar = f.with_suffix("").with_suffix(".json")
             if sidecar.is_file():
-                with open(sidecar) as jf:
-                    image_type = [str(x).upper() for x in json.load(jf).get("ImageType", [])]
+                image_type = [str(x).upper() for x in load_dcm2niix_sidecar(sidecar).get("ImageType", [])]
             primary = "PRIMARY" in image_type and "SECONDARY" not in image_type
             is_eq1 = f.name.endswith("_Eq_1.nii.gz")
             shape = nib.load(str(f)).shape
@@ -737,8 +740,7 @@ class SeriesSelection:
             image_type = []
             sidecar = f.with_suffix("").with_suffix(".json")
             if sidecar.is_file():
-                with open(sidecar) as jf:
-                    image_type = [str(x).upper() for x in json.load(jf).get("ImageType", [])]
+                image_type = [str(x).upper() for x in load_dcm2niix_sidecar(sidecar).get("ImageType", [])]
             primary = "PRIMARY" in image_type and "SECONDARY" not in image_type
             shape = nib.load(str(f)).shape
             n_slices = shape[2] if len(shape) >= 3 else 0
@@ -795,10 +797,13 @@ class SeriesSelection:
                     logger.error(f"CT affine sanity-check failed for {out_fpath}: {e}")
                 # read the sidecar matching the chosen volume (same stem)
                 jsn = self._find_sidecar(nii, tmp)
-                with open(jsn) as json_file:
-                    # strict=False tolerates control characters that some scanners embed in
-                    # DICOM tags (e.g. ConvolutionKernel on Siemens NAEOTOM / LowD CT series).
-                    dicom_tags = json.loads(json_file.read(), strict=False)
+                try:
+                    dicom_tags = load_dcm2niix_sidecar(jsn)
+                except json.JSONDecodeError as e:
+                    # The CT NIfTI has already been written at this point. Fall back to the DICOM
+                    # headers so that the patient record remains complete and consistent.
+                    logger.error(f"Invalid dcm2niix sidecar {jsn} ({e}); reading CT tags from DICOM instead.")
+                    dicom_tags = extract_dicom_data(plb.Path(CT_dcm_dirpath), self.dicom_tags)
         else:
             logger.info(f"CT NIfTI already exists at {out_fpath}")
             dicom_tags = extract_dicom_data(plb.Path(CT_dcm_dirpath), self.dicom_tags)
@@ -872,8 +877,7 @@ class SeriesSelection:
                 shutil.copyfile(nii, out_pet_fpath)
                 # read the sidecar matching the chosen volume (same stem) before falling back
                 sidecar = self._find_sidecar(nii, tmp)
-                with open(sidecar) as json_file:
-                    dicom_tags = json.load(json_file)
+                dicom_tags = load_dcm2niix_sidecar(sidecar)
 
         if os.path.isfile(out_suv_fpath):
             logger.info(f"SUV NIfTI already exists at {out_suv_fpath}; not regenerating.")
@@ -924,7 +928,8 @@ class SeriesSelection:
                 return None
             try:
                 ds = pydicom.dcmread(os.path.join(s["SeriesPath"], files[0]), stop_before_pixels=True)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Cannot read {s['SeriesPath']} for dynamic-MR detection: {e}")
                 return None
             if "DYNAMIC" in [str(x).upper() for x in getattr(ds, "ImageType", [])]:
                 dynamic_marker = True
@@ -986,8 +991,10 @@ class SeriesSelection:
 
         Returns:
             tuple: Path to the NIfTI file and a dictionary of DICOM tags."""
-        first_dcm = os.listdir(MR_dcm_dirpath)[0]
-        ds = pydicom.dcmread(str(str(MR_dcm_dirpath) + "/" + first_dcm), stop_before_pixels=True)
+        dicom_files = list_dicom_files(MR_dcm_dirpath)
+        if not dicom_files:
+            raise FileNotFoundError(f"No DICOM files found in {MR_dcm_dirpath}")
+        ds = pydicom.dcmread(dicom_files[0])
         # dcm2niix names MR NIfTIs from `%p` (ProtocolName, falling back to SeriesDescription);
         # match on that plus the exact SeriesNumber (so series sharing a ProtocolName aren't
         # confused with each other) to detect existing output.
@@ -1041,8 +1048,7 @@ class SeriesSelection:
             nii_path = os.path.join(output_dirpath, nii.name)
             shutil.copy(nii, nii_path)
             jsn = self._find_sidecar(nii, tmp)
-            with open(jsn) as json_file:
-                dicom_tags = json.load(json_file)
+            dicom_tags = load_dcm2niix_sidecar(jsn)
         return nii_path, dicom_tags
 
     @staticmethod
